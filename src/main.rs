@@ -7,13 +7,16 @@ mod chunk;
 mod config;
 mod db;
 mod index;
+mod lex;
+mod search;
 mod util;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use config::Config;
 use db::Db;
+use search::Mode;
 
 #[derive(Parser)]
 #[command(
@@ -82,16 +85,6 @@ enum Command {
     Status,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum Mode {
-    /// BM25 + semantic, fused with RRF.
-    Hybrid,
-    /// Full-text (BM25) only.
-    Bm25,
-    /// Semantic (embeddings) only.
-    Vec,
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load()?;
@@ -100,7 +93,9 @@ fn main() -> Result<()> {
         Command::Status => cmd_status(&cfg)?,
         Command::Index => cmd_index(&cfg, false)?,
         Command::Reindex => cmd_index(&cfg, true)?,
-        Command::Search { .. } => todo("search"),
+        Command::Search { query, mode, json, limit } => {
+            search::run(&cfg, &query, mode, json, limit)?
+        }
         Command::AddNote { .. } => todo("add-note"),
         Command::Inbox { .. } => todo("inbox"),
         Command::File { .. } => todo("file"),

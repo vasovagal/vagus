@@ -15,6 +15,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::chunk::chunk_markdown;
 use crate::config::Config;
 use crate::db::Db;
+use crate::lex::Lex;
 use crate::util::{now_unix, sha256_hex};
 
 #[derive(Debug, Default)]
@@ -64,7 +65,10 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     let db = Db::open(&cfg.db_path())?;
     if reindex {
         db.clear_all()?;
+        let _ = std::fs::remove_dir_all(cfg.tantivy_dir());
     }
+    let lex = Lex::open(&cfg.tantivy_dir())?;
+    let mut writer = lex.writer()?;
 
     let existing = db.existing_files()?;
     let mut seen: HashSet<String> = HashSet::new();
@@ -103,6 +107,7 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         let text = String::from_utf8_lossy(&bytes);
         let chunks = chunk_markdown(&rel, &text);
         db.replace_chunks(&rel, &chunks)?;
+        lex.replace_file(&writer, &rel, &chunks)?;
         if prior.is_some() {
             stats.changed += 1;
         } else {
@@ -114,9 +119,11 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     for path in existing.keys() {
         if !seen.contains(path) {
             db.delete_file(path)?;
+            lex.delete_file(&writer, path);
             stats.removed += 1;
         }
     }
 
+    writer.commit()?;
     Ok(stats)
 }

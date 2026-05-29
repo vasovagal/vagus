@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::chunk::Chunk;
 
@@ -110,6 +110,19 @@ impl Db {
     }
 
     // --- chunks -------------------------------------------------------------
+
+    /// (path, heading_path, body) for a chunk id, if present.
+    pub fn chunk_row(&self, id: &str) -> Result<Option<(String, String, String)>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT path, heading_path, body FROM chunks WHERE id=?1",
+                params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
 
     pub fn chunk_ids_for(&self, path: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT id FROM chunks WHERE path=?1")?;
