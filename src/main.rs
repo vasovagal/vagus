@@ -95,16 +95,20 @@ fn main() -> Result<()> {
         Command::Status => cmd_status(&cfg)?,
         Command::Index => cmd_index(&cfg, false)?,
         Command::Reindex => cmd_index(&cfg, true)?,
-        Command::Search { query, mode, json, limit } => {
-            search::run(&cfg, &query, mode, json, limit)?
-        }
-        Command::AddNote { title, para, source, print_path } => {
-            notes::add_note(&cfg, &title, &para, source.as_deref(), print_path)?
-        }
+        Command::Search {
+            query,
+            mode,
+            json,
+            limit,
+        } => search::run(&cfg, &query, mode, json, limit)?,
+        Command::AddNote {
+            title,
+            para,
+            source,
+            print_path,
+        } => notes::add_note(&cfg, &title, &para, source.as_deref(), print_path)?,
         Command::Inbox { json } => notes::inbox(&cfg, json)?,
-        Command::File { path, to, suggest } => {
-            notes::file(&cfg, &path, to.as_deref(), suggest)?
-        }
+        Command::File { path, to, suggest } => notes::file(&cfg, &path, to.as_deref(), suggest)?,
         Command::Doctor => cmd_doctor(&cfg)?,
     }
     Ok(())
@@ -115,12 +119,24 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         println!("  [{}] {label}: {detail}", if ok { "ok" } else { "!!" });
     }
     println!("vagus doctor");
-    line("vault", cfg.vault.exists(), &cfg.vault.display().to_string());
-    line("data dir", cfg.data_dir.exists(), &cfg.data_dir.display().to_string());
+    line(
+        "vault",
+        cfg.vault.exists(),
+        &cfg.vault.display().to_string(),
+    );
+    line(
+        "data dir",
+        cfg.data_dir.exists(),
+        &cfg.data_dir.display().to_string(),
+    );
 
     let db = Db::open(&cfg.db_path())?;
-    let model = db.meta_get("embed_model")?.unwrap_or_else(|| "(unset)".into());
-    let dims = db.meta_get("embed_dims")?.unwrap_or_else(|| "(unset)".into());
+    let model = db
+        .meta_get("embed_model")?
+        .unwrap_or_else(|| "(unset)".into());
+    let dims = db
+        .meta_get("embed_dims")?
+        .unwrap_or_else(|| "(unset)".into());
     let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
     line("embed identity", id_ok, &format!("{model} / {dims}"));
 
@@ -149,7 +165,11 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
     line(
         "index outside vault",
         !inside,
-        if inside { "INDEX IS INSIDE THE VAULT (G1 violation)" } else { "ok" },
+        if inside {
+            "INDEX IS INSIDE THE VAULT (G1 violation)"
+        } else {
+            "ok"
+        },
     );
     Ok(())
 }
@@ -180,7 +200,11 @@ fn cmd_status(cfg: &Config) -> Result<()> {
     println!("  model cache : {}", cfg.cache_dir.display());
     println!("  db          : {}", cfg.db_path().display());
     println!("  tantivy     : {}", cfg.tantivy_dir().display());
-    println!("  embed model : {} ({} dims)", config::EMBED_MODEL, config::EMBED_DIMS);
+    println!(
+        "  embed model : {} ({} dims)",
+        config::EMBED_MODEL,
+        config::EMBED_DIMS
+    );
     println!("  files       : {files}");
     println!("  chunks      : {chunks} ({embedded} embedded)");
     Ok(())

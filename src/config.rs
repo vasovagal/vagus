@@ -48,7 +48,11 @@ impl Config {
                     .join("vagus/models")
             });
 
-        Ok(Self { vault, data_dir, cache_dir })
+        Ok(Self {
+            vault,
+            data_dir,
+            cache_dir,
+        })
     }
 
     pub fn db_path(&self) -> PathBuf {

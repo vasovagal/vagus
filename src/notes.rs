@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 
 use crate::config::Config;
@@ -57,11 +57,18 @@ fn slugify(title: &str) -> String {
 /// Resolve a user-supplied path (absolute or vault-relative) to an absolute path.
 fn resolve(cfg: &Config, path: &str) -> PathBuf {
     let p = PathBuf::from(path);
-    if p.is_absolute() { p } else { cfg.vault.join(p) }
+    if p.is_absolute() {
+        p
+    } else {
+        cfg.vault.join(p)
+    }
 }
 
 fn vault_rel(cfg: &Config, p: &Path) -> String {
-    p.strip_prefix(&cfg.vault).unwrap_or(p).to_string_lossy().to_string()
+    p.strip_prefix(&cfg.vault)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .to_string()
 }
 
 /// First `# heading` or, failing that, the filename stem.
@@ -73,7 +80,9 @@ fn note_title(p: &Path) -> String {
             }
         }
     }
-    p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+    p.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Body text minus a leading YAML frontmatter block (for use as a `--suggest` query).
@@ -102,7 +111,10 @@ fn strip_frontmatter(content: &str) -> (Vec<String>, String) {
 
 fn upsert(lines: &mut Vec<String>, key: &str, val: &str) {
     let prefix = format!("{key}:");
-    if let Some(line) = lines.iter_mut().find(|l| l.trim_start().starts_with(&prefix)) {
+    if let Some(line) = lines
+        .iter_mut()
+        .find(|l| l.trim_start().starts_with(&prefix))
+    {
         *line = format!("{key}: {val}");
     } else {
         lines.push(format!("{key}: {val}"));
@@ -132,7 +144,10 @@ pub fn add_note(
         std::io::stdin().read_to_string(&mut body)?;
     }
 
-    let mut fm = format!("---\ncreated: {}\nstatus: inbox\n", now.format("%Y-%m-%dT%H:%M"));
+    let mut fm = format!(
+        "---\ncreated: {}\nstatus: inbox\n",
+        now.format("%Y-%m-%dT%H:%M")
+    );
     if let Some(src) = source {
         fm.push_str(&format!("source: {src}\n"));
     }
@@ -196,7 +211,10 @@ pub fn file(cfg: &Config, path: &str, to: Option<&str>, suggest: bool) -> Result
     let to = to.ok_or_else(|| anyhow!("`--to <folder>` is required (or use `--suggest`)"))?;
     let dest_dir = cfg.vault.join(to);
     fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(src.file_name().ok_or_else(|| anyhow!("bad source filename"))?);
+    let dest = dest_dir.join(
+        src.file_name()
+            .ok_or_else(|| anyhow!("bad source filename"))?,
+    );
 
     enrich_frontmatter(&src, to)?;
     fs::rename(&src, &dest).with_context(|| format!("moving to {}", dest.display()))?;
@@ -212,7 +230,11 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
     let (mut fm, body) = strip_frontmatter(&content);
     upsert(&mut fm, "status", "active");
     upsert(&mut fm, "para", folder_para(to));
-    upsert(&mut fm, "modified", &Local::now().format("%Y-%m-%dT%H:%M").to_string());
+    upsert(
+        &mut fm,
+        "modified",
+        &Local::now().format("%Y-%m-%dT%H:%M").to_string(),
+    );
     let new = format!("---\n{}\n---\n\n{}\n", fm.join("\n"), body.trim_start());
     fs::write(src, new)?;
     Ok(())

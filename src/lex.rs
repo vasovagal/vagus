@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{
-    Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
+    Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
-use tantivy::{doc, DocAddress, Index, IndexWriter, TantivyDocument, Term};
+use tantivy::{DocAddress, Index, IndexWriter, TantivyDocument, Term, doc};
 
 use crate::chunk::Chunk;
 
@@ -51,7 +51,13 @@ impl Lex {
         let mmap = tantivy::directory::MmapDirectory::open(dir)
             .with_context(|| format!("opening tantivy dir {}", dir.display()))?;
         let index = Index::open_or_create(mmap, schema).context("open_or_create tantivy index")?;
-        Ok(Self { index, path, chunk_id, heading, body })
+        Ok(Self {
+            index,
+            path,
+            chunk_id,
+            heading,
+            body,
+        })
     }
 
     pub fn writer(&self) -> Result<IndexWriter> {
@@ -102,8 +108,10 @@ impl Lex {
         };
 
         // 0.26: plain TopDocs is not a Collector; pick an ordering (relevance).
-        let hits: Vec<(f32, DocAddress)> =
-            searcher.search(&*parsed, &TopDocs::with_limit(limit.max(1)).order_by_score())?;
+        let hits: Vec<(f32, DocAddress)> = searcher.search(
+            &*parsed,
+            &TopDocs::with_limit(limit.max(1)).order_by_score(),
+        )?;
         let mut ids = Vec::with_capacity(hits.len());
         for (_score, addr) in hits {
             let doc: TantivyDocument = searcher.doc(addr)?;

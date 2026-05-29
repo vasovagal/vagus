@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::chunk::Chunk;
 
@@ -118,7 +118,13 @@ impl Db {
             .query_row(
                 "SELECT path, heading_path, body FROM chunks WHERE id=?1",
                 params![id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()?;
         Ok(row)

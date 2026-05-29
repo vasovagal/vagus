@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::chunk::chunk_markdown;
@@ -35,7 +35,10 @@ fn is_hidden(e: &DirEntry) -> bool {
 }
 
 fn is_markdown(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("md")).unwrap_or(false)
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
 }
 
 /// Every `*.md` under the vault, skipping hidden dirs (`.obsidian`, `.git`, `.trash`, …).
@@ -51,7 +54,10 @@ pub fn walk_vault(vault: &Path) -> Vec<PathBuf> {
 
 fn mtime_secs(path: &Path) -> Result<f64> {
     let modified = fs::metadata(path)?.modified()?;
-    Ok(modified.duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0))
+    Ok(modified
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0))
 }
 
 /// Run an incremental index (or full rebuild when `reindex`).
@@ -73,12 +79,11 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
 
     // Guardrail G4: pin / validate the embedding identity.
     let dims = EMBED_DIMS.to_string();
-    if !reindex {
-        if let (Some(m), Some(d)) = (db.meta_get("embed_model")?, db.meta_get("embed_dims")?) {
-            if m != EMBED_MODEL || d != dims {
-                bail!("embedding identity changed ({m} {d} -> {EMBED_MODEL} {dims}); run `vagus reindex`");
-            }
-        }
+    if !reindex
+        && let (Some(m), Some(d)) = (db.meta_get("embed_model")?, db.meta_get("embed_dims")?)
+        && (m != EMBED_MODEL || d != dims)
+    {
+        bail!("embedding identity changed ({m} {d} -> {EMBED_MODEL} {dims}); run `vagus reindex`");
     }
     db.meta_set("embed_model", EMBED_MODEL)?;
     db.meta_set("embed_dims", &dims)?;
@@ -100,23 +105,23 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         seen.insert(rel.clone());
 
         let mtime = mtime_secs(&abs).with_context(|| format!("stat {}", abs.display()))?;
-        if let Some((old_mtime, _)) = existing.get(&rel) {
-            if (*old_mtime - mtime).abs() < f64::EPSILON {
-                stats.unchanged += 1;
-                continue; // fast path: mtime unchanged
-            }
+        if let Some((old_mtime, _)) = existing.get(&rel)
+            && (*old_mtime - mtime).abs() < f64::EPSILON
+        {
+            stats.unchanged += 1;
+            continue; // fast path: mtime unchanged
         }
 
         let bytes = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
         let sha = sha256_hex(&bytes);
         let prior = existing.get(&rel);
-        if let Some((_, old_sha)) = prior {
-            if *old_sha == sha {
-                // content identical (touch / checkout): just refresh mtime.
-                db.upsert_file(&rel, mtime, &sha, now_unix())?;
-                stats.unchanged += 1;
-                continue;
-            }
+        if let Some((_, old_sha)) = prior
+            && *old_sha == sha
+        {
+            // content identical (touch / checkout): just refresh mtime.
+            db.upsert_file(&rel, mtime, &sha, now_unix())?;
+            stats.unchanged += 1;
+            continue;
         }
 
         // New or changed content: persist the file row first (chunks FK-reference it), then chunks.

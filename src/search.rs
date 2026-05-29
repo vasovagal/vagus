@@ -133,7 +133,10 @@ pub fn run(cfg: &Config, q: &str, mode: Mode, json: bool, limit: usize) -> Resul
 
 fn emit(hits: &[Hit], json: bool) {
     if json {
-        println!("{}", serde_json::to_string_pretty(hits).unwrap_or_else(|_| "[]".into()));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(hits).unwrap_or_else(|_| "[]".into())
+        );
         return;
     }
     if hits.is_empty() {
