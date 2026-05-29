@@ -24,8 +24,9 @@ Hybrid retrieval over a personal-scale Markdown vault (tens of thousands of chun
 - **bge prefixing:** query gets `"Represent this sentence for searching relevant passages: "`;
   documents un-prefixed. Don't double-prefix (respect what the lib already applies).
 
-`frankensearch` implements exactly this core (tantivy + f16-SIMD brute force + RRF k=60); when we depend
-on it we configure rather than re-implement ([ADR 0007](./0007-lean-on-frankensearch.md)).
+`frankensearch` implements a similar core (tantivy + f16-SIMD brute force + RRF k=60); we **hand-roll**
+ours for control + a clean dep tree and use frankensearch/qmd only as references
+([ADR 0007](./0007-lean-on-frankensearch.md)).
 
 ## Key implementation rules
 

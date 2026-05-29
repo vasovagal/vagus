@@ -30,9 +30,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
 7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`.
    Handle bge query/document prefixes correctly (query gets the retrieval instruction; documents do
    not) and **don't double-prefix**.
-8. **`frankensearch` is pinned/vendored, not blindly tracked.** If we depend on it for the retrieval
-   core, pin a commit or vendor the source. The hand-roll stack (tantivy + fastembed + rusqlite) in
-   `design/adr/0003-search-stack.md` is the documented fallback.
+8. **Retrieval is hand-rolled** (tantivy BM25 + brute-force cosine + RRF; see
+   `design/adr/0003-search-stack.md`). `frankensearch`/`qmd` are design references, **not
+   dependencies** (see `design/adr/0007-lean-on-frankensearch.md`). Don't add a heavyweight
+   search-engine dependency without an ADR.
 9. **Local-first, offline by default.** No cloud calls and no background daemon in the default path.
 10. **PARA layout is fixed** (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`).
     Filing inbox → PARA is **assisted and user-approved, never automatic.**

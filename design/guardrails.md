@@ -39,8 +39,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 - **G10 — fastembed cache dir is explicit.** Never rely on fastembed's `./.fastembed_cache` CWD
   default; set it to `~/Library/Caches/vagus/models` via `with_cache_dir` / `FASTEMBED_CACHE_DIR`.
-- **G11 — `frankensearch` pinned/vendored.** If used for retrieval, pin a commit or vendor; don't track
-  latest blindly. The hand-roll stack is the fallback. ([ADR 0007](./adr/0007-lean-on-frankensearch.md))
+- **G11 — Retrieval is hand-rolled** (tantivy BM25 + brute-force cosine + RRF;
+  [ADR 0003](./adr/0003-search-stack.md)). `frankensearch`/`qmd` are **design references, not
+  dependencies** ([ADR 0007](./adr/0007-lean-on-frankensearch.md)). Don't add a heavyweight
+  search-engine dependency without an ADR; if you ever do, pin/vendor it.
 - **G12 — Don't bump `ort` independently.** It's version-locked by fastembed (`=2.0.0-rc.12`).
 - **G13 — Honest artifact.** Default ONNX build = binary + `libonnxruntime.dylib` (rpath), not one
   file. Don't claim "single static binary"; the dylib-free path is the `model2vec` backend.

@@ -7,7 +7,7 @@ holds the comparison tables.
 
 | Option | Pros | Cons | Verdict |
 |---|---|---|---|
-| **Build fresh (Rust)** | Full control, exact PARA/iCloud behavior, permissive deps, own the code | Most code | **Chosen** — but lean on `frankensearch` for the retrieval core to shrink it |
+| **Build fresh (Rust)** | Full control, exact PARA/iCloud behavior, permissive deps, own the code | Most code | **Chosen** — retrieval hand-rolled (small); frankensearch/qmd as references ([ADR 0007](./adr/0007-lean-on-frankensearch.md)) |
 | Adopt `qmd` (TS) | SOTA hybrid (BM25+vec+RRF+rerank+HyDE), MCP for Claude | Node/Bun runtime + ~2 GB models; not Rust; Rust variant not on crates.io | Reference design, not adopted |
 | Adopt `basic-memory` (Py) | Mature, MCP-native, hybrid FTS+vector, write-back | AGPL; imposes a knowledge-graph model; PARA not built-in | Patterns only |
 | Adopt `memex` (TS) | Plain-md + offline search + MCP, single DB | Smaller/newer; semantic-only; own conventions | Reference |
