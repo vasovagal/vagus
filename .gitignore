@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# vagus runtime state never lives in the repo (it lives in ~/.local/share/vagus and
+# ~/Library/Caches/vagus). Guard against accidental local copies:
+/.fastembed_cache
+*.sqlite
+*.sqlite-*
