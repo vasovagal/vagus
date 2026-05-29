@@ -1,0 +1,41 @@
+name: rust-setup
+description: >
+  Install the Rust toolchain and restore caches, configured identically across CI and release
+  (Law 8). Also caches the prebuilt ONNX Runtime that `ort` downloads at build time (the one heavy
+  upstream — tens of MB, so GitHub Actions cache rather than S3; a named budget exception to Law 5).
+
+inputs:
+  components:
+    description: "Extra rustup components, space-separated (e.g. 'clippy rustfmt')."
+    required: false
+    default: ""
+  cache-key:
+    description: "Suffix to segment the cache (e.g. job name or target triple)."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Toolchain
+      shell: bash
+      run: |
+        rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install stable --profile minimal
+        if [ -n "${{ inputs.components }}" ]; then rustup component add ${{ inputs.components }}; fi
+        rustc -V && cargo -V
+
+    - name: Rust cache (registry + target)
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        key: ${{ inputs.cache-key }}
+
+    - name: Cache ONNX Runtime prebuilt (ort)
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: |
+          ~/Library/Caches/ort.pyke.io
+          ~/.cache/ort.pyke.io
+        # ort pins its prebuilt to its own version; key on the Cargo.lock entry so a bump busts it.
+        key: ort-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ort-${{ runner.os }}-${{ runner.arch }}-

@@ -1,0 +1,108 @@
+name: release
+
+# Law 3: a tag is a vote of confidence — this workflow does ONLY tag-specific work (build, publish,
+# bump the tap). It does not re-run the PR test matrix. Law 18: one workflow per release event, fanned
+# out by `needs:` only where there's a real dependency. Law 19: re-run-safe at every step.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # Law 19: never cancel a half-finished release
+
+permissions:
+  contents: write # create the release + upload assets in THIS repo (GITHUB_TOKEN)
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      has_tap_token: ${{ steps.t.outputs.has }}
+    steps:
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT" # Law 7: version lives in the tag
+      - id: t
+        env:
+          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TAP" ]; then echo "has=true" >> "$GITHUB_OUTPUT"; else echo "has=false" >> "$GITHUB_OUTPUT"; fi
+
+  create-release:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release if absent (idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                 --title "$GITHUB_REF_NAME" --generate-notes
+
+  build:
+    needs: [check, create-release]
+    strategy:
+      fail-fast: false # one bad arch shouldn't sink the others (Law 19)
+      matrix:
+        include:
+          - runner: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04-arm # native Linux arm64 (Law 1: native, not qemu)
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-latest # Linux amd64
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/rust-setup
+        with:
+          cache-key: rel-${{ matrix.target }}
+      - name: Build (native; ort statically links onnxruntime)
+        run: cargo build --release --locked
+      - name: Package
+        id: pkg
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="vagus-${VERSION}-${TARGET}"
+          mkdir -p dist
+          cp target/release/vagus dist/
+          cp README.md LICENSE dist/ 2>/dev/null || true
+          tar -C dist -czf "${name}.tar.gz" .
+          echo "asset=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+      - name: Upload to release (re-run safe)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.pkg.outputs.asset }}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  update-formula:
+    needs: [check, build]
+    if: needs.check.outputs.has_tap_token == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vagus (for the render script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout tap
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: vasovagal/homebrew-vagus
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Render Formula/vagus.rb from the published assets
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir -p tap/Formula
+          VERSION="$VERSION" ./scripts/render-formula.sh > tap/Formula/vagus.rb
+          cat tap/Formula/vagus.rb
+      - name: Commit + push (idempotent)
+        run: |
+          cd tap
+          git config user.name "vagus-release[bot]"
+          git config user.email "vagus-release@users.noreply.github.com"
+          git add Formula/vagus.rb
+          git commit -m "vagus ${{ needs.check.outputs.version }}" || { echo "no formula change"; exit 0; }
+          git push

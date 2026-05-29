@@ -1,0 +1,28 @@
+name: ci
+
+# Law 3: the PR gate. Tests run on PRs (and main pushes); tags do NOT re-run this — a tag trusts
+# the green main it was cut from.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/rust-setup
+        with:
+          components: clippy rustfmt
+          cache-key: ci
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test --locked

@@ -1,5 +1,7 @@
 # vagus
 
+[![ci](https://github.com/vasovagal/vagus/actions/workflows/ci.yml/badge.svg)](https://github.com/vasovagal/vagus/actions/workflows/ci.yml)
+
 A local-first **PARA second brain**: a small Rust CLI that gives you **hybrid full-text + semantic
 search** over a folder of plain-Markdown notes, with **Claude Code skills** for capture and retrieval.
 
@@ -20,7 +22,18 @@ This project is **guardrails-first**. Before changing anything architectural, re
 
 ## Install
 
+### Homebrew (macOS arm64, Linux arm64/amd64)
+
 ```sh
+brew tap vasovagal/vagus
+brew install vagus
+```
+
+### From source
+
+```sh
+cargo install --git https://github.com/vasovagal/vagus
+# …or, inside a clone:
 cargo install --path .
 ```
 
