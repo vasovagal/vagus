@@ -46,6 +46,19 @@ first **run** downloads the embedding model (~130 MB) to `~/Library/Caches/vagus
 binary** — `otool -L` shows only system dylibs, no `libonnxruntime.dylib` to ship (see
 [`design/tradeoffs.md`](./design/tradeoffs.md)).
 
+### Claude Code skills
+
+The `/create-note`, `/search`, and `/process-inbox` skills are **embedded in the binary** — install
+them into `~/.claude/skills/` with:
+
+```sh
+vagus skills install        # write the bundled skills (idempotent; safe to re-run)
+vagus skills list           # show the bundled skills + install status
+```
+
+`brew upgrade vagus && vagus skills install` keeps them current. Re-running is safe: it leaves
+identical files alone, backs up any you've hand-edited to `SKILL.md.bak`, and skips symlinks.
+
 ## Usage
 
 ```sh
@@ -58,6 +71,7 @@ vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # health check (symlink, model cache, dylib, dims, index)
 vagus status                # counts, model/dims, index size
+vagus skills install        # install the Claude Code skills into ~/.claude/skills
 ```
 
 The index/database live **outside** iCloud (`~/.local/share/vagus/`) and are fully rebuildable from

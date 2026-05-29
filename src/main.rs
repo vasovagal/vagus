@@ -11,7 +11,10 @@ mod index;
 mod lex;
 mod notes;
 mod search;
+mod skills;
 mod util;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -102,6 +105,26 @@ enum Command {
     Doctor,
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
+    /// Manage the bundled Claude Code skills (create-note / search / process-inbox).
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsAction {
+    /// Write the bundled skills into ~/.claude/skills (or $CLAUDE_CONFIG_DIR, or --dir).
+    Install {
+        /// Install into this directory instead of ~/.claude/skills.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Replace symlinks / divergent files without backing up.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the bundled skills and whether they're installed.
+    List,
 }
 
 fn main() -> Result<()> {
@@ -145,6 +168,10 @@ fn main() -> Result<()> {
         } => notes::file(&cfg, &path, to.as_deref(), suggest, json, thought_process)?,
         Command::Tutorial => cmd_tutorial(&cfg),
         Command::Doctor => cmd_doctor(&cfg)?,
+        Command::Skills { action } => match action {
+            SkillsAction::Install { dir, force } => skills::install(dir, force)?,
+            SkillsAction::List => skills::list()?,
+        },
     }
     Ok(())
 }
@@ -274,6 +301,8 @@ PARA — file by how ACTIONABLE it is (first match wins):
   40-Archive    done / inactive — archive, never delete
   00-Inbox      staging only — process it toward empty
 
-Notes are searchable the moment they're indexed, even before you file them."#
+Notes are searchable the moment they're indexed, even before you file them.
+
+Claude Code skills (/create-note · /search · /process-inbox):  vagus skills install"#
     );
 }

@@ -10,7 +10,17 @@ Three Claude Code skills that drive the `vagus` CLI. They shell out to `vagus`, 
 
 ## Install
 
-Symlink them into your user skills dir so edits here stay live:
+These files are **embedded in the `vagus` binary** (`include_str!`), so the supported install is:
+
+```sh
+vagus skills install        # writes them into ~/.claude/skills (idempotent; safe to re-run)
+vagus skills list           # bundled skills + install status
+```
+
+### Contributing to a skill
+
+Edit `skills/<name>/SKILL.md` here and rebuild — that updates the embedded copy. To live-test your
+edits without rebuilding/installing each time, symlink the source into your skills dir instead:
 
 ```sh
 mkdir -p ~/.claude/skills
@@ -19,6 +29,6 @@ for s in create-note search process-inbox; do
 done
 ```
 
-(Or copy the directories if you'd rather not symlink.) Frontmatter follows the current Claude Code
-skill conventions (`code.claude.com/docs/en/skills.md`): `description` drives auto-invocation, args are
-0-based (`$0`).
+(`vagus skills install` deliberately **skips symlinks**, so this dev setup and the installed copies
+don't fight.) Frontmatter follows the current Claude Code conventions
+(`code.claude.com/docs/en/skills.md`): `description` drives auto-invocation, args are 0-based (`$0`).
