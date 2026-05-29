@@ -12,6 +12,10 @@ use anyhow::{Context, Result};
 pub const EMBED_MODEL: &str = "BAAI/bge-small-en-v1.5";
 pub const EMBED_DIMS: usize = 384;
 
+/// Bump when the chunker changes shape. A mismatch in the `meta` table forces a one-time reindex so
+/// existing vaults self-heal on upgrade (v2 = stop indexing YAML frontmatter as note content).
+pub const CHUNK_VERSION: &str = "2";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Markdown vault (in iCloud), default `~/brain`. Override: `VAGUS_VAULT`.

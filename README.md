@@ -49,12 +49,13 @@ binary** — `otool -L` shows only system dylibs, no `libonnxruntime.dylib` to s
 ## Usage
 
 ```sh
+vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
-vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --json, --limit N)
-vagus add-note "<title>"    # create an inbox note and index it
+vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --json; auto-refreshes the index)
+vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
-vagus file <path> --to ...  # move a note into a PARA folder, enrich frontmatter, reindex
+vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # health check (symlink, model cache, dylib, dims, index)
 vagus status                # counts, model/dims, index size
 ```

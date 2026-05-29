@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::chunk::chunk_markdown;
-use crate::config::{Config, EMBED_DIMS, EMBED_MODEL};
+use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL};
 use crate::db::Db;
 use crate::embed::Embedder;
 use crate::lex::Lex;
@@ -70,6 +70,15 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     }
     cfg.ensure_dirs()?;
     let db = Db::open(&cfg.db_path())?;
+
+    // A chunker change reshapes every chunk; force a one-time rebuild so old indexes self-heal.
+    let mut reindex = reindex;
+    if !reindex {
+        reindex = match db.meta_get("chunk_version")? {
+            Some(v) => v != CHUNK_VERSION,
+            None => db.count("SELECT count(*) FROM chunks")? > 0, // pre-versioning index
+        };
+    }
     if reindex {
         db.clear_all()?;
         let _ = std::fs::remove_dir_all(cfg.tantivy_dir());
@@ -88,6 +97,7 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     db.meta_set("embed_model", EMBED_MODEL)?;
     db.meta_set("embed_dims", &dims)?;
     db.meta_set("tantivy_version", "0.26")?;
+    db.meta_set("chunk_version", CHUNK_VERSION)?;
 
     // Lazily loaded on the first changed file, so a no-op `index` never loads the model.
     let mut embedder: Option<Embedder> = None;

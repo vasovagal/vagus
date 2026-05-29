@@ -31,8 +31,33 @@ fn level_num(l: HeadingLevel) -> usize {
     }
 }
 
+/// Return the note body with a leading YAML frontmatter block (`---` … `---`) removed.
+fn strip_frontmatter(text: &str) -> String {
+    let mut lines = text.lines();
+    if lines.next() == Some("---") {
+        let mut body = Vec::new();
+        let mut closed = false;
+        for line in lines {
+            if !closed {
+                if line.trim_end() == "---" {
+                    closed = true;
+                }
+                continue;
+            }
+            body.push(line);
+        }
+        if closed {
+            return body.join("\n");
+        }
+    }
+    text.to_string()
+}
+
 /// Split `text` (the note at vault-relative `path`) into heading-aware chunks.
 pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
+    // Don't index YAML frontmatter (created/status/source/…) as note content.
+    let md = strip_frontmatter(text);
+
     // Heading breadcrumb stack of (level, text) for levels 1..=3.
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut sections: Vec<(String, String)> = Vec::new(); // (heading_path, body)
@@ -49,7 +74,7 @@ pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
             .join(" > ")
     };
 
-    for ev in Parser::new(text) {
+    for ev in Parser::new(&md) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
                 in_heading = Some(level_num(level));
@@ -130,5 +155,25 @@ mod tests {
             a.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
             b.iter().map(|c| c.id.clone()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn frontmatter_is_not_indexed() {
+        let md = "---\ncreated: 2026-05-29T18:02\nstatus: inbox\nsource: chat\n---\n\n# Title\n\nbody text\n";
+        let c = chunk_markdown("p.md", md);
+        let all: String = c
+            .iter()
+            .map(|c| format!("{} {}", c.heading_path, c.body))
+            .collect();
+        assert!(
+            !all.contains("status"),
+            "frontmatter leaked into chunks: {all}"
+        );
+        assert!(
+            !all.contains("created"),
+            "frontmatter leaked into chunks: {all}"
+        );
+        assert!(all.contains("Title"));
+        assert!(all.contains("body text"));
     }
 }

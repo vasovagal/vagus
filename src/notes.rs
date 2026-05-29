@@ -123,12 +123,15 @@ fn upsert(lines: &mut Vec<String>, key: &str, val: &str) {
 
 // --- add-note ---------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_note(
     cfg: &Config,
     title: &str,
     para: &str,
     source: Option<&str>,
     print_path: bool,
+    edit: bool,
+    no_edit: bool,
 ) -> Result<()> {
     let folder = para_folder(para)?;
     let dir = cfg.vault.join(folder);
@@ -139,8 +142,9 @@ pub fn add_note(
     let path = dir.join(&filename);
 
     // Body from stdin when piped (e.g. the create-note skill's heredoc).
+    let piped = !std::io::stdin().is_terminal();
     let mut body = String::new();
-    if !std::io::stdin().is_terminal() {
+    if piped {
         std::io::stdin().read_to_string(&mut body)?;
     }
 
@@ -155,14 +159,59 @@ pub fn add_note(
     let content = format!("{fm}# {title}\n\n{}\n", body.trim());
     fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
 
-    index::run(cfg, false)?; // pick up + embed the new note
+    // Open the editor: with --edit, or by default in an interactive session — so `vagus add-note X`
+    // drops you straight into the note. Suppressed by --print-path, a piped body, or --no-edit.
+    let interactive = !piped && std::io::stdout().is_terminal();
+    let mut opened = false;
+    if !print_path && !no_edit && (edit || interactive) {
+        match open_editor(&path) {
+            Ok(true) => opened = true,
+            Ok(false) => {
+                if edit {
+                    eprintln!("vagus: set $VISUAL or $EDITOR to use --edit");
+                }
+            }
+            Err(e) => eprintln!("vagus: {e:#}"),
+        }
+    }
+
+    index::run(cfg, false)?; // index after the edit, so new content is searchable
 
     if print_path {
         println!("{}", path.display());
+    } else if opened {
+        println!("saved {}", path.display());
     } else {
-        println!("created {}", vault_rel(cfg, &path));
+        println!("created {}", path.display());
     }
     Ok(())
+}
+
+/// Open `path` in `$VISUAL`/`$EDITOR` and wait for it to close. Returns `Ok(false)` if neither is set.
+fn open_editor(path: &Path) -> Result<bool> {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        });
+    let Some(editor) = editor else {
+        return Ok(false);
+    };
+    // Split so "zed --wait" / "code --wait" / "vim" all work; append the note path.
+    let mut parts = editor.split_whitespace();
+    let prog = parts.next().unwrap_or("vi");
+    let status = std::process::Command::new(prog)
+        .args(parts)
+        .arg(path)
+        .status()
+        .with_context(|| format!("launching editor `{editor}`"))?;
+    if !status.success() {
+        eprintln!("vagus: editor exited with {status}");
+    }
+    Ok(true)
 }
 
 // --- inbox ------------------------------------------------------------------
@@ -198,14 +247,22 @@ pub fn inbox(cfg: &Config, json: bool) -> Result<()> {
 
 // --- file (assisted filing) -------------------------------------------------
 
-pub fn file(cfg: &Config, path: &str, to: Option<&str>, suggest: bool, json: bool) -> Result<()> {
+pub fn file(
+    cfg: &Config,
+    path: &str,
+    to: Option<&str>,
+    suggest: bool,
+    json: bool,
+    thought_process: bool,
+) -> Result<()> {
     let src = resolve(cfg, path);
     if !src.exists() {
         bail!("note not found: {}", src.display());
     }
 
-    if suggest {
-        return suggest_dest(cfg, &src, json);
+    // --thought-process implies a suggestion (it explains how one is computed).
+    if suggest || thought_process {
+        return suggest_dest(cfg, &src, json, thought_process);
     }
 
     let to = to.ok_or_else(|| anyhow!("`--to <folder>` is required (or use `--suggest`)"))?;
@@ -242,44 +299,74 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
 
 /// Suggest PARA destinations: folders of similar existing notes (hybrid search) first, then the
 /// vault's existing PARA folders, with a bucket-list fallback so the answer is never empty.
-fn suggest_dest(cfg: &Config, src: &Path, json: bool) -> Result<()> {
+/// `explain` (--thought-process) prints the inputs: query text, search hits, and folder derivation.
+fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<()> {
     let self_rel = vault_rel(cfg, src);
+    let query_text = note_text(src);
+    let hits = search::query(cfg, &query_text, Mode::Hybrid, 12).unwrap_or_default();
 
-    fn add(ranked: &mut Vec<(String, f32)>, folder: String, score: f32) {
-        if !folder.is_empty()
-            && !folder.starts_with("00-Inbox")
-            && !ranked.iter().any(|(f, _)| f == &folder)
-        {
-            ranked.push((folder, score));
+    // Folders of similar notes (scored), then existing PARA folders not already covered (score 0).
+    let mut similar: Vec<(String, f32)> = Vec::new();
+    for h in &hits {
+        if h.path == self_rel {
+            continue;
+        }
+        let folder = parent_folder(&h.path);
+        if folder.is_empty() || folder.starts_with("00-Inbox") {
+            continue;
+        }
+        if !similar.iter().any(|(f, _)| f == &folder) {
+            similar.push((folder, h.score));
         }
     }
+    let existing = existing_para_folders(cfg);
+    let fallback: Vec<String> = existing
+        .iter()
+        .filter(|f| !similar.iter().any(|(s, _)| s == *f))
+        .cloned()
+        .collect();
 
-    let mut ranked: Vec<(String, f32)> = Vec::new();
-    // 1. folders of notes similar to this one
-    if let Ok(hits) = search::query(cfg, &note_text(src), Mode::Hybrid, 12) {
-        for h in hits {
-            if h.path != self_rel {
-                add(&mut ranked, parent_folder(&h.path), h.score);
-            }
+    if explain {
+        let trace = render_trace(&self_rel, &query_text, &hits, &similar, &existing);
+        // Keep stdout machine-clean under --json; otherwise show it inline.
+        if json {
+            eprint!("{trace}");
+        } else {
+            print!("{trace}");
         }
-    }
-    // 2. existing PARA folders already in the vault
-    for folder in existing_para_folders(cfg) {
-        add(&mut ranked, folder, 0.0);
     }
 
     if json {
-        let arr: Vec<_> = ranked
-            .iter()
-            .map(|(folder, score)| serde_json::json!({ "folder": folder, "score": score }))
-            .collect();
+        let mut arr: Vec<serde_json::Value> = Vec::new();
+        for (folder, score) in &similar {
+            arr.push(serde_json::json!({ "folder": folder, "score": score }));
+        }
+        for folder in &fallback {
+            arr.push(serde_json::json!({ "folder": folder, "score": 0.0 }));
+        }
         println!("{}", serde_json::to_string_pretty(&arr)?);
         return Ok(());
     }
 
     println!("Where should {self_rel} go?\n");
-    if ranked.is_empty() {
-        println!("Your PARA folders are empty — pick a bucket (a subfolder is created as needed):");
+    if !similar.is_empty() {
+        println!("Most similar to notes already in:");
+        for (folder, score) in &similar {
+            println!("  {folder}   (similar · {score:.2})");
+        }
+        if !fallback.is_empty() {
+            println!("\nOther PARA folders:");
+            for folder in &fallback {
+                println!("  {folder}");
+            }
+        }
+    } else if !fallback.is_empty() {
+        println!("No similar notes yet — pick a PARA folder:");
+        for folder in &fallback {
+            println!("  {folder}");
+        }
+    } else {
+        println!("No PARA folders yet — pick a bucket (a subfolder is created as needed):");
         for b in [
             "10-Projects/<project>",
             "20-Areas/<area>",
@@ -288,19 +375,89 @@ fn suggest_dest(cfg: &Config, src: &Path, json: bool) -> Result<()> {
         ] {
             println!("  {b}");
         }
-    } else {
-        println!("Suggestions (similar notes first):");
-        for (folder, score) in &ranked {
-            if *score > 0.0 {
-                println!("  {folder}   (similar · {score:.2})");
-            } else {
-                println!("  {folder}");
-            }
-        }
     }
     println!("\nFile it:");
     println!("  vagus file \"{self_rel}\" --to \"<one of the above>\"");
     Ok(())
+}
+
+/// Human-readable "thought process" for `--thought-process`: the query text, the hybrid-search hits,
+/// and how those became folder suggestions.
+fn render_trace(
+    self_rel: &str,
+    query_text: &str,
+    hits: &[search::Hit],
+    similar: &[(String, f32)],
+    existing: &[String],
+) -> String {
+    use std::fmt::Write as _;
+    let mut t = String::new();
+    let _ = writeln!(t, "── thought process ──");
+
+    let preview: String = query_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if preview.trim().is_empty() {
+        let _ = writeln!(
+            t,
+            "query (note body): (empty — nothing to compare on; add some text)"
+        );
+    } else {
+        let shown: String = preview.chars().take(160).collect();
+        let more = if preview.chars().count() > 160 {
+            "…"
+        } else {
+            ""
+        };
+        let _ = writeln!(t, "query (note body): \"{shown}{more}\"");
+    }
+
+    if hits.is_empty() {
+        let _ = writeln!(
+            t,
+            "hybrid search hits: none (nothing else is indexed to compare against)"
+        );
+    } else {
+        let _ = writeln!(t, "hybrid search hits:");
+        for h in hits {
+            let loc = if h.heading.is_empty() {
+                h.path.clone()
+            } else {
+                format!("{} › {}", h.path, h.heading)
+            };
+            let note = if h.path == self_rel {
+                "  ← self (skipped)"
+            } else if h.path.starts_with("00-Inbox") {
+                "  ← inbox (skipped)"
+            } else {
+                ""
+            };
+            let _ = writeln!(t, "  {:.3}  {loc}{note}", h.score);
+        }
+    }
+
+    let sim = if similar.is_empty() {
+        "none".to_string()
+    } else {
+        similar
+            .iter()
+            .map(|(f, s)| format!("{f} ({s:.2})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let _ = writeln!(t, "→ folders from similar notes: {sim}");
+    let ex = if existing.is_empty() {
+        "none".to_string()
+    } else {
+        existing.join(", ")
+    };
+    let _ = writeln!(t, "→ existing PARA folders in vault: {ex}");
+    if similar.is_empty() {
+        let _ = writeln!(
+            t,
+            "  (no similar filed notes → suggesting your PARA folders / buckets)"
+        );
+    }
+    let _ = writeln!(t, "─────────────────────\n");
+    t
 }
 
 fn parent_folder(rel: &str) -> String {

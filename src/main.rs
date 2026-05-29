@@ -67,6 +67,12 @@ enum Command {
         /// Print only the created file's absolute path (for the skill to consume).
         #[arg(long)]
         print_path: bool,
+        /// Open the new note in $VISUAL/$EDITOR, then re-index it.
+        #[arg(long, short = 'e')]
+        edit: bool,
+        /// Never open an editor (even when run interactively).
+        #[arg(long)]
+        no_edit: bool,
     },
     /// List notes currently in `00-Inbox/`.
     Inbox {
@@ -86,6 +92,9 @@ enum Command {
         /// With --suggest, emit JSON (for the /process-inbox skill).
         #[arg(long)]
         json: bool,
+        /// Show how a suggestion is computed (query text, search hits, folder derivation).
+        #[arg(long)]
+        thought_process: bool,
     },
     /// Print a short guide to capturing, searching, and filing notes with PARA.
     Tutorial,
@@ -115,14 +124,25 @@ fn main() -> Result<()> {
             para,
             source,
             print_path,
-        } => notes::add_note(&cfg, &title, &para, source.as_deref(), print_path)?,
+            edit,
+            no_edit,
+        } => notes::add_note(
+            &cfg,
+            &title,
+            &para,
+            source.as_deref(),
+            print_path,
+            edit,
+            no_edit,
+        )?,
         Command::Inbox { json } => notes::inbox(&cfg, json)?,
         Command::File {
             path,
             to,
             suggest,
             json,
-        } => notes::file(&cfg, &path, to.as_deref(), suggest, json)?,
+            thought_process,
+        } => notes::file(&cfg, &path, to.as_deref(), suggest, json, thought_process)?,
         Command::Tutorial => cmd_tutorial(&cfg),
         Command::Doctor => cmd_doctor(&cfg)?,
     }
@@ -234,7 +254,7 @@ fn cmd_tutorial(cfg: &Config) {
 
 CAPTURE — zero ceremony:
   vim ~/brain/00-Inbox/my-idea.md     just write Markdown; no frontmatter needed
-  vagus add-note "My idea"            …or let vagus create + index a note for you
+  vagus add-note "My idea"            create the note + open it in $EDITOR, then index
   vagus index                         index anything you dropped in by hand
 
 FIND:
@@ -243,7 +263,7 @@ FIND:
 
 FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox
-  vagus file 00-Inbox/<note>.md --suggest             where might it go?
+  vagus file 00-Inbox/<note>.md --suggest             where might it go? (--thought-process = why)
   vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
   (in Claude Code:  /process-inbox    proposes a home for each note)
 
