@@ -37,15 +37,20 @@ holds the comparison tables.
 **Chosen:** fastembed (bge-small) by default ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md));
 `model2vec` is the documented dylib-free escape hatch.
 
-## D. The ONNX "single binary" reality (verified)
+## D. The ONNX "single binary" reality (verified on this build)
 
-- `ort` default `download-binaries` fetches a prebuilt ONNX Runtime at **build** time → the artifact is
-  **your binary + `libonnxruntime.dylib`**, resolved at runtime via rpath. A personal `cargo install`
-  "just works," but moving the binary alone (without the dylib) breaks it.
-- macOS **cannot** produce a 100% static binary (Apple system dylibs always dynamic; QA1118).
-- A dylib-free build means building ONNX Runtime from source as `.a` + `ORT_LIB_PATH` (a CMake build) —
-  **not worth it** for a personal tool. Use the `model2vec`/`candle` pure-Rust path instead if the
-  dylib is unacceptable.
+- **Verified (ort 2.0.0-rc.12, darwin-arm64):** `download-binaries` fetches a **static**
+  `libonnxruntime.a` (cached under `~/Library/Caches/ort.pyke.io/…`) and **statically links** it. The
+  installed `vagus` references only system dylibs (`otool -L`: libc++, Foundation, Security,
+  CoreFoundation, CoreML, libSystem, …) and bundles ~34k onnxruntime symbols — i.e. **self-contained**,
+  no `libonnxruntime.dylib` to ship.
+- The earlier secondary-source assumption of "binary + dylib via rpath" did **not** hold here — the
+  prebuilt is a static archive on this platform/version. (macOS still can't be 100% static — system
+  dylibs are always dynamic, QA1118 — but that's normal.)
+- Links the system **CoreML.framework** (present on every Mac) for the optional CoreML EP; the CPU EP
+  is the default and is sufficient for bge-small.
+- Pure-Rust `model2vec`/`candle` remain options to drop onnxruntime entirely, but aren't needed for a
+  self-contained binary here.
 - `ort`/`ort-sys` are version-locked at `=2.0.0-rc.12` by `fastembed` — don't bump independently.
 
 ## E. Vector store

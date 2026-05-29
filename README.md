@@ -24,11 +24,11 @@ This project is **guardrails-first**. Before changing anything architectural, re
 cargo install --path .
 ```
 
-First **build** downloads a prebuilt ONNX Runtime; first **run** downloads the embedding model
-(~130 MB) to `~/Library/Caches/vagus/models`. The installed artifact is **one binary + a
-`libonnxruntime.dylib`** resolved via rpath — *not* a single static file (see
-[`design/tradeoffs.md`](./design/tradeoffs.md)). A dylib-free build is possible via the `model2vec`
-embedding backend at some quality cost.
+First **build** downloads a prebuilt ONNX Runtime (a static `libonnxruntime.a`) and links it in;
+first **run** downloads the embedding model (~130 MB) to `~/Library/Caches/vagus/models`.
+**Verified:** with `ort` 2.0.0-rc.12 on Apple Silicon the installed artifact is a **self-contained
+binary** — `otool -L` shows only system dylibs, no `libonnxruntime.dylib` to ship (see
+[`design/tradeoffs.md`](./design/tradeoffs.md)).
 
 ## Usage
 

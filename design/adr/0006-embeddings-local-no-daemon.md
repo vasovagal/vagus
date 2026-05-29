@@ -26,7 +26,8 @@ no daemon, good quality at personal scale. The backend stays swappable.
 
 - First **run** downloads the model (~130 MB) to `~/Library/Caches/vagus/models`. **Set the cache dir
   explicitly** — fastembed defaults to `./.fastembed_cache` in the CWD ([guardrail G10](../guardrails.md)).
-- The default build is **binary + `libonnxruntime.dylib`** (see [tradeoffs §D](../tradeoffs.md)).
+- **Verified:** the default build **statically links** onnxruntime (`libonnxruntime.a`); the installed
+  binary references only system dylibs — effectively **self-contained** (see [tradeoffs §D](../tradeoffs.md)).
 - **Escape hatch:** `model2vec` (dylib-free single binary, lower quality — lean on BM25) or `candle`
   (same bge quality, no ONNX). Switch via the embedding-backend seam if the dylib ever bites.
 - `ort` is version-locked by fastembed (`=2.0.0-rc.12`) — don't bump it independently.

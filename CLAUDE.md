@@ -37,9 +37,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
 9. **Local-first, offline by default.** No cloud calls and no background daemon in the default path.
 10. **PARA layout is fixed** (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`).
     Filing inbox → PARA is **assisted and user-approved, never automatic.**
-11. **Stay Obsidian-compatible** (plain `.md`, optional `[[wikilinks]]`/frontmatter). Do **not** claim
-    a "single static binary" — the default ONNX build is *binary + `libonnxruntime.dylib`* (use the
-    `model2vec` backend for a truly dylib-free build, at a quality cost).
+11. **Stay Obsidian-compatible** (plain `.md`, optional `[[wikilinks]]`/frontmatter). Artifact note
+    (verified): `ort` statically links onnxruntime, so the installed binary is self-contained (system
+    dylibs only). Re-verify with `otool -L` if `ort`/platform changes; `model2vec` is the
+    onnxruntime-free fallback.
 
 ## Layout
 

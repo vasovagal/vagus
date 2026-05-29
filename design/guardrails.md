@@ -44,8 +44,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   dependencies** ([ADR 0007](./adr/0007-lean-on-frankensearch.md)). Don't add a heavyweight
   search-engine dependency without an ADR; if you ever do, pin/vendor it.
 - **G12 — Don't bump `ort` independently.** It's version-locked by fastembed (`=2.0.0-rc.12`).
-- **G13 — Honest artifact.** Default ONNX build = binary + `libonnxruntime.dylib` (rpath), not one
-  file. Don't claim "single static binary"; the dylib-free path is the `model2vec` backend.
+- **G13 — Honest artifact (verified).** `ort` 2.0.0-rc.12 statically links `libonnxruntime.a`, so the
+  installed binary is self-contained (system dylibs only; no `libonnxruntime.dylib`). If a future
+  `ort`/platform ships a *shared* onnxruntime instead, the artifact becomes binary+dylib — re-verify
+  with `otool -L` and update this note. `model2vec` is the onnxruntime-free fallback.
 
 ## Product
 
