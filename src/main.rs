@@ -3,12 +3,17 @@
 //! See `design/` and `CLAUDE.md` for the hard invariants. In particular: only Markdown lives in the
 //! iCloud vault; the index/DB/model-cache are a rebuildable cache outside iCloud.
 
+mod chunk;
 mod config;
+mod db;
+mod index;
+mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use config::Config;
+use db::Db;
 
 #[derive(Parser)]
 #[command(
@@ -93,8 +98,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Status => cmd_status(&cfg)?,
-        Command::Index => todo("index"),
-        Command::Reindex => todo("reindex"),
+        Command::Index => cmd_index(&cfg, false)?,
+        Command::Reindex => cmd_index(&cfg, true)?,
         Command::Search { .. } => todo("search"),
         Command::AddNote { .. } => todo("add-note"),
         Command::Inbox { .. } => todo("inbox"),
@@ -109,13 +114,34 @@ fn todo(what: &str) {
     std::process::exit(2);
 }
 
+fn cmd_index(cfg: &Config, reindex: bool) -> Result<()> {
+    let stats = index::run(cfg, reindex)?;
+    println!(
+        "{}: {} new, {} changed, {} unchanged, {} removed",
+        if reindex { "reindex" } else { "index" },
+        stats.new,
+        stats.changed,
+        stats.unchanged,
+        stats.removed
+    );
+    Ok(())
+}
+
 fn cmd_status(cfg: &Config) -> Result<()> {
+    let db = Db::open(&cfg.db_path())?;
+    let files = db.count("SELECT count(*) FROM files")?;
+    let chunks = db.count("SELECT count(*) FROM chunks")?;
+    let embedded = db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")?;
+    let vault_ok = if cfg.vault.exists() { "ok" } else { "MISSING" };
+
     println!("vagus");
-    println!("  vault       : {}", cfg.vault.display());
+    println!("  vault       : {} [{}]", cfg.vault.display(), vault_ok);
     println!("  data dir    : {}", cfg.data_dir.display());
     println!("  model cache : {}", cfg.cache_dir.display());
     println!("  db          : {}", cfg.db_path().display());
     println!("  tantivy     : {}", cfg.tantivy_dir().display());
     println!("  embed model : {} ({} dims)", config::EMBED_MODEL, config::EMBED_DIMS);
+    println!("  files       : {files}");
+    println!("  chunks      : {chunks} ({embedded} embedded)");
     Ok(())
 }
