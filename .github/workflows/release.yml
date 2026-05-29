@@ -19,15 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
-      has_tap_token: ${{ steps.t.outputs.has }}
     steps:
       - id: v
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT" # Law 7: version lives in the tag
-      - id: t
-        env:
-          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [ -n "$TAP" ]; then echo "has=true" >> "$GITHUB_OUTPUT"; else echo "has=false" >> "$GITHUB_OUTPUT"; fi
 
   create-release:
     needs: check
@@ -80,29 +74,23 @@ jobs:
 
   update-formula:
     needs: [check, build]
-    if: needs.check.outputs.has_tap_token == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout vagus (for the render script)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Checkout tap
+      - name: Checkout main (the formula lives in this repo; the tap tracks the default branch)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: vasovagal/homebrew-vagus
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: tap
-      - name: Render Formula/vagus.rb from the published assets
+          ref: main
+      - name: Regenerate Formula/vagus.rb from the published assets
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          mkdir -p tap/Formula
-          VERSION="$VERSION" ./scripts/render-formula.sh > tap/Formula/vagus.rb
-          cat tap/Formula/vagus.rb
-      - name: Commit + push (idempotent)
+          VERSION="$VERSION" ./scripts/render-formula.sh > Formula/vagus.rb
+          cat Formula/vagus.rb
+      - name: Commit + push the bump (idempotent; [skip ci] avoids a rebuild loop)
         run: |
-          cd tap
-          git config user.name "vagus-release[bot]"
-          git config user.email "vagus-release@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- Formula/vagus.rb; then echo "formula unchanged"; exit 0; fi
           git add Formula/vagus.rb
-          git commit -m "vagus ${{ needs.check.outputs.version }}" || { echo "no formula change"; exit 0; }
-          git push
+          git commit -m "vagus ${{ needs.check.outputs.version }} [skip ci]"
+          git push origin HEAD:main

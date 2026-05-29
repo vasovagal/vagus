@@ -25,9 +25,12 @@ This project is **guardrails-first**. Before changing anything architectural, re
 ### Homebrew (macOS arm64, Linux arm64/amd64)
 
 ```sh
-brew tap vasovagal/vagus
+brew tap vasovagal/vagus https://github.com/vasovagal/vagus.git
 brew install vagus
 ```
+
+(The formula lives in this repo at `Formula/vagus.rb`, so the tap points straight at it — no separate
+`homebrew-*` repo and no token.)
 
 ### From source
 

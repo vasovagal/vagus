@@ -50,6 +50,9 @@ enum Command {
         /// Max results.
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Skip the automatic incremental index refresh before searching.
+        #[arg(long)]
+        no_index: bool,
     },
     /// Create a new note in `00-Inbox/` and index it.
     AddNote {
@@ -77,10 +80,15 @@ enum Command {
         /// Destination PARA folder, e.g. `10-Projects/Website v2`.
         #[arg(long)]
         to: Option<String>,
-        /// Instead of moving, print ranked destination suggestions as JSON.
+        /// Instead of moving, suggest destinations.
         #[arg(long)]
         suggest: bool,
+        /// With --suggest, emit JSON (for the /process-inbox skill).
+        #[arg(long)]
+        json: bool,
     },
+    /// Print a short guide to capturing, searching, and filing notes with PARA.
+    Tutorial,
     /// Health check: vault symlink, model cache, dylib, dims, index openable.
     Doctor,
     /// Show index stats: counts, model/dims, paths, sizes.
@@ -100,7 +108,8 @@ fn main() -> Result<()> {
             mode,
             json,
             limit,
-        } => search::run(&cfg, &query, mode, json, limit)?,
+            no_index,
+        } => search::run(&cfg, &query, mode, json, limit, no_index)?,
         Command::AddNote {
             title,
             para,
@@ -108,7 +117,13 @@ fn main() -> Result<()> {
             print_path,
         } => notes::add_note(&cfg, &title, &para, source.as_deref(), print_path)?,
         Command::Inbox { json } => notes::inbox(&cfg, json)?,
-        Command::File { path, to, suggest } => notes::file(&cfg, &path, to.as_deref(), suggest)?,
+        Command::File {
+            path,
+            to,
+            suggest,
+            json,
+        } => notes::file(&cfg, &path, to.as_deref(), suggest, json)?,
+        Command::Tutorial => cmd_tutorial(&cfg),
         Command::Doctor => cmd_doctor(&cfg)?,
     }
     Ok(())
@@ -207,5 +222,38 @@ fn cmd_status(cfg: &Config) -> Result<()> {
     );
     println!("  files       : {files}");
     println!("  chunks      : {chunks} ({embedded} embedded)");
+    println!();
+    println!("New here? `vagus tutorial` walks through capture → search → file.");
     Ok(())
+}
+
+fn cmd_tutorial(cfg: &Config) {
+    let vault = cfg.vault.display();
+    println!(
+        r#"vagus — your PARA second brain   (vault: {vault})
+
+CAPTURE — zero ceremony:
+  vim ~/brain/00-Inbox/my-idea.md     just write Markdown; no frontmatter needed
+  vagus add-note "My idea"            …or let vagus create + index a note for you
+  vagus index                         index anything you dropped in by hand
+
+FIND:
+  vagus search "that thing about X"   hybrid: keywords + meaning
+  vagus search "..." --mode bm25      keyword-only   (--mode vec = semantic-only)
+
+FILE into PARA — the periodic "organize" pass:
+  vagus inbox                         see what's waiting in 00-Inbox
+  vagus file 00-Inbox/<note>.md --suggest             where might it go?
+  vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
+  (in Claude Code:  /process-inbox    proposes a home for each note)
+
+PARA — file by how ACTIONABLE it is (first match wins):
+  10-Projects   a goal with an end + deadline       ("Launch v2")
+  20-Areas      an ongoing responsibility/standard  ("Health", "Finances")
+  30-Resources  a topic of interest, no obligation  ("Coffee", "Rust")
+  40-Archive    done / inactive — archive, never delete
+  00-Inbox      staging only — process it toward empty
+
+Notes are searchable the moment they're indexed, even before you file them."#
+    );
 }

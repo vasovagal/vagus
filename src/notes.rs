@@ -198,14 +198,14 @@ pub fn inbox(cfg: &Config, json: bool) -> Result<()> {
 
 // --- file (assisted filing) -------------------------------------------------
 
-pub fn file(cfg: &Config, path: &str, to: Option<&str>, suggest: bool) -> Result<()> {
+pub fn file(cfg: &Config, path: &str, to: Option<&str>, suggest: bool, json: bool) -> Result<()> {
     let src = resolve(cfg, path);
     if !src.exists() {
         bail!("note not found: {}", src.display());
     }
 
     if suggest {
-        return suggest_dest(cfg, &src);
+        return suggest_dest(cfg, &src, json);
     }
 
     let to = to.ok_or_else(|| anyhow!("`--to <folder>` is required (or use `--suggest`)"))?;
@@ -240,33 +240,99 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
     Ok(())
 }
 
-/// Suggest PARA destinations by hybrid-searching existing notes for ones similar to this one.
-fn suggest_dest(cfg: &Config, src: &Path) -> Result<()> {
+/// Suggest PARA destinations: folders of similar existing notes (hybrid search) first, then the
+/// vault's existing PARA folders, with a bucket-list fallback so the answer is never empty.
+fn suggest_dest(cfg: &Config, src: &Path, json: bool) -> Result<()> {
     let self_rel = vault_rel(cfg, src);
-    let text = note_text(src);
-    let hits = search::query(cfg, &text, Mode::Hybrid, 12)?;
 
-    let mut seen: Vec<(String, f32)> = Vec::new();
-    for h in hits {
-        if h.path == self_rel {
-            continue;
-        }
-        let folder = Path::new(&h.path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if folder.is_empty() || folder.starts_with("00-Inbox") {
-            continue;
-        }
-        if !seen.iter().any(|(f, _)| f == &folder) {
-            seen.push((folder, h.score));
+    fn add(ranked: &mut Vec<(String, f32)>, folder: String, score: f32) {
+        if !folder.is_empty()
+            && !folder.starts_with("00-Inbox")
+            && !ranked.iter().any(|(f, _)| f == &folder)
+        {
+            ranked.push((folder, score));
         }
     }
 
-    let arr: Vec<_> = seen
-        .iter()
-        .map(|(folder, score)| serde_json::json!({ "folder": folder, "score": score }))
-        .collect();
-    println!("{}", serde_json::to_string_pretty(&arr)?);
+    let mut ranked: Vec<(String, f32)> = Vec::new();
+    // 1. folders of notes similar to this one
+    if let Ok(hits) = search::query(cfg, &note_text(src), Mode::Hybrid, 12) {
+        for h in hits {
+            if h.path != self_rel {
+                add(&mut ranked, parent_folder(&h.path), h.score);
+            }
+        }
+    }
+    // 2. existing PARA folders already in the vault
+    for folder in existing_para_folders(cfg) {
+        add(&mut ranked, folder, 0.0);
+    }
+
+    if json {
+        let arr: Vec<_> = ranked
+            .iter()
+            .map(|(folder, score)| serde_json::json!({ "folder": folder, "score": score }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr)?);
+        return Ok(());
+    }
+
+    println!("Where should {self_rel} go?\n");
+    if ranked.is_empty() {
+        println!("Your PARA folders are empty — pick a bucket (a subfolder is created as needed):");
+        for b in [
+            "10-Projects/<project>",
+            "20-Areas/<area>",
+            "30-Resources/<topic>",
+            "40-Archive",
+        ] {
+            println!("  {b}");
+        }
+    } else {
+        println!("Suggestions (similar notes first):");
+        for (folder, score) in &ranked {
+            if *score > 0.0 {
+                println!("  {folder}   (similar · {score:.2})");
+            } else {
+                println!("  {folder}");
+            }
+        }
+    }
+    println!("\nFile it:");
+    println!("  vagus file \"{self_rel}\" --to \"<one of the above>\"");
     Ok(())
+}
+
+fn parent_folder(rel: &str) -> String {
+    Path::new(rel)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Existing PARA destinations in the vault: each bucket's immediate subfolders, or the bucket root
+/// itself when it has none yet.
+fn existing_para_folders(cfg: &Config) -> Vec<String> {
+    let mut out = Vec::new();
+    for bucket in ["10-Projects", "20-Areas", "30-Resources", "40-Archive"] {
+        let dir = cfg.vault.join(bucket);
+        if !dir.exists() {
+            continue;
+        }
+        let mut subs: Vec<String> = Vec::new();
+        if let Ok(rd) = fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if e.path().is_dir() {
+                    subs.push(format!("{bucket}/{}", e.file_name().to_string_lossy()));
+                }
+            }
+        }
+        subs.sort();
+        if subs.is_empty() {
+            out.push(bucket.to_string());
+        } else {
+            out.extend(subs);
+        }
+    }
+    out
 }

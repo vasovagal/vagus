@@ -16,8 +16,8 @@ When invoked:
 1. List the inbox: `vagus inbox --json` (each item is `{path, title}`).
 2. For each inbox note, in turn:
    1. Read it with the Read tool at `~/brain/<path>` to understand it.
-   2. Get destination ideas: `vagus file "<path>" --suggest` — returns ranked PARA folders of similar
-      existing notes (JSON `[{folder, score}]`).
+   2. Get destination ideas: `vagus file "<path>" --suggest --json` — returns ranked PARA folders
+      (similar existing notes first, then the vault's PARA folders) as JSON `[{folder, score}]`.
    3. Propose a destination: pick from the suggestions or propose a sensible PARA folder
       (`10-Projects/<name>`, `20-Areas/<name>`, `30-Resources/<topic>`, or `40-Archive/<name>`), plus a
       cleaned-up title if helpful.

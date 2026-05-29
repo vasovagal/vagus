@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::db::Db;
 use crate::embed::Embedder;
+use crate::index;
 use crate::lex::Lex;
 
 /// RRF constant (guardrail G8).
@@ -125,7 +126,20 @@ pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize) -> Result<Vec<Hit>
     hydrate(&db, &ranked)
 }
 
-pub fn run(cfg: &Config, q: &str, mode: Mode, json: bool, limit: usize) -> Result<()> {
+pub fn run(
+    cfg: &Config,
+    q: &str,
+    mode: Mode,
+    json: bool,
+    limit: usize,
+    no_index: bool,
+) -> Result<()> {
+    // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
+    // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
+    // actually changed). `--no-index` skips it.
+    if !no_index && let Err(e) = index::run(cfg, false) {
+        eprintln!("vagus: index refresh skipped ({e})");
+    }
     let hits = query(cfg, q, mode, limit)?;
     emit(&hits, json);
     Ok(())
