@@ -65,6 +65,12 @@ vagus doctor             # verify symlink, model cache, dylib, dims, index healt
 vagus status
 ```
 
+## Releasing
+
+Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeline follows the laws in
+`xrl/agents` `LAWS.md`: split-by-event (`ci.yml` on PR/main, `release.yml` on tags — no test re-run),
+native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
+
 ## Conventions
 
 - Match the surrounding Rust style; keep modules small and single-purpose (`index`, `chunk`, `embed`,
