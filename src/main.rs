@@ -6,6 +6,7 @@
 mod chunk;
 mod config;
 mod db;
+mod embed;
 mod index;
 mod lex;
 mod search;

@@ -93,7 +93,7 @@ impl Lex {
                     .chars()
                     .map(|c| if c.is_alphanumeric() { c } else { ' ' })
                     .collect();
-                let mut or_parser = QueryParser::for_index(&self.index, vec![self.body, self.heading]);
+                let or_parser = QueryParser::for_index(&self.index, vec![self.body, self.heading]);
                 match or_parser.parse_query(safe.trim()) {
                     Ok(q) => q,
                     Err(_) => return Ok(vec![]),

@@ -13,8 +13,9 @@ use anyhow::{bail, Context, Result};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::chunk::chunk_markdown;
-use crate::config::Config;
+use crate::config::{Config, EMBED_DIMS, EMBED_MODEL};
 use crate::db::Db;
+use crate::embed::Embedder;
 use crate::lex::Lex;
 use crate::util::{now_unix, sha256_hex};
 
@@ -70,6 +71,22 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     let lex = Lex::open(&cfg.tantivy_dir())?;
     let mut writer = lex.writer()?;
 
+    // Guardrail G4: pin / validate the embedding identity.
+    let dims = EMBED_DIMS.to_string();
+    if !reindex {
+        if let (Some(m), Some(d)) = (db.meta_get("embed_model")?, db.meta_get("embed_dims")?) {
+            if m != EMBED_MODEL || d != dims {
+                bail!("embedding identity changed ({m} {d} -> {EMBED_MODEL} {dims}); run `vagus reindex`");
+            }
+        }
+    }
+    db.meta_set("embed_model", EMBED_MODEL)?;
+    db.meta_set("embed_dims", &dims)?;
+    db.meta_set("tantivy_version", "0.26")?;
+
+    // Lazily loaded on the first changed file, so a no-op `index` never loads the model.
+    let mut embedder: Option<Embedder> = None;
+
     let existing = db.existing_files()?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut stats = IndexStats::default();
@@ -108,6 +125,17 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         let chunks = chunk_markdown(&rel, &text);
         db.replace_chunks(&rel, &chunks)?;
         lex.replace_file(&writer, &rel, &chunks)?;
+        if !chunks.is_empty() {
+            if embedder.is_none() {
+                embedder = Some(Embedder::new(&cfg.cache_dir)?);
+            }
+            let emb = embedder.as_mut().unwrap();
+            let bodies: Vec<String> = chunks.iter().map(|c| c.body.clone()).collect();
+            let vecs = emb.embed_documents(bodies)?;
+            for (c, v) in chunks.iter().zip(vecs) {
+                db.set_embedding(&c.id, &v)?;
+            }
+        }
         if prior.is_some() {
             stats.changed += 1;
         } else {
