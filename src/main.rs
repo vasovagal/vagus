@@ -9,6 +9,7 @@ mod db;
 mod embed;
 mod index;
 mod lex;
+mod notes;
 mod search;
 mod util;
 
@@ -97,17 +98,60 @@ fn main() -> Result<()> {
         Command::Search { query, mode, json, limit } => {
             search::run(&cfg, &query, mode, json, limit)?
         }
-        Command::AddNote { .. } => todo("add-note"),
-        Command::Inbox { .. } => todo("inbox"),
-        Command::File { .. } => todo("file"),
-        Command::Doctor => todo("doctor"),
+        Command::AddNote { title, para, source, print_path } => {
+            notes::add_note(&cfg, &title, &para, source.as_deref(), print_path)?
+        }
+        Command::Inbox { json } => notes::inbox(&cfg, json)?,
+        Command::File { path, to, suggest } => {
+            notes::file(&cfg, &path, to.as_deref(), suggest)?
+        }
+        Command::Doctor => cmd_doctor(&cfg)?,
     }
     Ok(())
 }
 
-fn todo(what: &str) {
-    eprintln!("vagus: `{what}` is not implemented yet");
-    std::process::exit(2);
+fn cmd_doctor(cfg: &Config) -> Result<()> {
+    fn line(label: &str, ok: bool, detail: &str) {
+        println!("  [{}] {label}: {detail}", if ok { "ok" } else { "!!" });
+    }
+    println!("vagus doctor");
+    line("vault", cfg.vault.exists(), &cfg.vault.display().to_string());
+    line("data dir", cfg.data_dir.exists(), &cfg.data_dir.display().to_string());
+
+    let db = Db::open(&cfg.db_path())?;
+    let model = db.meta_get("embed_model")?.unwrap_or_else(|| "(unset)".into());
+    let dims = db.meta_get("embed_dims")?.unwrap_or_else(|| "(unset)".into());
+    let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
+    line("embed identity", id_ok, &format!("{model} / {dims}"));
+
+    line(
+        "tantivy index",
+        lex::Lex::open(&cfg.tantivy_dir()).is_ok(),
+        &cfg.tantivy_dir().display().to_string(),
+    );
+    line(
+        "onnx + model",
+        embed::Embedder::new(&cfg.cache_dir).is_ok(),
+        &cfg.cache_dir.display().to_string(),
+    );
+
+    let files = db.count("SELECT count(*) FROM files")?;
+    let chunks = db.count("SELECT count(*) FROM chunks")?;
+    let embedded = db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")?;
+    line(
+        "index counts",
+        embedded == chunks,
+        &format!("{files} files, {chunks} chunks, {embedded} embedded"),
+    );
+
+    // Guardrail G1: the index must not live inside the iCloud vault.
+    let inside = cfg.data_dir.starts_with(&cfg.vault);
+    line(
+        "index outside vault",
+        !inside,
+        if inside { "INDEX IS INSIDE THE VAULT (G1 violation)" } else { "ok" },
+    );
+    Ok(())
 }
 
 fn cmd_index(cfg: &Config, reindex: bool) -> Result<()> {

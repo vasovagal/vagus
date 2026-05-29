@@ -97,31 +97,36 @@ fn hydrate(db: &Db, ranked: &[(String, f32)]) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
-pub fn run(cfg: &Config, query: &str, mode: Mode, json: bool, limit: usize) -> Result<()> {
+/// Reusable: returns ranked hits (used by `run` and by filing `--suggest`).
+pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize) -> Result<Vec<Hit>> {
     let db = Db::open(&cfg.db_path())?;
     let ranked: Vec<(String, f32)> = match mode {
         Mode::Bm25 => {
             let lex = Lex::open(&cfg.tantivy_dir())?;
-            lex.search(query, limit)?
+            lex.search(q, limit)?
                 .into_iter()
                 .enumerate()
                 .map(|(i, id)| (id, 1.0 / (i as f32 + 1.0)))
                 .collect()
         }
-        Mode::Vec => vec_search(cfg, &db, query, limit)?,
+        Mode::Vec => vec_search(cfg, &db, q, limit)?,
         Mode::Hybrid => {
             // Pull a deeper candidate set from each retriever, then fuse.
             let cand = (limit * 3).max(30);
             let lex = Lex::open(&cfg.tantivy_dir())?;
-            let bm: Vec<String> = lex.search(query, cand)?;
-            let ve: Vec<String> = vec_search(cfg, &db, query, cand)?
+            let bm: Vec<String> = lex.search(q, cand)?;
+            let ve: Vec<String> = vec_search(cfg, &db, q, cand)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
             rrf(&[bm, ve], limit)
         }
     };
-    let hits = hydrate(&db, &ranked)?;
+    hydrate(&db, &ranked)
+}
+
+pub fn run(cfg: &Config, q: &str, mode: Mode, json: bool, limit: usize) -> Result<()> {
+    let hits = query(cfg, q, mode, limit)?;
     emit(&hits, json);
     Ok(())
 }
