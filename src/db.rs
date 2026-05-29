@@ -149,6 +149,26 @@ impl Db {
         Ok(old)
     }
 
+    /// All embedded chunks as (chunk_id, vector). Loaded into RAM for brute-force cosine.
+    pub fn all_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, bytes) = row?;
+            let v: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            out.push((id, v));
+        }
+        Ok(out)
+    }
+
     pub fn set_embedding(&self, chunk_id: &str, vec: &[f32]) -> Result<()> {
         let bytes: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
         self.conn.execute(
