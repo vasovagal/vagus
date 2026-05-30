@@ -83,8 +83,8 @@ impl Lex {
         Ok(())
     }
 
-    /// BM25 search over body + heading. Returns chunk ids in rank order (best first).
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<String>> {
+    /// BM25 search over body + heading. Returns (chunk_id, bm25_score) in rank order (best first).
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
         // OR-by-default (QueryParser default): better recall; BM25 ranks, and RRF fuses with the
@@ -112,14 +112,14 @@ impl Lex {
             &*parsed,
             &TopDocs::with_limit(limit.max(1)).order_by_score(),
         )?;
-        let mut ids = Vec::with_capacity(hits.len());
-        for (_score, addr) in hits {
+        let mut out = Vec::with_capacity(hits.len());
+        for (score, addr) in hits {
             let doc: TantivyDocument = searcher.doc(addr)?;
             if let Some(id) = doc.get_first(self.chunk_id).and_then(|v| v.as_str()) {
-                ids.push(id.to_string());
+                out.push((id.to_string(), score));
             }
         }
-        Ok(ids)
+        Ok(out)
     }
 
     /// Segment-level stats from the tantivy index. A high segment count = fragmentation (per-file

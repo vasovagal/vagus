@@ -20,7 +20,8 @@ When invoked:
    vagus search "<query>" --json --limit 10
    ```
 
-2. Parse the JSON array of hits — each is `{chunk_id, path, heading, score, snippet}`.
+2. Parse the JSON array of hits — each is `{chunk_id, path, heading, score, snippet}` (hybrid hits
+   also carry `rrf` + `cosine` + `bm25` components; `score` is the fused rank score, not a similarity).
 3. Present a short ranked list: for each, show the location (`path › heading`) and the snippet.
    Paths are relative to `~/brain`.
 4. If the user needs more than a snippet, read the full note with the Read tool at `~/brain/<path>`,

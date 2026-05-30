@@ -1,6 +1,9 @@
 //! Search entry point: BM25 (lexical), vector (semantic), and hybrid (RRF k=60).
 //!
-//! Output is a stable shape (`--json`) so the Claude Code skill parses rather than scrapes.
+//! Human output shows a 0–100 relevance **relative to the top hit** — the raw RRF scalar is
+//! rank-based and tiny (≤ 2/(k+1) ≈ 0.033), so printing it directly is misleading. `--json` keeps a
+//! stable shape for the Claude Code skill and carries the raw fused `score` plus the per-retriever
+//! `cosine` and `bm25` components.
 
 use std::collections::HashMap;
 
@@ -32,8 +35,27 @@ pub struct Hit {
     pub chunk_id: String,
     pub path: String,
     pub heading: String,
+    /// Primary ranking score for the chosen mode (RRF for hybrid, cosine for vec, BM25 for bm25).
     pub score: f32,
+    /// RRF fused score (hybrid mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rrf: Option<f32>,
+    /// Cosine similarity from the vector retriever, when computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cosine: Option<f32>,
+    /// Tantivy BM25 score from the lexical retriever, when computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bm25: Option<f32>,
     pub snippet: String,
+}
+
+/// Ranked id + component scores, before joining SQLite for the display fields.
+struct Scored {
+    id: String,
+    score: f32,
+    rrf: Option<f32>,
+    cosine: Option<f32>,
+    bm25: Option<f32>,
 }
 
 fn snippet(body: &str, n: usize) -> String {
@@ -81,16 +103,19 @@ fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     fused
 }
 
-/// Resolve ranked (chunk_id, score) into displayable hits (joining SQLite for path/heading/body).
-fn hydrate(db: &Db, ranked: &[(String, f32)]) -> Result<Vec<Hit>> {
+/// Resolve ranked `Scored` into displayable hits (joining SQLite for path/heading/body).
+fn hydrate(db: &Db, ranked: Vec<Scored>) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
-    for (id, score) in ranked {
-        if let Some((path, heading, body)) = db.chunk_row(id)? {
+    for s in ranked {
+        if let Some((path, heading, body)) = db.chunk_row(&s.id)? {
             hits.push(Hit {
-                chunk_id: id.clone(),
+                chunk_id: s.id,
                 path,
                 heading,
-                score: *score,
+                score: s.score,
+                rrf: s.rrf,
+                cosine: s.cosine,
+                bm25: s.bm25,
                 snippet: snippet(&body, 200),
             });
         }
@@ -101,29 +126,54 @@ fn hydrate(db: &Db, ranked: &[(String, f32)]) -> Result<Vec<Hit>> {
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`).
 pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize) -> Result<Vec<Hit>> {
     let db = Db::open(&cfg.db_path())?;
-    let ranked: Vec<(String, f32)> = match mode {
+    let ranked: Vec<Scored> = match mode {
         Mode::Bm25 => {
             let lex = Lex::open(&cfg.tantivy_dir())?;
             lex.search(q, limit)?
                 .into_iter()
-                .enumerate()
-                .map(|(i, id)| (id, 1.0 / (i as f32 + 1.0)))
+                .map(|(id, bm25)| Scored {
+                    id,
+                    score: bm25,
+                    rrf: None,
+                    cosine: None,
+                    bm25: Some(bm25),
+                })
                 .collect()
         }
-        Mode::Vec => vec_search(cfg, &db, q, limit)?,
+        Mode::Vec => vec_search(cfg, &db, q, limit)?
+            .into_iter()
+            .map(|(id, cosine)| Scored {
+                id,
+                score: cosine,
+                rrf: None,
+                cosine: Some(cosine),
+                bm25: None,
+            })
+            .collect(),
         Mode::Hybrid => {
-            // Pull a deeper candidate set from each retriever, then fuse.
+            // Pull a deeper candidate set from each retriever, then fuse — keeping each retriever's
+            // raw score so the fused hit can report its cosine + BM25 components.
             let cand = (limit * 3).max(30);
             let lex = Lex::open(&cfg.tantivy_dir())?;
-            let bm: Vec<String> = lex.search(q, cand)?;
-            let ve: Vec<String> = vec_search(cfg, &db, q, cand)?
+            let bm = lex.search(q, cand)?; // (id, bm25), BM25 rank order
+            let ve = vec_search(cfg, &db, q, cand)?; // (id, cosine), cosine rank order
+            let bm25_of: HashMap<&str, f32> = bm.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
+            let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
+            rrf(&[bm_ids, ve_ids], limit)
                 .into_iter()
-                .map(|(id, _)| id)
-                .collect();
-            rrf(&[bm, ve], limit)
+                .map(|(id, r)| Scored {
+                    cosine: cos_of.get(id.as_str()).copied(),
+                    bm25: bm25_of.get(id.as_str()).copied(),
+                    rrf: Some(r),
+                    score: r,
+                    id,
+                })
+                .collect()
         }
     };
-    hydrate(&db, &ranked)
+    hydrate(&db, ranked)
 }
 
 pub fn run(
@@ -157,13 +207,20 @@ fn emit(hits: &[Hit], json: bool) {
         println!("(no results)");
         return;
     }
+    // Relevance relative to the top hit — the raw RRF/cosine scalar isn't human-meaningful.
+    let top = hits
+        .first()
+        .map(|h| h.score)
+        .unwrap_or(1.0)
+        .max(f32::EPSILON);
     for (i, h) in hits.iter().enumerate() {
+        let rel = (100.0 * h.score / top).round().clamp(0.0, 100.0) as i32;
         let loc = if h.heading.is_empty() {
             h.path.clone()
         } else {
             format!("{} › {}", h.path, h.heading)
         };
-        println!("{:>2}. [{:.3}] {}", i + 1, h.score, loc);
+        println!("{:>2}. {rel:>3}%  {loc}", i + 1);
         println!("    {}", h.snippet);
     }
 }
