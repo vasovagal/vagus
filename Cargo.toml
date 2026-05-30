@@ -9,9 +9,24 @@ edition = "2024"
 description = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
 license = "MIT"
 repository = "https://github.com/vasovagal/vagus"
+readme = "README.md"
+keywords = ["search", "notes", "second-brain", "para", "markdown"]
+categories = ["command-line-utilities", "text-processing"]
+# Ship only what's needed to build the binary; keep repo-meta (docs, design ADRs,
+# Homebrew formula, CI) out of the crates.io tarball. `skills/` stays — it is
+# embedded into the binary via include_str! in src/skills.rs.
+exclude = [
+    "design/",
+    "docs/",
+    "Formula/",
+    "scripts/",
+    ".github/",
+    "CLAUDE.md",
+    "RELEASING.md",
+]
 
 [dependencies]
-vagus-plugin-protocol = { path = "crates/vagus-plugin-protocol" }
+vagus-plugin-protocol = { path = "crates/vagus-plugin-protocol", version = "0.1.0" }
 anyhow = "1.0.102"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive"] }
