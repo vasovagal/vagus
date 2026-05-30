@@ -14,7 +14,8 @@ mod search;
 mod skills;
 mod util;
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -202,11 +203,18 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
     let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
     line("embed identity", id_ok, &format!("{model} / {dims}"));
 
-    line(
-        "tantivy index",
-        lex::Lex::open(&cfg.tantivy_dir()).is_ok(),
-        &cfg.tantivy_dir().display().to_string(),
-    );
+    let seg = lex::Lex::open(&cfg.tantivy_dir()).and_then(|l| l.segment_stats());
+    let seg_detail = match &seg {
+        Ok(s) => format!(
+            "{} ({} segments, {} docs, {} deleted)",
+            cfg.tantivy_dir().display(),
+            s.segments,
+            s.docs,
+            s.deleted
+        ),
+        Err(_) => cfg.tantivy_dir().display().to_string(),
+    };
+    line("tantivy index", seg.is_ok(), &seg_detail);
     line(
         "onnx + model",
         embed::Embedder::new(&cfg.cache_dir).is_ok(),
@@ -233,7 +241,67 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
             "ok"
         },
     );
+
+    // Fragmentation hint: per-file commits accumulate segments + tombstones over time.
+    if let Ok(s) = &seg {
+        if s.segments >= 8 || (s.docs > 0 && s.deleted >= s.docs) {
+            println!(
+                "\n  fragmented: {} segments, {} deleted docs — `vagus reindex` compacts it.",
+                s.segments, s.deleted
+            );
+        }
+    }
+
+    // Disk usage of the derived index (~/.local/share/vagus), by file type.
+    println!("\nindex size ({}):", cfg.data_dir.display());
+    let sizes = dir_size_by_ext(&cfg.data_dir);
+    let (mut total_n, mut total_b) = (0u64, 0u64);
+    for (ext, (n, b)) in &sizes {
+        println!("  {ext:<10} {n:>4} file(s)  {:>10}", human_size(*b));
+        total_n += n;
+        total_b += b;
+    }
+    println!(
+        "  {:<10} {total_n:>4} file(s)  {:>10}",
+        "total",
+        human_size(total_b)
+    );
     Ok(())
+}
+
+/// Total file count + bytes per file extension under `root` (recursive).
+fn dir_size_by_ext(root: &Path) -> BTreeMap<String, (u64, u64)> {
+    let mut map: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for e in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if e.file_type().is_file() {
+            let key = e
+                .path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| format!(".{x}"))
+                .unwrap_or_else(|| "(no ext)".to_string());
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            let entry = map.entry(key).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += size;
+        }
+    }
+    map
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut b = bytes as f64;
+    let mut i = 0;
+    while b >= 1024.0 && i < UNITS.len() - 1 {
+        b /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{b:.1} {}", UNITS[i])
+    }
 }
 
 fn cmd_index(cfg: &Config, reindex: bool) -> Result<()> {

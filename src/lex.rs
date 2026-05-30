@@ -121,4 +121,23 @@ impl Lex {
         }
         Ok(ids)
     }
+
+    /// Segment-level stats from the tantivy index. A high segment count = fragmentation (per-file
+    /// commits create segments until tantivy's merge policy consolidates them).
+    pub fn segment_stats(&self) -> Result<SegmentStats> {
+        let metas = self.index.searchable_segment_metas()?;
+        Ok(SegmentStats {
+            segments: metas.len(),
+            docs: metas.iter().map(|m| m.num_docs()).sum(),
+            deleted: metas.iter().map(|m| m.num_deleted_docs()).sum(),
+        })
+    }
+}
+
+/// Tantivy segment statistics (segment count indicates fragmentation).
+#[derive(Debug, Default)]
+pub struct SegmentStats {
+    pub segments: usize,
+    pub docs: u32,
+    pub deleted: u32,
 }
