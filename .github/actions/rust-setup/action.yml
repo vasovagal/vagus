@@ -11,10 +11,10 @@ inputs:
     default: ""
   cache-key:
     description: >
-      Stable cache segment, passed to rust-cache as `shared-key` (NOT `key`). rust-cache's default
-      key includes ${{ github.job }}; using shared-key drops the job-name segment so any job with the
-      same value restores the same cache — that's how the warm-cache job on main and the release
-      `build` job share one `rel-<target>` cache. Use the same value everywhere they should collide.
+      Stable cache segment, passed to rust-cache as shared-key (not key). rust-cache's default key
+      includes the job name (github.job), so using shared-key drops that segment and lets any job
+      with the same value restore one shared cache — that's how the warm-cache job on main and the
+      release build job share a single rel-<target> cache. Use the same value everywhere they collide.
     required: false
     default: ""
 
