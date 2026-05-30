@@ -98,18 +98,23 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Brute-force exact cosine over the in-RAM normalized matrix. Returns (chunk_id, cosine) top-k.
-fn vec_search(cfg: &Config, db: &Db, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
-    let mut emb = Embedder::new(&cfg.cache_dir)?;
-    let q = emb.embed_query(query)?; // normalized
-    let mut scored: Vec<(String, f32)> = db
-        .all_embeddings()?
-        .into_iter()
-        .map(|(id, v)| (id, dot(&q, &v))) // both normalized -> cosine
+/// Cosine top-k of a (normalized) query vector against the preloaded (normalized) matrix. Shared by
+/// the single-query path and the `--smart` multi-query path (which preloads the matrix once).
+fn cosine_topk(qv: &[f32], all: &[(String, Vec<f32>)], limit: usize) -> Vec<(String, f32)> {
+    let mut scored: Vec<(String, f32)> = all
+        .iter()
+        .map(|(id, v)| (id.clone(), dot(qv, v))) // both normalized -> cosine
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(limit);
-    Ok(scored)
+    scored
+}
+
+/// Brute-force exact cosine over the in-RAM normalized matrix. Returns (chunk_id, cosine) top-k.
+fn vec_search(cfg: &Config, db: &Db, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
+    let mut emb = Embedder::new(&cfg.cache_dir)?;
+    let qv = emb.embed_query(query)?; // normalized
+    Ok(cosine_topk(&qv, &db.all_embeddings()?, limit))
 }
 
 /// Reciprocal Rank Fusion over several ranked id-lists (1-based rank). Returns (id, fused_score).
@@ -249,6 +254,99 @@ pub fn query(
     Ok(apply_scope(hits, scope))
 }
 
+/// Tier-1 "smart" retrieval (ADR 0016, G19): a local model expands the query into typed lex/vec/hyde
+/// variants; each (plus the original, as both BM25 and vector) is retrieved, all lists are RRF-fused
+/// (k=60, unchanged — G8), and the fused pool is reranked against the *original* query on full bodies.
+/// Offline, no Claude — the local sibling of the Opus `/search` skill.
+#[cfg(feature = "generate")]
+fn smart_query(
+    cfg: &Config,
+    q: &str,
+    limit: usize,
+    scope: &Scope,
+    full: bool,
+) -> Result<(Vec<Hit>, usize)> {
+    use crate::rewrite::{Kind, Rewriter};
+
+    let pool = (limit * 4).max(RERANK_POOL_MIN);
+    let db = Db::open(&cfg.db_path())?;
+
+    // 1) Expand, then drop the LLM to free RAM before the embedder/reranker load.
+    let variants = {
+        let mut rw = Rewriter::new(&cfg.cache_dir)?;
+        rw.expand(q)?
+    };
+
+    // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each
+    //    vec/hyde variant via vector. Load the embedder + the vector matrix once (lazily).
+    let mut plans: Vec<(bool, &str)> = vec![(false, q), (true, q)];
+    for v in &variants {
+        plans.push((!matches!(v.kind, Kind::Lex), v.text.as_str()));
+    }
+
+    let lex = Lex::open(&cfg.tantivy_dir())?;
+    let mut emb: Option<Embedder> = None;
+    let mut matrix: Vec<(String, Vec<f32>)> = Vec::new();
+    let mut lists: Vec<Vec<String>> = Vec::new();
+    for (is_vec, text) in plans {
+        if is_vec {
+            if emb.is_none() {
+                emb = Some(Embedder::new(&cfg.cache_dir)?);
+                matrix = db.all_embeddings()?;
+            }
+            let qv = emb.as_mut().unwrap().embed_query(text)?;
+            lists.push(
+                cosine_topk(&qv, &matrix, pool)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            );
+        } else {
+            lists.push(
+                lex.search(text, pool)?
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            );
+        }
+    }
+
+    // 3) Fuse all lists, hydrate with bodies.
+    let ranked: Vec<Scored> = rrf(&lists, pool)
+        .into_iter()
+        .map(|(id, r)| Scored {
+            id,
+            score: r,
+            rrf: Some(r),
+            cosine: None,
+            bm25: None,
+        })
+        .collect();
+    let mut hits = hydrate(&db, ranked, true)?;
+
+    // 4) Rerank against the ORIGINAL query on full bodies, then reorder.
+    if !hits.is_empty() {
+        let mut rr = Reranker::new(&cfg.cache_dir)?;
+        let docs: Vec<String> = hits
+            .iter()
+            .map(|h| h.body.clone().unwrap_or_default())
+            .collect();
+        for (idx, score) in rr.rerank(q, &docs)? {
+            hits[idx].rerank = Some(score);
+            hits[idx].score = sigmoid(score);
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+
+    hits.truncate(limit);
+    if !full {
+        for h in &mut hits {
+            h.body = None;
+        }
+    }
+    Ok(apply_scope(hits, scope))
+}
+
 /// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
 /// "Remove + notice" semantics: filters the already-ranked top results in place (no backfill).
 fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
@@ -264,6 +362,38 @@ fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
     (kept, elided)
 }
 
+/// Dispatch the retrieval: tier-1 `--smart` (local expand → multi-query fuse → rerank) when the
+/// `generate` feature is built and requested, else the plain (optionally `--rerank`ed) query. A smart
+/// run that can't load its model degrades to `--rerank` with a warning.
+#[allow(clippy::too_many_arguments)]
+fn run_query(
+    cfg: &Config,
+    q: &str,
+    mode: Mode,
+    limit: usize,
+    scope: &Scope,
+    full: bool,
+    rerank: bool,
+    smart: bool,
+) -> Result<(Vec<Hit>, usize)> {
+    #[cfg(feature = "generate")]
+    if smart {
+        match smart_query(cfg, q, limit, scope, full) {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
+            }
+        }
+    }
+    #[cfg(not(feature = "generate"))]
+    if smart {
+        eprintln!(
+            "vagus: built without the local rewriter (`generate` feature); --smart falls back to --rerank"
+        );
+    }
+    query(cfg, q, mode, limit, scope, full, rerank || smart)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     cfg: &Config,
@@ -277,6 +407,7 @@ pub fn run(
     full: bool,
     rerank: bool,
     min_score: Option<f32>,
+    smart: bool,
 ) -> Result<()> {
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
@@ -290,7 +421,7 @@ pub fn run(
     } else {
         Scope::discover()?
     };
-    let (mut hits, elided) = query(cfg, q, mode, limit, &scope, full, rerank)?;
+    let (mut hits, elided) = run_query(cfg, q, mode, limit, &scope, full, rerank, smart)?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
     if let Some(floor) = min_score {

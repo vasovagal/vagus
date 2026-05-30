@@ -1,6 +1,7 @@
 # ADR 0016 — Local generative query rewriter (tier-1, in-core via candle)
 
-- **Status:** Accepted (2026-05-30). **Decided now, built next** (milestone 2). Amends G17.
+- **Status:** Accepted + **implemented (2026-05-30)** — `src/rewrite.rs` behind the default-on
+  `generate` feature; `vagus rewrite` + `vagus search --smart`. Amends G17.
 
 ## Context
 
@@ -55,5 +56,10 @@ binary), behind a **cargo feature** (default-on in releases; a lean build can ex
   feature-gated, lazily-downloaded local generative rewriter (tier-1); generative work otherwise runs
   in the Opus skill (tier-2); tier-0 has none. No cloud, no daemon in any tier (G14).
 - candle is a new heavyweight dependency → this ADR is its gate (G11). Re-verify the binary stays
-  self-contained with `otool -L` (G13).
+  self-contained with `otool -L` (G13). It adds ~17 MB to the binary; the `generate` feature is
+  default-on, with `--no-default-features` for a lean candle-free build (CI guards that lane).
+- **Latency (verified, release, Apple Silicon, model cached):** `vagus rewrite` ≈ 5–6 s, `vagus search
+  --smart` ≈ 8 s end-to-end (expand → multi-query fuse → rerank). This is an **opt-in** mode, *not* the
+  fast path — bare `vagus search` (tier-0) stays < 1 s. (Debug builds are ~10–15× slower; candle's CPU
+  gemm only optimizes under `--release`.) First use downloads ~1.28 GB to the cache (outside iCloud).
 - Built in **milestone 2**; the `--full`/`--min-score`/`--rerank` primitives it composes ship first.

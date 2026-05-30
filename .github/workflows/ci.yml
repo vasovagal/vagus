@@ -26,3 +26,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --locked
+      # The lean build (no candle / local rewriter) must still compile — the `generate`-off path.
+      - name: check (lean, no default features)
+        run: cargo check --no-default-features

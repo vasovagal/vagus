@@ -12,6 +12,8 @@ mod lex;
 mod notes;
 mod plugin;
 mod rerank;
+#[cfg(feature = "generate")]
+mod rewrite;
 mod scope;
 mod search;
 mod skills;
@@ -86,6 +88,16 @@ enum Command {
         /// Drop hits scoring below this percent of the top hit (relative-to-top; mode-dependent feel).
         #[arg(long)]
         min_score: Option<f32>,
+        /// Tier-1 "smart" search: a local model expands the query (lex/vec/HyDE variants), each is
+        /// retrieved and fused, then reranked. Offline, no Claude. Implies --rerank. Requires the
+        /// `generate` build feature (falls back to --rerank if absent).
+        #[arg(long)]
+        smart: bool,
+    },
+    /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
+    Rewrite {
+        /// The query to expand.
+        query: String,
     },
     /// Create a new note in `00-Inbox/` and index it.
     AddNote {
@@ -182,9 +194,23 @@ fn main() -> Result<()> {
             rerank,
             full,
             min_score,
+            smart,
         } => search::run(
-            &cfg, &query, mode, json, limit, no_index, verbose, all, full, rerank, min_score,
+            &cfg, &query, mode, json, limit, no_index, verbose, all, full, rerank, min_score, smart,
         )?,
+        Command::Rewrite { query } => {
+            #[cfg(feature = "generate")]
+            {
+                rewrite::run_cli(&cfg, &query)?;
+            }
+            #[cfg(not(feature = "generate"))]
+            {
+                let _ = query;
+                anyhow::bail!(
+                    "this build has no local rewriter (compiled without the `generate` feature)"
+                );
+            }
+        }
         Command::AddNote {
             title,
             para,
@@ -439,6 +465,7 @@ FIND:
   vagus search "that thing about X"   hybrid: keywords + meaning
   vagus search "..." --mode bm25      keyword-only   (--mode vec = semantic-only)
   vagus search "..." --rerank         sharper ordering via a local cross-encoder (no cloud)
+  vagus search "..." --smart          local query expansion + HyDE + rerank (offline, no Claude)
 
 FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox

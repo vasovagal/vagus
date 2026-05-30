@@ -31,7 +31,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
 | Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
-| Local generative rewriter/HyDE (`--smart`/`--rewrite`, tier 1) | core `vagus` (feature-gated) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | **next (milestone 2)** (ADR 0016) |
+| Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Opus expansion + HyDE + full-body judge (tier 2) | `/search` skill | Opus | **next (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
 
@@ -49,8 +49,9 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
   guardrail edits (G4/G7/G8/G9/G17/G19/G20). ✅
 - **M1 — strong core** *(this round)*: EmbeddingGemma-300M + token-budgeted chunking (one reindex);
   in-core `--rerank`; `--full` / `--min-score`. ✅ (verified end-to-end)
-- **M2 — tier-1 local generation** *(next)*: in-core candle rewriter; `vagus rewrite` + `vagus search
-  --smart`; typed `lex:/vec:/hyde:` routing + multi-query fuse + rerank. ([ADR 0016](./adr/0016-local-generative-rewriter.md))
+- **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
+  `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
+  multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
 - **M3 — tier-2 SOTA skill** *(next)*: rewrite `skills/search/SKILL.md` as the Opus pipeline over
   `vagus search --json --full --rerank --min-score` (expansion + HyDE + full-body 0–3 judge + cite).
 
