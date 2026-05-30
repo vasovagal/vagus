@@ -168,5 +168,8 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
     }
 
     writer.commit()?;
+    // Let tantivy's merge policy finish any scheduled merges so segments stay bounded instead of
+    // accumulating across per-file commits (the writer would otherwise drop before they run).
+    writer.wait_merging_threads()?;
     Ok(stats)
 }

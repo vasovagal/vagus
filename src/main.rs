@@ -41,6 +41,8 @@ enum Command {
     Index,
     /// Wipe the derived index and rebuild it from the vault.
     Reindex,
+    /// Compact the tantivy index (force-merge segments, drop tombstones) without re-embedding.
+    Compact,
     /// Search the vault (hybrid by default).
     Search {
         /// The query text.
@@ -136,6 +138,7 @@ fn main() -> Result<()> {
         Command::Status => cmd_status(&cfg)?,
         Command::Index => cmd_index(&cfg, false)?,
         Command::Reindex => cmd_index(&cfg, true)?,
+        Command::Compact => cmd_compact(&cfg)?,
         Command::Search {
             query,
             mode,
@@ -247,7 +250,7 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         && (s.segments >= 8 || (s.docs > 0 && s.deleted >= s.docs))
     {
         println!(
-            "\n  fragmented: {} segments, {} deleted docs — `vagus reindex` compacts it.",
+            "\n  fragmented: {} segments, {} deleted docs — run `vagus compact`.",
             s.segments, s.deleted
         );
     }
@@ -313,6 +316,17 @@ fn cmd_index(cfg: &Config, reindex: bool) -> Result<()> {
         stats.changed,
         stats.unchanged,
         stats.removed
+    );
+    Ok(())
+}
+
+fn cmd_compact(cfg: &Config) -> Result<()> {
+    let before = lex::Lex::open(&cfg.tantivy_dir())?.segment_stats()?;
+    lex::Lex::open(&cfg.tantivy_dir())?.compact()?;
+    let after = lex::Lex::open(&cfg.tantivy_dir())?.segment_stats()?;
+    println!(
+        "compacted: {} → {} segments, {} → {} deleted docs",
+        before.segments, after.segments, before.deleted, after.deleted
     );
     Ok(())
 }

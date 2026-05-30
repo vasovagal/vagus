@@ -65,6 +65,7 @@ identical files alone, backs up any you've hand-edited to `SKILL.md.bak`, and sk
 vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
+vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --json; auto-refreshes the index)
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items

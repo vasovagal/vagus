@@ -132,6 +132,19 @@ impl Lex {
             deleted: metas.iter().map(|m| m.num_deleted_docs()).sum(),
         })
     }
+
+    /// Force-merge all segments into one and garbage-collect the old files — physically dropping
+    /// tombstoned docs. Cheap vs `reindex`: it only rewrites the inverted index, not the embeddings.
+    pub fn compact(&self) -> Result<()> {
+        let ids = self.index.searchable_segment_ids()?;
+        let mut writer: IndexWriter = self.index.writer(WRITER_HEAP)?;
+        if ids.len() > 1 {
+            writer.merge(&ids).wait()?;
+        }
+        writer.garbage_collect_files().wait()?;
+        writer.wait_merging_threads()?;
+        Ok(())
+    }
 }
 
 /// Tantivy segment statistics (segment count indicates fragmentation).
