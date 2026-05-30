@@ -28,7 +28,8 @@ use search::Mode;
 #[command(
     name = "vagus",
     version,
-    about = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
+    about = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault",
+    after_help = concat!("Home & docs: ", env!("CARGO_PKG_REPOSITORY"))
 )]
 struct Cli {
     #[command(subcommand)]
