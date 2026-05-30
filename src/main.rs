@@ -243,13 +243,13 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
     );
 
     // Fragmentation hint: per-file commits accumulate segments + tombstones over time.
-    if let Ok(s) = &seg {
-        if s.segments >= 8 || (s.docs > 0 && s.deleted >= s.docs) {
-            println!(
-                "\n  fragmented: {} segments, {} deleted docs — `vagus reindex` compacts it.",
-                s.segments, s.deleted
-            );
-        }
+    if let Ok(s) = &seg
+        && (s.segments >= 8 || (s.docs > 0 && s.deleted >= s.docs))
+    {
+        println!(
+            "\n  fragmented: {} segments, {} deleted docs — `vagus reindex` compacts it.",
+            s.segments, s.deleted
+        );
     }
 
     // Disk usage of the derived index (~/.local/share/vagus), by file type.
