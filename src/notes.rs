@@ -304,7 +304,8 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
 fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<()> {
     let self_rel = vault_rel(cfg, src);
     let query_text = note_text(src);
-    let (hits, _) = search::query(cfg, &query_text, Mode::Hybrid, 12, &Scope::none()).unwrap_or_default();
+    let (hits, _) =
+        search::query(cfg, &query_text, Mode::Hybrid, 12, &Scope::none()).unwrap_or_default();
 
     // Folders of similar notes (scored), then existing PARA folders not already covered (score 0).
     let mut similar: Vec<(String, f32)> = Vec::new();

@@ -61,3 +61,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G16 — Obsidian-compatible.** Plain `.md`, optional `[[wikilinks]]`/frontmatter; don't break it.
 - **G17 — No LLM inside the binary.** Query-expansion/reranking via an LLM, if ever, belongs in the
   Claude skill layer, not `vagus`.
+- **G18 — Networked features ship as plugins, not in core.** Anything that makes cloud/network calls
+  or pulls third-party dependencies (Slack, GitHub, etc.) is an external `vagus-<name>` plugin
+  dispatched off `$PATH`, speaking the NDJSON contract — never compiled into the `vagus` binary. This
+  is what *keeps* G14 true as integrations grow. ([ADR 0010](./adr/0010-plugin-subcommands.md),
+  [ADR 0011](./adr/0011-plugin-protocol.md), `docs/plugin-contract.md`)

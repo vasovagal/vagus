@@ -126,7 +126,13 @@ fn hydrate(db: &Db, ranked: Vec<Scored>) -> Result<Vec<Hit>> {
 }
 
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`).
-pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize, scope: &Scope) -> Result<(Vec<Hit>, usize)> {
+pub fn query(
+    cfg: &Config,
+    q: &str,
+    mode: Mode,
+    limit: usize,
+    scope: &Scope,
+) -> Result<(Vec<Hit>, usize)> {
     let db = Db::open(&cfg.db_path())?;
     let ranked: Vec<Scored> = match mode {
         Mode::Bm25 => {
@@ -186,7 +192,10 @@ fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
         return (hits, 0);
     }
     let before = hits.len();
-    let kept: Vec<Hit> = hits.into_iter().filter(|h| !scope.is_excluded(&h.path)).collect();
+    let kept: Vec<Hit> = hits
+        .into_iter()
+        .filter(|h| !scope.is_excluded(&h.path))
+        .collect();
     let elided = before - kept.len();
     (kept, elided)
 }
@@ -209,7 +218,11 @@ pub fn run(
         eprintln!("vagus: index refresh skipped ({e})");
     }
     // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses scoping.
-    let scope = if all { Scope::none() } else { Scope::discover()? };
+    let scope = if all {
+        Scope::none()
+    } else {
+        Scope::discover()?
+    };
     let (hits, elided) = query(cfg, q, mode, limit, &scope)?;
     emit(&hits, json, verbose);
     if elided > 0 {

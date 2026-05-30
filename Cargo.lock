@@ -3502,7 +3502,25 @@ dependencies = [
  "sha2",
  "tantivy",
  "terminal_size",
+ "vagus-plugin-protocol",
  "walkdir",
+]
+
+[[package]]
+name = "vagus-plugin"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde_json",
+ "vagus-plugin-protocol",
+]
+
+[[package]]
+name = "vagus-plugin-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

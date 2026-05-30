@@ -34,3 +34,6 @@ silently breaking an invariant.
 - `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default.
 - `0007-lean-on-frankensearch.md` — depend/vendor the retrieval engine (pending smoke test).
 - `0008-naming.md` — `vagus` / `vasovagal`.
+- `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
+- `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
+- `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).

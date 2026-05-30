@@ -10,16 +10,18 @@ mod embed;
 mod index;
 mod lex;
 mod notes;
+mod plugin;
 mod scope;
 mod search;
 mod skills;
 mod util;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use config::Config;
 use db::Db;
@@ -30,7 +32,11 @@ use search::Mode;
     name = "vagus",
     version,
     about = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault",
-    after_help = concat!("Home & docs: ", env!("CARGO_PKG_REPOSITORY"))
+    after_help = concat!(
+        "Plugins: any `vagus-<name>` on your PATH runs as `vagus <name>` (see `vagus plugins`).\n",
+        "Home & docs: ",
+        env!("CARGO_PKG_REPOSITORY")
+    )
 )]
 struct Cli {
     #[command(subcommand)]
@@ -122,6 +128,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// List discovered `vagus-<name>` plugins on your PATH.
+    Plugins,
+    /// Run an external `vagus-<name>` plugin (any subcommand that isn't builtin).
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 #[derive(Subcommand)]
@@ -187,6 +198,14 @@ fn main() -> Result<()> {
             SkillsAction::Install { dir, force } => skills::install(dir, force)?,
             SkillsAction::List => skills::list()?,
         },
+        Command::Plugins => {
+            let builtins: Vec<String> = Cli::command()
+                .get_subcommands()
+                .map(|c| c.get_name().to_string())
+                .collect();
+            plugin::list(&builtins)?;
+        }
+        Command::External(argv) => plugin::dispatch(&cfg, &argv)?,
     }
     Ok(())
 }

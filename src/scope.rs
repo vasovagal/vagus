@@ -103,7 +103,10 @@ impl Scope {
 /// Try `<dir>/.vagus/config.json`, then a flat `<dir>/.vagus.json`. Returns the first that exists and
 /// parses; invalid JSON is reported to stderr and skipped (never fatal).
 fn read_config(dir: &Path) -> Option<(ScopeFile, PathBuf)> {
-    for cand in [dir.join(".vagus").join("config.json"), dir.join(".vagus.json")] {
+    for cand in [
+        dir.join(".vagus").join("config.json"),
+        dir.join(".vagus.json"),
+    ] {
         let Ok(text) = std::fs::read_to_string(&cand) else {
             continue;
         };
@@ -240,7 +243,10 @@ mod tests {
         write_config(&repo, r#"{ "exclude": ["scientist"], "root": true }"#);
         let s = Scope::discover_from(&repo, Some(root));
         assert!(s.is_excluded("10-Projects/scientist/x.md"));
-        assert!(!s.is_excluded("10-Projects/viasat/x.md"), "ancestor word must be sealed off");
+        assert!(
+            !s.is_excluded("10-Projects/viasat/x.md"),
+            "ancestor word must be sealed off"
+        );
     }
 
     #[test]
