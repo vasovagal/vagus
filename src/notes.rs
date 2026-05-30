@@ -12,6 +12,7 @@ use chrono::Local;
 
 use crate::config::Config;
 use crate::index;
+use crate::scope::Scope;
 use crate::search::{self, Mode};
 
 /// Map a PARA keyword (for `add-note --para`) to its folder.
@@ -303,7 +304,7 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
 fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<()> {
     let self_rel = vault_rel(cfg, src);
     let query_text = note_text(src);
-    let hits = search::query(cfg, &query_text, Mode::Hybrid, 12).unwrap_or_default();
+    let (hits, _) = search::query(cfg, &query_text, Mode::Hybrid, 12, &Scope::none()).unwrap_or_default();
 
     // Folders of similar notes (scored), then existing PARA folders not already covered (score 0).
     let mut similar: Vec<(String, f32)> = Vec::new();

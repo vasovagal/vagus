@@ -30,3 +30,13 @@ When invoked:
    or `--mode vec` (semantic).
 
 Default mode is hybrid (BM25 + semantic, RRF-fused). Only report what `vagus` returns — don't invent notes.
+
+## Directory scoping
+
+Searches are silently scoped to the current working directory: `vagus` walks up from the CWD for
+`.vagus/config.json` files (an "inherited config") and elides hits whose vault path contains an
+excluded word (case-insensitive substring; e.g. `"scientist"` hides everything under
+`.../scientist/...`). When some are hidden, a `— N hit(s) elided by inherited config (--all to show)`
+line is printed — to stderr under `--json`, so the JSON array shape is unchanged. Pass `--all` to
+ignore scoping and show every result. These config files live in the user's code dirs, never the
+vault.

@@ -34,6 +34,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G9 — bge prefixes.** Prepend the retrieval instruction to *queries* only; documents are
   un-prefixed. Don't double-prefix (respect whatever the embedding lib already applies).
   ([ADR 0003](./adr/0003-search-stack.md))
+- **G9a — CWD-scoped exclusion.** Search elides hits whose vault path matches an "inherited"
+  `.vagus/config.json` exclude word found by walking up from the CWD (code dirs only, never the
+  vault); `--all` bypasses it and the `--json` Hit-array shape is unchanged.
+  ([ADR 0009](./adr/0009-cwd-scoped-search.md))
 
 ## Build & dependencies
 

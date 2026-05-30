@@ -10,6 +10,7 @@ mod embed;
 mod index;
 mod lex;
 mod notes;
+mod scope;
 mod search;
 mod skills;
 mod util;
@@ -64,6 +65,9 @@ enum Command {
         /// pre-compaction layout — no width truncation, no same-note grouping).
         #[arg(long, short = 'l')]
         verbose: bool,
+        /// Show results from every context, ignoring any inherited .vagus exclusion rules.
+        #[arg(long)]
+        all: bool,
     },
     /// Create a new note in `00-Inbox/` and index it.
     AddNote {
@@ -151,7 +155,8 @@ fn main() -> Result<()> {
             limit,
             no_index,
             verbose,
-        } => search::run(&cfg, &query, mode, json, limit, no_index, verbose)?,
+            all,
+        } => search::run(&cfg, &query, mode, json, limit, no_index, verbose, all)?,
         Command::AddNote {
             title,
             para,

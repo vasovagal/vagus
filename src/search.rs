@@ -17,6 +17,7 @@ use crate::db::Db;
 use crate::embed::Embedder;
 use crate::index;
 use crate::lex::Lex;
+use crate::scope::Scope;
 
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
@@ -125,7 +126,7 @@ fn hydrate(db: &Db, ranked: Vec<Scored>) -> Result<Vec<Hit>> {
 }
 
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`).
-pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize) -> Result<Vec<Hit>> {
+pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize, scope: &Scope) -> Result<(Vec<Hit>, usize)> {
     let db = Db::open(&cfg.db_path())?;
     let ranked: Vec<Scored> = match mode {
         Mode::Bm25 => {
@@ -174,9 +175,23 @@ pub fn query(cfg: &Config, q: &str, mode: Mode, limit: usize) -> Result<Vec<Hit>
                 .collect()
         }
     };
-    hydrate(&db, ranked)
+    let hits = hydrate(&db, ranked)?;
+    Ok(apply_scope(hits, scope))
 }
 
+/// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
+/// "Remove + notice" semantics: filters the already-ranked top results in place (no backfill).
+fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
+    if scope.is_empty() {
+        return (hits, 0);
+    }
+    let before = hits.len();
+    let kept: Vec<Hit> = hits.into_iter().filter(|h| !scope.is_excluded(&h.path)).collect();
+    let elided = before - kept.len();
+    (kept, elided)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     cfg: &Config,
     q: &str,
@@ -185,6 +200,7 @@ pub fn run(
     limit: usize,
     no_index: bool,
     verbose: bool,
+    all: bool,
 ) -> Result<()> {
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
@@ -192,8 +208,25 @@ pub fn run(
     if !no_index && let Err(e) = index::run(cfg, false) {
         eprintln!("vagus: index refresh skipped ({e})");
     }
-    let hits = query(cfg, q, mode, limit)?;
+    // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses scoping.
+    let scope = if all { Scope::none() } else { Scope::discover()? };
+    let (hits, elided) = query(cfg, q, mode, limit, &scope)?;
     emit(&hits, json, verbose);
+    if elided > 0 {
+        let msg = format!("{elided} hit(s) elided by inherited config (--all to show)");
+        if json {
+            // `--json` stdout stays a pure array of Hit; the notice goes to stderr.
+            eprintln!("vagus: {msg}");
+        } else {
+            // Trailing in-results line, dimmed with the same NO_COLOR/TTY gate emit() uses (Style).
+            let st = Style::detect();
+            println!("{}", st.dim(&format!("— {msg}")));
+            // Under --verbose, name the inherited config that did the eliding.
+            if verbose && let Some(src) = scope.source.as_deref() {
+                println!("{}", st.dim(&format!("  (scope: {})", src.display())));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -393,5 +426,47 @@ fn emit(hits: &[Hit], json: bool, verbose: bool) {
         if more > 0 {
             println!("{}", st.dim(&format!("    …   +{more} more in this note")));
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_filter_tests {
+    use super::*;
+    use crate::scope::Scope;
+
+    fn hit(path: &str) -> Hit {
+        Hit {
+            chunk_id: format!("id:{path}"),
+            path: path.to_string(),
+            heading: String::new(),
+            score: 0.0,
+            rrf: None,
+            cosine: None,
+            bm25: None,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn removes_excluded_and_counts() {
+        let hits = vec![
+            hit("10-Projects/scientist/a.md"),
+            hit("10-Projects/viasat/b.md"),
+            hit("10-Projects/scientist/c.md"),
+            hit("30-Resources/rust/d.md"),
+        ];
+        let scope = Scope::from_words(["scientist".to_string()], None);
+        let (kept, elided) = apply_scope(hits, &scope);
+        assert_eq!(elided, 2);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|h| !h.path.contains("scientist")));
+    }
+
+    #[test]
+    fn none_is_passthrough() {
+        let hits = vec![hit("10-Projects/scientist/a.md"), hit("x/b.md")];
+        let (kept, elided) = apply_scope(hits, &Scope::none());
+        assert_eq!(elided, 0);
+        assert_eq!(kept.len(), 2);
     }
 }
