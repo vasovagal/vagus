@@ -6,6 +6,7 @@
 //! `cosine` and `bm25` components.
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
 
 use anyhow::Result;
 use clap::ValueEnum;
@@ -183,6 +184,7 @@ pub fn run(
     json: bool,
     limit: usize,
     no_index: bool,
+    verbose: bool,
 ) -> Result<()> {
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
@@ -191,11 +193,109 @@ pub fn run(
         eprintln!("vagus: index refresh skipped ({e})");
     }
     let hits = query(cfg, q, mode, limit)?;
-    emit(&hits, json);
+    emit(&hits, json, verbose);
     Ok(())
 }
 
-fn emit(hits: &[Hit], json: bool) {
+// --- human-readable rendering ------------------------------------------------------------------
+
+/// ANSI styling, gated once: color only on a real TTY with NO_COLOR unset (https://no-color.org),
+/// so piped output (and the `--json` skill path) stays plain.
+struct Style {
+    on: bool,
+}
+impl Style {
+    fn detect() -> Self {
+        Self {
+            on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+        }
+    }
+    fn dim(&self, s: &str) -> String {
+        if self.on {
+            format!("\x1b[2m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+    fn bold(&self, s: &str) -> String {
+        if self.on {
+            format!("\x1b[1m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+}
+
+/// Display width for human output: real TTY columns, then `$COLUMNS`, then 100. Clamped so neither a
+/// narrow nor an ultrawide terminal produces silly line lengths.
+fn term_width() -> usize {
+    if let Some((terminal_size::Width(w), _)) = terminal_size::terminal_size() {
+        return (w as usize).clamp(40, 140);
+    }
+    if let Ok(n) = std::env::var("COLUMNS")
+        .unwrap_or_default()
+        .parse::<usize>()
+    {
+        return n.clamp(40, 140);
+    }
+    100
+}
+
+/// Top-level PARA bucket of a vault-relative path (e.g. "10-Projects"); "" if none.
+fn para_bucket(path: &str) -> &str {
+    path.split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("")
+}
+
+/// Strip a leading `YYYYMMDD-HHMMSS-` stamp (8 digits, '-', 6 digits, '-') if present.
+fn strip_timestamp(s: &str) -> &str {
+    let b = s.as_bytes();
+    if b.len() > 16
+        && b[..8].iter().all(u8::is_ascii_digit)
+        && b[8] == b'-'
+        && b[9..15].iter().all(u8::is_ascii_digit)
+        && b[15] == b'-'
+    {
+        &s[16..]
+    } else {
+        s
+    }
+}
+
+/// Short display title from a vault path: basename minus `.md` and any leading timestamp stamp.
+fn short_title(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let base = base.strip_suffix(".md").unwrap_or(base);
+    strip_timestamp(base).to_string()
+}
+
+/// Last segment of a `" > "`-joined heading breadcrumb (the deepest, most specific heading).
+fn leaf_heading(heading_path: &str) -> &str {
+    heading_path
+        .rsplit(" > ")
+        .next()
+        .unwrap_or(heading_path)
+        .trim()
+}
+
+/// Truncate to at most `w` display columns (char count), adding '…' when cut.
+fn truncate_cols(s: &str, w: usize) -> String {
+    if w == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(w.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+/// Max hits shown per note before collapsing to a "+N more" line.
+const PER_FILE_CAP: usize = 3;
+
+fn emit(hits: &[Hit], json: bool, verbose: bool) {
     if json {
         println!(
             "{}",
@@ -213,14 +313,85 @@ fn emit(hits: &[Hit], json: bool) {
         .map(|h| h.score)
         .unwrap_or(1.0)
         .max(f32::EPSILON);
-    for (i, h) in hits.iter().enumerate() {
-        let rel = (100.0 * h.score / top).round().clamp(0.0, 100.0) as i32;
-        let loc = if h.heading.is_empty() {
-            h.path.clone()
+    let rel = |s: f32| (100.0 * s / top).round().clamp(0.0, 100.0) as i32;
+
+    if verbose {
+        // Pre-compaction layout: full path, full breadcrumb, full snippet, no truncation.
+        for (i, h) in hits.iter().enumerate() {
+            let loc = if h.heading.is_empty() {
+                h.path.clone()
+            } else {
+                format!("{} › {}", h.path, h.heading)
+            };
+            println!("{:>2}. {:>3}%  {loc}", i + 1, rel(h.score));
+            println!("    {}", h.snippet);
+        }
+        return;
+    }
+
+    let st = Style::detect();
+    let width = term_width();
+
+    // Group hits by note, preserving best-rank order. RRF interleaves chunks from different notes,
+    // so a note's chunks are NOT contiguous in the ranked list — group explicitly, ordering each
+    // note by its best (first-seen) hit.
+    let mut order: Vec<&str> = Vec::new();
+    let mut groups: HashMap<&str, Vec<&Hit>> = HashMap::new();
+    for h in hits {
+        groups
+            .entry(h.path.as_str())
+            .or_insert_with(|| {
+                order.push(h.path.as_str());
+                Vec::new()
+            })
+            .push(h);
+    }
+
+    for path in order {
+        let group = &groups[path];
+
+        // Header (once per note): "▸ <title>  ·  <bucket>", title bold, marker+bucket dim.
+        let title = short_title(path);
+        let bucket = para_bucket(path);
+        let sep = "  ·  ";
+        let reserved = 2 + if bucket.is_empty() {
+            0
         } else {
-            format!("{} › {}", h.path, h.heading)
+            sep.chars().count() + bucket.chars().count()
         };
-        println!("{:>2}. {rel:>3}%  {loc}", i + 1);
-        println!("    {}", h.snippet);
+        let title = truncate_cols(&title, width.saturating_sub(reserved));
+        if bucket.is_empty() {
+            println!("{} {}", st.dim("▸"), st.bold(&title));
+        } else {
+            println!(
+                "{} {}{}",
+                st.dim("▸"),
+                st.bold(&title),
+                st.dim(&format!("{sep}{bucket}"))
+            );
+        }
+
+        // Hit lines: "  <rel>%  <leaf>  — <snippet>", whole line hard-truncated to one terminal row.
+        for h in group.iter().take(PER_FILE_CAP) {
+            let prefix = format!("  {:>3}%  ", rel(h.score));
+            let leaf = leaf_heading(&h.heading);
+            let body = if leaf.is_empty() {
+                h.snippet.clone()
+            } else {
+                format!("{leaf}  — {}", h.snippet)
+            };
+            let body = truncate_cols(&body, width.saturating_sub(prefix.chars().count()));
+            // Bold the leaf heading if it survived truncation intact.
+            let body = if !leaf.is_empty() && body.starts_with(leaf) {
+                format!("{}{}", st.bold(leaf), &body[leaf.len()..])
+            } else {
+                body
+            };
+            println!("{}{}", st.dim(&prefix), body);
+        }
+        let more = group.len().saturating_sub(PER_FILE_CAP);
+        if more > 0 {
+            println!("{}", st.dim(&format!("    …   +{more} more in this note")));
+        }
     }
 }

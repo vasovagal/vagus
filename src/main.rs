@@ -59,6 +59,10 @@ enum Command {
         /// Skip the automatic incremental index refresh before searching.
         #[arg(long)]
         no_index: bool,
+        /// Show full detail: full vault path, full heading breadcrumb, and the full snippet (the
+        /// pre-compaction layout — no width truncation, no same-note grouping).
+        #[arg(long, short = 'l')]
+        verbose: bool,
     },
     /// Create a new note in `00-Inbox/` and index it.
     AddNote {
@@ -145,7 +149,8 @@ fn main() -> Result<()> {
             json,
             limit,
             no_index,
-        } => search::run(&cfg, &query, mode, json, limit, no_index)?,
+            verbose,
+        } => search::run(&cfg, &query, mode, json, limit, no_index, verbose)?,
         Command::AddNote {
             title,
             para,

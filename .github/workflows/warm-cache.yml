@@ -1,0 +1,50 @@
+name: warm-cache
+
+# Seed the RELEASE-profile build cache on the DEFAULT BRANCH. GitHub scopes cache restore to a run's
+# own ref plus the default branch only — sibling tags can't see each other's caches (docs:
+# https://docs.github.com/en/actions/reference/dependency-caching-reference#restrictions-for-accessing-a-cache).
+# Without a main-side `rel-<target>` cache, every release.yml tag build recompiles the dependency
+# graph (tantivy, ort, bundled SQLite, fastembed) cold. This warms it so tag builds restore in
+# seconds. It does NOT publish anything — release.yml still builds + ships at the tag (Law 3: a tag
+# is the vote of confidence). The native `paths:` gate keeps docs/markdown-only pushes from paying
+# for a 3-arch rebuild; this only fires when build inputs actually change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - ".github/actions/rust-setup/**"
+      - ".github/workflows/warm-cache.yml"
+
+concurrency:
+  group: warm-cache
+  cancel-in-progress: true # superseded by a newer main push; this is a cache warm, not a release
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false # warming one arch shouldn't sink the others
+      matrix:
+        include:
+          # MUST mirror release.yml's build matrix (same runners + targets) so the cache the tag
+          # build restores was produced on an identical platform.
+          - runner: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04-arm # native Linux arm64
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-latest # Linux amd64
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/rust-setup
+        with:
+          # MUST exactly match release.yml's build job so the shared-key cache collides.
+          cache-key: rel-${{ matrix.target }}
+      - name: Warm the release build cache (native; ort statically links onnxruntime)
+        run: cargo build --release --locked

@@ -10,7 +10,11 @@ inputs:
     required: false
     default: ""
   cache-key:
-    description: "Suffix to segment the cache (e.g. job name or target triple)."
+    description: >
+      Stable cache segment, passed to rust-cache as `shared-key` (NOT `key`). rust-cache's default
+      key includes ${{ github.job }}; using shared-key drops the job-name segment so any job with the
+      same value restores the same cache — that's how the warm-cache job on main and the release
+      `build` job share one `rel-<target>` cache. Use the same value everywhere they should collide.
     required: false
     default: ""
 
@@ -27,7 +31,11 @@ runs:
     - name: Rust cache (registry + target)
       uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
-        key: ${{ inputs.cache-key }}
+        # shared-key (not key): rust-cache's auto key embeds ${{ github.job }}, so a warm-cache job
+        # and the release `build` job would never share. shared-key keys purely on this value, so the
+        # main-seeded `rel-<target>` cache is restorable by the tag build (GitHub scope: current ref +
+        # default branch). One-time cost: existing job-segmented caches go cold once on this change.
+        shared-key: ${{ inputs.cache-key }}
 
     - name: Cache ONNX Runtime prebuilt (ort)
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
