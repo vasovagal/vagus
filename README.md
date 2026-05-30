@@ -8,7 +8,8 @@ search** over a folder of plain-Markdown notes, with **Claude Code skills** for 
 - **Vault** — plain Markdown in iCloud (`~/brain` → iCloud Drive), [PARA](https://fortelabs.com/blog/para/)
   layout (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`). Obsidian-compatible.
 - **Search** — [tantivy](https://github.com/quickwit-oss/tantivy) BM25 + local ONNX embeddings
-  (bge-small) fused with **Reciprocal Rank Fusion**. Fully offline after first run.
+  (EmbeddingGemma-300M) fused with **Reciprocal Rank Fusion**, with an optional in-core cross-encoder
+  reranker (`--rerank`). Fully offline after first run.
 - **Capture** — `vim ~/brain/00-Inbox/idea.md` (zero ceremony, no frontmatter required) or
   `/create-note` from a Claude Code session.
 - **Filing** — `/process-inbox`: Claude proposes a PARA home per inbox note; you approve.

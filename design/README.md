@@ -17,6 +17,7 @@ silently breaking an invariant.
 
 | File | What |
 |---|---|
+| [`roadmap.md`](./roadmap.md) | **Where we're going**: the three-tier direction, capability×home×status, milestones. |
 | [`requirements.md`](./requirements.md) | Functional + non-functional requirements, scope, **non-goals**. |
 | [`guardrails.md`](./guardrails.md) | The canonical hard-invariant list (binding). |
 | [`tradeoffs.md`](./tradeoffs.md) | Comparison tables: build-vs-adopt, embedding backends, the ONNX single-binary reality, vector-store options. |
@@ -37,3 +38,8 @@ silently breaking an invariant.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
 - `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
+- `0012-three-tier-retrieval.md` — floor / shell+local / Opus-skill tiers, channel-selected.
+- `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
+- `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
+- `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); amends 0003 + G17.
+- `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); amends G17 (next).

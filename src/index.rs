@@ -73,11 +73,18 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
 
     // A chunker change reshapes every chunk; force a one-time rebuild so old indexes self-heal.
     let mut reindex = reindex;
+    let mut auto_reindex = false;
     if !reindex {
         reindex = match db.meta_get("chunk_version")? {
             Some(v) => v != CHUNK_VERSION,
             None => db.count("SELECT count(*) FROM chunks")? > 0, // pre-versioning index
         };
+        auto_reindex = reindex;
+    }
+    if auto_reindex {
+        // The first run after an upgrade re-embeds the whole vault — say so, so a `vagus search`
+        // (which calls this incrementally) isn't silently slow on its first post-upgrade invocation.
+        eprintln!("vagus: embedding/chunk format changed — reindexing the whole vault (one-time)…");
     }
     if reindex {
         db.clear_all()?;

@@ -17,10 +17,15 @@ use crate::db::Db;
 use crate::embed::Embedder;
 use crate::index;
 use crate::lex::Lex;
+use crate::rerank::{Reranker, sigmoid};
 use crate::scope::Scope;
 
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
+
+/// Minimum candidate pool the cross-encoder reranks (the deeper fused set, before truncating to the
+/// requested `limit`). Scales with `limit` but never drops below this.
+const RERANK_POOL_MIN: usize = 30;
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Mode {
@@ -32,12 +37,13 @@ pub enum Mode {
     Vec,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Hit {
     pub chunk_id: String,
     pub path: String,
     pub heading: String,
     /// Primary ranking score for the chosen mode (RRF for hybrid, cosine for vec, BM25 for bm25).
+    /// When `--rerank` is on, this is the cross-encoder score (sigmoid of the raw logit).
     pub score: f32,
     /// RRF fused score (hybrid mode).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +54,14 @@ pub struct Hit {
     /// Tantivy BM25 score from the lexical retriever, when computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bm25: Option<f32>,
+    /// Raw cross-encoder rerank logit, when `--rerank` reordered this hit (ordering signal only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<f32>,
     pub snippet: String,
+    /// Full chunk body, only when `--full` is requested (skill path); omitted otherwise so the
+    /// default `--json` shape stays byte-identical (G9a).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// Ranked id + component scores, before joining SQLite for the display fields.
@@ -68,6 +81,14 @@ fn snippet(body: &str, n: usize) -> String {
     } else {
         one_line
     }
+}
+
+/// Relevance of a hit relative to the top hit, as a 0–100 integer. The raw RRF/cosine scalar isn't
+/// human-meaningful, and it's also the basis for the `--min-score` floor. Shared by `emit` and `run`.
+fn rel(score: f32, top: f32) -> i32 {
+    (100.0 * score / top.max(f32::EPSILON))
+        .round()
+        .clamp(0.0, 100.0) as i32
 }
 
 fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -105,11 +126,13 @@ fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     fused
 }
 
-/// Resolve ranked `Scored` into displayable hits (joining SQLite for path/heading/body).
-fn hydrate(db: &Db, ranked: Vec<Scored>) -> Result<Vec<Hit>> {
+/// Resolve ranked `Scored` into displayable hits (joining SQLite for path/heading/body). `keep_body`
+/// retains the full chunk body on the hit (for `--full` output and for cross-encoder reranking).
+fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for s in ranked {
         if let Some((path, heading, body)) = db.chunk_row(&s.id)? {
+            let snippet = snippet(&body, 200);
             hits.push(Hit {
                 chunk_id: s.id,
                 path,
@@ -118,26 +141,38 @@ fn hydrate(db: &Db, ranked: Vec<Scored>) -> Result<Vec<Hit>> {
                 rrf: s.rrf,
                 cosine: s.cosine,
                 bm25: s.bm25,
-                snippet: snippet(&body, 200),
+                rerank: None,
+                snippet,
+                body: keep_body.then_some(body),
             });
         }
     }
     Ok(hits)
 }
 
-/// Reusable: returns ranked hits (used by `run` and by filing `--suggest`).
+/// Reusable: returns ranked hits (used by `run` and by filing `--suggest`). `full` retains the chunk
+/// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1).
 pub fn query(
     cfg: &Config,
     q: &str,
     mode: Mode,
     limit: usize,
     scope: &Scope,
+    full: bool,
+    rerank: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     let db = Db::open(&cfg.db_path())?;
+    // When reranking, retrieve a deeper pool so the cross-encoder has real candidates to reorder
+    // before we truncate to `limit`; otherwise retrieve exactly `limit` (today's behavior).
+    let pool = if rerank {
+        (limit * 4).max(RERANK_POOL_MIN)
+    } else {
+        limit
+    };
     let ranked: Vec<Scored> = match mode {
         Mode::Bm25 => {
             let lex = Lex::open(&cfg.tantivy_dir())?;
-            lex.search(q, limit)?
+            lex.search(q, pool)?
                 .into_iter()
                 .map(|(id, bm25)| Scored {
                     id,
@@ -148,7 +183,7 @@ pub fn query(
                 })
                 .collect()
         }
-        Mode::Vec => vec_search(cfg, &db, q, limit)?
+        Mode::Vec => vec_search(cfg, &db, q, pool)?
             .into_iter()
             .map(|(id, cosine)| Scored {
                 id,
@@ -161,7 +196,7 @@ pub fn query(
         Mode::Hybrid => {
             // Pull a deeper candidate set from each retriever, then fuse — keeping each retriever's
             // raw score so the fused hit can report its cosine + BM25 components.
-            let cand = (limit * 3).max(30);
+            let cand = (pool * 3).max(30);
             let lex = Lex::open(&cfg.tantivy_dir())?;
             let bm = lex.search(q, cand)?; // (id, bm25), BM25 rank order
             let ve = vec_search(cfg, &db, q, cand)?; // (id, cosine), cosine rank order
@@ -169,7 +204,7 @@ pub fn query(
             let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
             let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
-            rrf(&[bm_ids, ve_ids], limit)
+            rrf(&[bm_ids, ve_ids], pool)
                 .into_iter()
                 .map(|(id, r)| Scored {
                     cosine: cos_of.get(id.as_str()).copied(),
@@ -181,7 +216,36 @@ pub fn query(
                 .collect()
         }
     };
-    let hits = hydrate(&db, ranked)?;
+    // Bodies are needed for `--full` output and (transiently) to feed the cross-encoder.
+    let keep_body = full || rerank;
+    let mut hits = hydrate(&db, ranked, keep_body)?;
+
+    // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF — G8 — untouched).
+    if rerank && !hits.is_empty() {
+        let mut rr = Reranker::new(&cfg.cache_dir)?;
+        let docs: Vec<String> = hits
+            .iter()
+            .map(|h| h.body.clone().unwrap_or_default())
+            .collect();
+        let order = rr.rerank(q, &docs)?; // (index, raw_logit), best-first
+        let mut reordered = Vec::with_capacity(order.len());
+        for (idx, score) in order {
+            let mut h = hits[idx].clone();
+            h.rerank = Some(score);
+            h.score = sigmoid(score); // display-/floor-friendly primary score for the rerank mode
+            reordered.push(h);
+        }
+        hits = reordered;
+    }
+
+    // The rerank path pulled a deeper pool — truncate to the requested limit, then drop any body we
+    // only kept transiently for reranking so the default `--json` shape stays byte-identical (G9a).
+    hits.truncate(limit);
+    if !full {
+        for h in &mut hits {
+            h.body = None;
+        }
+    }
     Ok(apply_scope(hits, scope))
 }
 
@@ -210,6 +274,9 @@ pub fn run(
     no_index: bool,
     verbose: bool,
     all: bool,
+    full: bool,
+    rerank: bool,
+    min_score: Option<f32>,
 ) -> Result<()> {
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
@@ -223,8 +290,14 @@ pub fn run(
     } else {
         Scope::discover()?
     };
-    let (hits, elided) = query(cfg, q, mode, limit, &scope)?;
-    emit(&hits, json, verbose);
+    let (mut hits, elided) = query(cfg, q, mode, limit, &scope, full, rerank)?;
+    // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
+    // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
+    if let Some(floor) = min_score {
+        let top = hits.first().map(|h| h.score).unwrap_or(1.0);
+        hits.retain(|h| rel(h.score, top) as f32 >= floor);
+    }
+    emit(&hits, json, verbose, full);
     if elided > 0 {
         let msg = format!("{elided} hit(s) elided by inherited config (--all to show)");
         if json {
@@ -341,7 +414,7 @@ fn truncate_cols(s: &str, w: usize) -> String {
 /// Max hits shown per note before collapsing to a "+N more" line.
 const PER_FILE_CAP: usize = 3;
 
-fn emit(hits: &[Hit], json: bool, verbose: bool) {
+fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
     if json {
         println!(
             "{}",
@@ -354,23 +427,24 @@ fn emit(hits: &[Hit], json: bool, verbose: bool) {
         return;
     }
     // Relevance relative to the top hit — the raw RRF/cosine scalar isn't human-meaningful.
-    let top = hits
-        .first()
-        .map(|h| h.score)
-        .unwrap_or(1.0)
-        .max(f32::EPSILON);
-    let rel = |s: f32| (100.0 * s / top).round().clamp(0.0, 100.0) as i32;
+    let top = hits.first().map(|h| h.score).unwrap_or(1.0);
 
-    if verbose {
-        // Pre-compaction layout: full path, full breadcrumb, full snippet, no truncation.
+    if verbose || full {
+        // Pre-compaction layout: full path, full breadcrumb, no width truncation. With `--full`,
+        // print the entire chunk body; otherwise the (≤200-char) snippet.
         for (i, h) in hits.iter().enumerate() {
             let loc = if h.heading.is_empty() {
                 h.path.clone()
             } else {
                 format!("{} › {}", h.path, h.heading)
             };
-            println!("{:>2}. {:>3}%  {loc}", i + 1, rel(h.score));
-            println!("    {}", h.snippet);
+            println!("{:>2}. {:>3}%  {loc}", i + 1, rel(h.score, top));
+            let text = if full {
+                h.body.as_deref().unwrap_or(&h.snippet)
+            } else {
+                &h.snippet
+            };
+            println!("    {text}");
         }
         return;
     }
@@ -419,7 +493,7 @@ fn emit(hits: &[Hit], json: bool, verbose: bool) {
 
         // Hit lines: "  <rel>%  <leaf>  — <snippet>", whole line hard-truncated to one terminal row.
         for h in group.iter().take(PER_FILE_CAP) {
-            let prefix = format!("  {:>3}%  ", rel(h.score));
+            let prefix = format!("  {:>3}%  ", rel(h.score, top));
             let leaf = leaf_heading(&h.heading);
             let body = if leaf.is_empty() {
                 h.snippet.clone()
@@ -456,7 +530,9 @@ mod scope_filter_tests {
             rrf: None,
             cosine: None,
             bm25: None,
+            rerank: None,
             snippet: String::new(),
+            body: None,
         }
     }
 
@@ -481,5 +557,43 @@ mod scope_filter_tests {
         let (kept, elided) = apply_scope(hits, &Scope::none());
         assert_eq!(elided, 0);
         assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn default_json_shape_omits_rerank_and_body() {
+        // The optional `rerank`/`body` fields must not appear when unset, so the default `--json`
+        // shape the skill parses stays byte-identical (G9a).
+        let h = hit("30-Resources/rust/d.md");
+        let j = serde_json::to_string(&h).unwrap();
+        assert!(
+            !j.contains("\"rerank\""),
+            "rerank leaked into default JSON: {j}"
+        );
+        assert!(
+            !j.contains("\"body\""),
+            "body leaked into default JSON: {j}"
+        );
+        // …but they serialize when populated (the `--rerank` / `--full` paths).
+        let mut h2 = hit("30-Resources/rust/d.md");
+        h2.rerank = Some(1.5);
+        h2.body = Some("full text".into());
+        let j2 = serde_json::to_string(&h2).unwrap();
+        assert!(j2.contains("\"rerank\":1.5"));
+        assert!(j2.contains("\"body\":\"full text\""));
+    }
+
+    #[test]
+    fn rel_is_relative_to_top() {
+        assert_eq!(rel(1.0, 1.0), 100);
+        assert_eq!(rel(0.5, 1.0), 50);
+        assert_eq!(rel(2.0, 1.0), 100); // clamped
+        assert_eq!(rel(1.0, 0.0), 100); // top==0 guarded, doesn't divide-by-zero
+    }
+
+    #[test]
+    fn sigmoid_is_monotonic_in_unit_interval() {
+        assert!(sigmoid(0.0) > 0.49 && sigmoid(0.0) < 0.51);
+        assert!(sigmoid(5.0) > sigmoid(-5.0));
+        assert!((0.0..=1.0).contains(&sigmoid(10.0)));
     }
 }

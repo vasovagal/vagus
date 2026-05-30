@@ -34,8 +34,10 @@ holds the comparison tables.
 | candle (bge-small safetensors) | ✅ | no | model only | same as fastembed | **yes** (pure Rust, hand-rolled tokenize) |
 | model2vec (potion, static) | ✅ | no | ~8 MB, instant | ~11 MTEB pts worse | **yes** (pure Rust) |
 
-**Chosen:** fastembed (bge-small) by default ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md));
-`model2vec` is the documented dylib-free escape hatch.
+**Chosen:** fastembed by default ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md)); `model2vec` is
+the documented dylib-free escape hatch. *(The model was **upgraded 2026-05-30** from bge-small (384d) to
+**EmbeddingGemma-300M (768d, 2048-ctx)** on the same fastembed/ort backend — same trade-offs as this
+table's fastembed row, larger cache (~1.23 GB). See ADR 0006.)*
 
 ## D. The ONNX "single binary" reality (verified on this build)
 

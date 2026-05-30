@@ -22,9 +22,16 @@ so we build the second-brain layer and lean on `frankensearch` for retrieval.
 
 ## Reference designs / building blocks
 
-- **[qmd](https://github.com/ehc-io/qmd)** (and tobi/qmd) — the hybrid design spec: BM25 + vector + RRF
-  (k=60, original-query ×2) + LLM rerank + HyDE/query-expansion, smart markdown chunking. TS/Bun + ~2 GB
-  local GGUF models; not Rust-installable. **Spec to match**, not a base to fork.
+- **[qmd](https://github.com/tobi/qmd)** (tobi/qmd; also ehc-io/qmd) — the hybrid design spec: BM25
+  (FTS5) + vector + RRF(k=60) + cross-encoder rerank + HyDE/query-expansion, smart markdown chunking.
+  TS/Bun + node-llama-cpp; ~2 GB local GGUF. **Verified model facts (2026-05-30):** ONE fine-tuned
+  **Qwen3-1.7B** (`tobil/qmd-query-expansion-1.7B-gguf`) does expansion **and** HyDE in a single typed
+  `lex:/vec:/hyde:` pass; reranker is **Qwen3-Reranker-0.6B** — a *decoder* scored by yes/no logprobs
+  (llama.cpp rank-pooling), **not** a fastembed-compatible cross-encoder; embedder is
+  **EmbeddingGemma-300M** (768-dim). qmd also adds weighted-RRF + a top-rank bonus + a position-aware
+  RRF/reranker blend — which vagus **rejects** (G8). **Spec to match**, not a base to fork: vagus apes
+  the embedder (on the ort stack) and the expansion model + typed-output protocol (via candle), but
+  deviates on the reranker (jina cross-encoder, in-core). See ADRs 0012/0015/0016.
 - **[papers-cli](https://crates.io/crates/papers-cli)** — Rust, fastembed + ort + LanceDB + MCP, ships
   on darwin-arm64. **Proof** the embedding/ort/MCP wiring compiles; lift that wiring (ignore its papers
   domain; we use SQLite-BLOB cosine, not LanceDB).

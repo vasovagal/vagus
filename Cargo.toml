@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "vagus"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
 description = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
 license = "MIT"

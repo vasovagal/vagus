@@ -31,7 +31,11 @@ all local, private, and durable as plain text. Driven from the terminal and from
   iCloud holds *only* Markdown (see [ADR 0004](./adr/0004-icloud-markdown-only.md)).
 - **N4 — Fast enough.** Search returns in well under a second on a personal-scale vault
   (tens of thousands of chunks); brute-force cosine is acceptable at this scale.
-- **N5 — Owned in Rust.** Single CLI binary `vagus`; the author maintains the code.
+- **N5 — Owned in Rust, no versioned runtime.** A self-contained Rust universe — the `vagus` binary
+  (plus optional `vagus-<name>` companions/plugins), each statically linking its native deps
+  (onnxruntime today; candle/ggml where justified). **No Python/Node/TS/managed runtime to reconcile.**
+  Binary size ≠ model footprint (models are a lazily-downloaded cache). The author maintains the code.
+  ([ADR 0014](./adr/0014-self-contained-universe.md))
 - **N6 — Small surface.** ~500–800 LOC of our own glue over mature crates; no novel algorithms.
 
 ## Scope (v1)
@@ -44,8 +48,12 @@ Indexing + hybrid search + capture + assisted filing + the three skills, on one 
 - **Not** a multi-device *write* store for the index — the index is per-machine and rebuilt locally;
   only the Markdown syncs (via iCloud).
 - **Not** an Obsidian replacement — Obsidian remains an optional GUI over the same files.
-- **Not** a single statically-linked binary by default (the ONNX path ships a `libonnxruntime.dylib`;
-  see [tradeoffs](./tradeoffs.md)).
+- **Not** bound to a *single executable* — but bound to **no managed runtime**. vagus may be several
+  self-contained Rust binaries (core + `vagus-<name>`); none requires Python/Node/TS
+  ([ADR 0014](./adr/0014-self-contained-universe.md)). (The ONNX path statically links onnxruntime, so
+  the binary is in fact self-contained — see [tradeoffs §D](./tradeoffs.md).)
 - **No** automatic filing/moving of notes without explicit user approval.
-- **No** LLM calls inside the `vagus` binary (query expansion / reranking with an LLM, if ever, lives
-  in the Claude skill layer).
+- **No** cloud LLM calls and **no daemon**, in any tier. Generation is *tiered*, not banned: a
+  cross-encoder reranker (a scoring model) is in core; generative rewriting/HyDE is an opt-in,
+  feature-gated local model (tier-1) or Opus in the `/search` skill (tier-2) — never a cloud call, never
+  a background service ([ADR 0012](./adr/0012-three-tier-retrieval.md), G17/G19).

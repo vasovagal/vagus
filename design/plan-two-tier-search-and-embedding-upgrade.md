@@ -1,5 +1,13 @@
 # Plan — two-tier search + EmbeddingGemma (to "qmd-class" retrieval)
 
+> **⚠️ SUPERSEDED (2026-05-30)** by
+> [`plan-advanced-search-three-tier.md`](./plan-advanced-search-three-tier.md) and
+> [ADR 0012](./adr/0012-three-tier-retrieval.md). The author chose to make the **shell tier
+> self-sufficient with local models** (a local reranker *and* a local generative rewriter), turning
+> this *two*-tier plan ("CLI = LLM-free ceiling") into a **three-tier** contract and un-parking the
+> local rewriter. The EmbeddingGemma swap + chunk right-sizing below were adopted as-is (M1). Kept for
+> history; do not action this file.
+
 > **Status:** Planned, not started (2026-05-30). Decisions below are **locked** by the author.
 > **Origin:** derived from a verified comparison of `vagus` vs `github.com/tobi/qmd`. Background notes
 > live in `10-Projects/vagus/` in the vault (`vagus-vs-tobi-qmd-comparison`,

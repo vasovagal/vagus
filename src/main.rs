@@ -11,6 +11,7 @@ mod index;
 mod lex;
 mod notes;
 mod plugin;
+mod rerank;
 mod scope;
 mod search;
 mod skills;
@@ -74,6 +75,17 @@ enum Command {
         /// Show results from every context, ignoring any inherited .vagus exclusion rules.
         #[arg(long)]
         all: bool,
+        /// Reorder results with the in-core cross-encoder reranker (tier-1; loads a ~150MB model on
+        /// first use). Re-scores a deeper candidate pool against full chunk bodies. RRF is untouched.
+        #[arg(long)]
+        rerank: bool,
+        /// Include each hit's full chunk body in the output (the `--json` skill path consumes this;
+        /// human output prints the untruncated body). Default output is unchanged.
+        #[arg(long)]
+        full: bool,
+        /// Drop hits scoring below this percent of the top hit (relative-to-top; mode-dependent feel).
+        #[arg(long)]
+        min_score: Option<f32>,
     },
     /// Create a new note in `00-Inbox/` and index it.
     AddNote {
@@ -167,7 +179,12 @@ fn main() -> Result<()> {
             no_index,
             verbose,
             all,
-        } => search::run(&cfg, &query, mode, json, limit, no_index, verbose, all)?,
+            rerank,
+            full,
+            min_score,
+        } => search::run(
+            &cfg, &query, mode, json, limit, no_index, verbose, all, full, rerank, min_score,
+        )?,
         Command::AddNote {
             title,
             para,
@@ -252,6 +269,28 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         "onnx + model",
         embed::Embedder::new(&cfg.cache_dir).is_ok(),
         &cfg.cache_dir.display().to_string(),
+    );
+    // The cross-encoder reranker is opt-in (tier-1, `--rerank`); report whether its model is already
+    // cached WITHOUT instantiating it (that would force the ~150MB download). `ok` is informational.
+    let rerank_cached = std::fs::read_dir(&cfg.cache_dir)
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                n.contains("rerank") || n.contains("jina")
+            })
+        })
+        .unwrap_or(false);
+    line(
+        "reranker (opt-in)",
+        true,
+        &format!(
+            "jina-reranker-v1-turbo-en — {}",
+            if rerank_cached {
+                "cached"
+            } else {
+                "downloads on first --rerank"
+            }
+        ),
     );
 
     let files = db.count("SELECT count(*) FROM files")?;
@@ -399,6 +438,7 @@ CAPTURE — zero ceremony:
 FIND:
   vagus search "that thing about X"   hybrid: keywords + meaning
   vagus search "..." --mode bm25      keyword-only   (--mode vec = semantic-only)
+  vagus search "..." --rerank         sharper ordering via a local cross-encoder (no cloud)
 
 FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox

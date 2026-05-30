@@ -19,8 +19,9 @@ Hybrid retrieval over a personal-scale Markdown vault (tens of thousands of chun
 - **Embeddings via `fastembed` (`bge-small-en-v1.5`, 384-dim)** through `ort` (=2.0.0-rc.12).
 - **Vectors: brute-force exact cosine in RAM**, stored as BLOBs in `rusqlite` (`bundled`). At this scale
   a full SIMD scan is sub-few-ms; zero extra deps. **No ANN crate yet.**
-- **Fusion: Reciprocal Rank Fusion, k=60** (`score = Σ 1/(k + rank)`), optionally weighting the
-  original-query BM25 list ×2. Rank-based ⇒ no score normalization.
+- **Fusion: Reciprocal Rank Fusion, k=60** (`score = Σ 1/(k + rank)`). Rank-based ⇒ no score
+  normalization, **no per-list weighting** (G8 — an earlier "weight the original-query BM25 list ×2"
+  note contradicted G8 and is removed; qmd's weighted-RRF/top-rank bonus are rejected).
 - **bge prefixing:** query gets `"Represent this sentence for searching relevant passages: "`;
   documents un-prefixed. Don't double-prefix (respect what the lib already applies).
 
@@ -41,5 +42,10 @@ ours for control + a clean dep tree and use frankensearch/qmd only as references
 
 - Brute force is fine now; revisit an ANN backend only if the corpus grows by orders of magnitude.
 - tantivy 0.x has no index-format compatibility guarantee across minor bumps → `tantivy_version` gate.
-- Reranker (`bge-reranker-base`) and query-expansion are **deferred** to a later optional stage / the
-  skill layer, not v1 ([guardrail G17](../guardrails.md)).
+- **Reranking and query-expansion are now tiered** (no longer "deferred"):
+  - A cross-encoder reranker (`jina-reranker-v1-turbo-en`) is an **in-core post-fusion stage**
+    (`vagus search --rerank`), riding this same `ort` stack — it does **not** touch `rrf()`
+    ([ADR 0015](./0015-cross-encoder-rerank.md)).
+  - Generative expansion/HyDE runs **locally in core** (tier-1, feature-gated candle,
+    [ADR 0016](./0016-local-generative-rewriter.md)) **or** via **Opus in the `/search` skill**
+    (tier-2). See the three-tier contract ([ADR 0012](./0012-three-tier-retrieval.md)) and G17/G19.

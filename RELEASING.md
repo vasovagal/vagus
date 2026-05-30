@@ -18,6 +18,16 @@ It does **not** re-run the test matrix — the tag trusts the green `main` it wa
 
 Re-run-safe (Law 19): re-running re-uploads with `--clobber` and re-commits the formula only on change.
 
+## Upgrade notes
+
+When a release changes the **embedding identity** (`EMBED_MODEL`/`EMBED_DIMS`) or the **chunk format**
+(`CHUNK_VERSION`), the index self-heals: the next `vagus index`/`vagus search` detects the `meta`
+mismatch (G4) and force-reindexes the whole vault automatically, printing a one-line stderr notice.
+That first post-upgrade run is slow (it re-embeds everything, and a new embedder downloads its model —
+EmbeddingGemma-300M is ~1.23 GB to `~/Library/Caches/vagus/models`, outside iCloud). Tell users in the
+release notes to run **`vagus reindex`** once at their convenience so the cost isn't paid mid-search,
+then `vagus doctor` to confirm `embed identity` and consistent `files/chunks/embedded`.
+
 ## The Homebrew tap
 
 The formula lives **in this repo** at `Formula/vagus.rb` — no separate `homebrew-*` repo and no PAT

@@ -8,13 +8,16 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 /// Default embedding model + its dimensionality. Pinned into the `meta` table at index time so a
-/// change forces a `reindex` (guardrail G4).
-pub const EMBED_MODEL: &str = "BAAI/bge-small-en-v1.5";
-pub const EMBED_DIMS: usize = 384;
+/// change forces a `reindex` (guardrail G4). EmbeddingGemma-300M: 768-dim, 2048-token context,
+/// ~+8 MTEB over bge-small, 100+ languages. A built-in fastembed variant
+/// (`EmbeddingModel::EmbeddingGemma300M`); see [ADR 0006](../design/adr/0006-embeddings-local-no-daemon.md).
+pub const EMBED_MODEL: &str = "google/embeddinggemma-300m";
+pub const EMBED_DIMS: usize = 768;
 
 /// Bump when the chunker changes shape. A mismatch in the `meta` table forces a one-time reindex so
-/// existing vaults self-heal on upgrade (v2 = stop indexing YAML frontmatter as note content).
-pub const CHUNK_VERSION: &str = "2";
+/// existing vaults self-heal on upgrade (v2 = stop indexing YAML frontmatter; v3 = token-budgeted
+/// sub-splitting of oversize sections, sized to the embedder context window — G20).
+pub const CHUNK_VERSION: &str = "3";
 
 #[derive(Debug, Clone)]
 pub struct Config {
