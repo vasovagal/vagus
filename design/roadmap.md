@@ -32,7 +32,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 | Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
-| Opus expansion + HyDE + full-body judge (tier 2) | `/search` skill | Opus | **next (milestone 3)** |
+| Opus expansion + HyDE + full-body judge (tier 2) | `/search` skill | Opus | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
 
 **Why advanced search is *not* a plugin:** the plugin protocol is capture-shaped (one-way
@@ -52,8 +52,10 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — tier-2 SOTA skill** *(next)*: rewrite `skills/search/SKILL.md` as the Opus pipeline over
-  `vagus search --json --full --rerank --min-score` (expansion + HyDE + full-body 0–3 judge + cite).
+- **M3 — tier-2 SOTA skill** *(shipped)*: `skills/search/SKILL.md` rewritten as the Opus pipeline over
+  `vagus search --json --full --rerank --limit 20` — 20-candidate full-body 0–3 judge + drop false
+  positives + reorder (corpus signal as a weak prior) + cite `path › heading`. Judging stays in the
+  skill (G17); RRF is never re-derived (G8); the skill shells out and parses `--json` (G13).
 
 ## Deferred / not building
 
