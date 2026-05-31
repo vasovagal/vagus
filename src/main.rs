@@ -93,6 +93,15 @@ enum Command {
         /// `generate` build feature (falls back to --rerank if absent).
         #[arg(long)]
         smart: bool,
+        /// Keep only notes created within this window (e.g. `10d`, `2w`, `6h`, `30m`, `90s`, or a
+        /// bare number of days). Uses the frontmatter `created` time, falling back to file mtime for
+        /// notes without it (ADR 0017). A post-rank filter — ranking (RRF) is unchanged.
+        #[arg(long, value_name = "DURATION")]
+        since: Option<String>,
+        /// Keep only notes whose frontmatter `source` matches (case-insensitive). Notes without a
+        /// `source` are excluded when this is set (ADR 0017). A post-rank filter — RRF is unchanged.
+        #[arg(long, value_name = "STR")]
+        source: Option<String>,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -199,8 +208,11 @@ fn main() -> Result<()> {
             full,
             min_score,
             smart,
+            since,
+            source,
         } => search::run(
-            &cfg, &query, mode, json, limit, no_index, verbose, all, full, rerank, min_score, smart,
+            &cfg, &query, mode, json, limit, no_index, verbose, all, full, rerank, min_score,
+            smart, since.as_deref(), source.as_deref(),
         )?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]

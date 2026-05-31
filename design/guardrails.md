@@ -14,7 +14,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `vagus reindex`. Markdown files are the source of truth; the DB never is.
 - **G3 — Never auto-edit the user's note.** Frontmatter is optional; a frontmatter-free note must index
   correctly (title ← first `# heading` or filename). Frontmatter is written/enriched only during an
-  explicit, user-approved filing step. ([ADR 0005](./adr/0005-assisted-filing.md))
+  explicit, user-approved filing step. ([ADR 0005](./adr/0005-assisted-filing.md)) A bare note must
+  also stay **filterable by `search --since`**: when `created` frontmatter is absent/unparseable, the
+  filter falls back to the file's **filesystem mtime**. ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 
 ## Index correctness
 
@@ -51,7 +53,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `.vagus/config.json` exclude word found by walking up from the CWD (code dirs only, never the
   vault); `--all` bypasses it and the `--json` Hit-array shape is unchanged.
   ([ADR 0009](./adr/0009-cwd-scoped-search.md)) The **default `--json` shape is stable**: new optional
-  fields (`rerank`, `body`) are omitted unless their flag is set, so the skill keeps parsing it.
+  fields (`rerank`, `body`, `created`, `source`) are omitted unless relevant, so the skill keeps parsing it.
+- **G9b — Frontmatter filters are a separate post-rank stage.** `search --since`/`--source` filter on
+  per-chunk `created_at`/`source` denormalized into SQLite at index time (**no tantivy schema change**);
+  the filter is a drop-only stage **around** fusion (mirrors `apply_scope`), **never** touching `rrf()`
+  (G7/G8) and **never** reordering survivors. Bumping `CHUNK_VERSION` (now **4**) back-fills the columns
+  via a one-time auto-reindex (G4). ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no Claude);
   (2) the `/search` skill = **Opus** expansion/HyDE/judge over the CLI. The *channel* picks the tier —

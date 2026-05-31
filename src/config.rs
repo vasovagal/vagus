@@ -14,10 +14,12 @@ use anyhow::{Context, Result};
 pub const EMBED_MODEL: &str = "google/embeddinggemma-300m";
 pub const EMBED_DIMS: usize = 768;
 
-/// Bump when the chunker changes shape. A mismatch in the `meta` table forces a one-time reindex so
-/// existing vaults self-heal on upgrade (v2 = stop indexing YAML frontmatter; v3 = token-budgeted
-/// sub-splitting of oversize sections, sized to the embedder context window — G20).
-pub const CHUNK_VERSION: &str = "3";
+/// Bump when the chunker changes shape OR when index-time extraction changes the per-chunk row, so a
+/// mismatch in the `meta` table forces a one-time reindex and existing vaults self-heal on upgrade
+/// (v2 = stop indexing YAML frontmatter; v3 = token-budgeted sub-splitting of oversize sections, sized
+/// to the embedder context window — G20; v4 = persist per-note `created_at`/`source` from frontmatter
+/// onto every chunk for the `--since`/`--source` filters — [ADR 0017](../design/adr/0017-indexed-frontmatter-filters.md)).
+pub const CHUNK_VERSION: &str = "4";
 
 #[derive(Debug, Clone)]
 pub struct Config {

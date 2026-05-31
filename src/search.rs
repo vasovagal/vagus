@@ -27,6 +27,43 @@ const RRF_K: f32 = 60.0;
 /// requested `limit`). Scales with `limit` but never drops below this.
 const RERANK_POOL_MIN: usize = 30;
 
+/// Parse a `--since` duration into seconds (dependency-free, ADR 0017). Accepts a single
+/// number+unit token — `30s`, `90m`, `6h`, `10d`, `2w` — or a bare integer interpreted as **days**
+/// (`7` == `7d`). Whitespace is trimmed; the unit is case-insensitive. The caller derives the cutoff
+/// as `now - parse_duration(..)`. Returns a clear error on anything else (empty, negative, unknown
+/// unit, non-numeric, overflow).
+pub fn parse_duration(input: &str) -> Result<i64> {
+    let s = input.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty duration (use e.g. 10d, 2w, 6h, 30m, 90s, or a bare number of days)");
+    }
+    let (num_str, unit_secs): (&str, i64) = match s.chars().last().unwrap() {
+        c if c.is_ascii_digit() => (s, 86_400), // bare number -> days
+        's' | 'S' => (&s[..s.len() - 1], 1),
+        'm' | 'M' => (&s[..s.len() - 1], 60),
+        'h' | 'H' => (&s[..s.len() - 1], 3_600),
+        'd' | 'D' => (&s[..s.len() - 1], 86_400),
+        'w' | 'W' => (&s[..s.len() - 1], 604_800),
+        other => anyhow::bail!(
+            "invalid duration unit {other:?} in {s:?} (use s, m, h, d, w, or a bare number of days)"
+        ),
+    };
+    // Parse the numeric part as-is (no inner trim) so embedded whitespace like "10 d" is rejected.
+    let n: i64 = num_str.parse().map_err(|_| {
+        anyhow::anyhow!("invalid duration {s:?} (expected e.g. 10d, 2w, 6h, 30m, 90s, or a number)")
+    })?;
+    if n < 0 {
+        anyhow::bail!("duration must not be negative: {s:?}");
+    }
+    n.checked_mul(unit_secs)
+        .ok_or_else(|| anyhow::anyhow!("duration too large: {s:?}"))
+}
+
+/// Compute the `--since` cutoff in unix seconds: `now - parse_duration(spec)`.
+pub fn since_cutoff(spec: &str) -> Result<i64> {
+    Ok(crate::util::now_unix() - parse_duration(spec)?)
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Mode {
     /// BM25 + semantic, fused with RRF.
@@ -62,6 +99,15 @@ pub struct Hit {
     /// default `--json` shape stays byte-identical (G9a).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Note `created` as unix secs (frontmatter, or file-mtime fallback — G3). Additive optional
+    /// field (ADR 0017): `skip_serializing_if = None` so the default `--json` Hit shape stays
+    /// byte-identical for pre-v4 rows / callers that don't filter (G9a/G13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<i64>,
+    /// Note `source` frontmatter. Additive optional field (ADR 0017); omitted from `--json` when
+    /// absent (G9a/G13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Ranked id + component scores, before joining SQLite for the display fields.
@@ -137,6 +183,9 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for s in ranked {
         if let Some((path, heading, body)) = db.chunk_row(&s.id)? {
+            // Note-level filter fields (`created`/`source`) live in a sibling read so the hot display
+            // join stays unchanged; absent rows (pre-v4) default to None (ADR 0017).
+            let (created, source) = db.chunk_filter_fields(&s.id)?.unwrap_or((None, None));
             let snippet = snippet(&body, 200);
             hits.push(Hit {
                 chunk_id: s.id,
@@ -149,6 +198,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
                 rerank: None,
                 snippet,
                 body: keep_body.then_some(body),
+                created,
+                source,
             });
         }
     }
@@ -157,6 +208,7 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
 
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`). `full` retains the chunk
 /// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1).
+#[allow(clippy::too_many_arguments)]
 pub fn query(
     cfg: &Config,
     q: &str,
@@ -165,11 +217,14 @@ pub fn query(
     scope: &Scope,
     full: bool,
     rerank: bool,
+    since: Option<i64>,
+    source: Option<&str>,
 ) -> Result<(Vec<Hit>, usize)> {
     let db = Db::open(&cfg.db_path())?;
-    // When reranking, retrieve a deeper pool so the cross-encoder has real candidates to reorder
-    // before we truncate to `limit`; otherwise retrieve exactly `limit` (today's behavior).
-    let pool = if rerank {
+    // Retrieve a deeper pool when reranking (the cross-encoder needs candidates) OR when filtering
+    // (the post-rank `--since`/`--source` stage may drop many top hits, so depth lets it still fill
+    // `limit`); otherwise retrieve exactly `limit` (today's behavior).
+    let pool = if rerank || since.is_some() || source.is_some() {
         (limit * 4).max(RERANK_POOL_MIN)
     } else {
         limit
@@ -243,8 +298,14 @@ pub fn query(
         hits = reordered;
     }
 
-    // The rerank path pulled a deeper pool — truncate to the requested limit, then drop any body we
-    // only kept transiently for reranking so the default `--json` shape stays byte-identical (G9a).
+    // Post-rank frontmatter filter (ADR 0017): a SEPARATE stage on the already-ranked hits (after
+    // fusion and any rerank reordering), exactly like `apply_scope` — it preserves their order and
+    // leaves `rrf()` pure (G7/G8). Runs BEFORE truncation so a filtered query still fills `limit`
+    // from the deeper pool pulled above.
+    let mut hits = apply_filters(hits, since, source);
+
+    // Truncate to the requested limit, then drop any body we only kept transiently for reranking so
+    // the default `--json` shape stays byte-identical (G9a).
     hits.truncate(limit);
     if !full {
         for h in &mut hits {
@@ -254,17 +315,42 @@ pub fn query(
     Ok(apply_scope(hits, scope))
 }
 
+/// Post-rank `--since`/`--source` filter (ADR 0017). Mirrors `apply_scope`: prunes already-ranked
+/// hits in order (no backfill, no reordering), keeping `rrf()` pure (G7/G8). A hit is kept iff:
+///   - `since` is None OR its `created` is known and `>= cutoff`, AND
+///   - `source` is None OR the hit's `source` equals the requested value (ASCII case-insensitive).
+///
+/// A hit with a NULL `source` never matches a `--source` request.
+fn apply_filters(hits: Vec<Hit>, since: Option<i64>, source: Option<&str>) -> Vec<Hit> {
+    hits.into_iter()
+        .filter(|h| match since {
+            Some(cutoff) => h.created.is_some_and(|c| c >= cutoff),
+            None => true,
+        })
+        .filter(|h| match source {
+            Some(want) => h
+                .source
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(want)),
+            None => true,
+        })
+        .collect()
+}
+
 /// Tier-1 "smart" retrieval (ADR 0016, G19): a local model expands the query into typed lex/vec/hyde
 /// variants; each (plus the original, as both BM25 and vector) is retrieved, all lists are RRF-fused
 /// (k=60, unchanged — G8), and the fused pool is reranked against the *original* query on full bodies.
 /// Offline, no Claude — the local sibling of the Opus `/search` skill.
 #[cfg(feature = "generate")]
+#[allow(clippy::too_many_arguments)]
 fn smart_query(
     cfg: &Config,
     q: &str,
     limit: usize,
     scope: &Scope,
     full: bool,
+    since: Option<i64>,
+    source: Option<&str>,
 ) -> Result<(Vec<Hit>, usize)> {
     use crate::rewrite::{Kind, Rewriter};
 
@@ -338,6 +424,9 @@ fn smart_query(
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     }
 
+    // Post-rank `--since`/`--source` filter (ADR 0017) — the same separate stage as the plain path,
+    // before truncation so the deeper smart pool can still fill `limit`. RRF/rerank order untouched.
+    let mut hits = apply_filters(hits, since, source);
     hits.truncate(limit);
     if !full {
         for h in &mut hits {
@@ -375,10 +464,12 @@ fn run_query(
     full: bool,
     rerank: bool,
     smart: bool,
+    since: Option<i64>,
+    source: Option<&str>,
 ) -> Result<(Vec<Hit>, usize)> {
     #[cfg(feature = "generate")]
     if smart {
-        match smart_query(cfg, q, limit, scope, full) {
+        match smart_query(cfg, q, limit, scope, full, since, source) {
             Ok(r) => return Ok(r),
             Err(e) => {
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
@@ -391,7 +482,17 @@ fn run_query(
             "vagus: built without the local rewriter (`generate` feature); --smart falls back to --rerank"
         );
     }
-    query(cfg, q, mode, limit, scope, full, rerank || smart)
+    query(
+        cfg,
+        q,
+        mode,
+        limit,
+        scope,
+        full,
+        rerank || smart,
+        since,
+        source,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -408,7 +509,14 @@ pub fn run(
     rerank: bool,
     min_score: Option<f32>,
     smart: bool,
+    since: Option<&str>,
+    source: Option<&str>,
 ) -> Result<()> {
+    // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
+    let since_cut = match since {
+        Some(spec) => Some(since_cutoff(spec)?),
+        None => None,
+    };
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
     // actually changed). `--no-index` skips it.
@@ -421,7 +529,9 @@ pub fn run(
     } else {
         Scope::discover()?
     };
-    let (mut hits, elided) = run_query(cfg, q, mode, limit, &scope, full, rerank, smart)?;
+    let (mut hits, elided) = run_query(
+        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source,
+    )?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
     if let Some(floor) = min_score {
@@ -664,6 +774,17 @@ mod scope_filter_tests {
             rerank: None,
             snippet: String::new(),
             body: None,
+            created: None,
+            source: None,
+        }
+    }
+
+    /// `hit` plus the note-level filter fields the `--since`/`--source` stage reads (ADR 0017).
+    fn hit_meta(path: &str, created: Option<i64>, source: Option<&str>) -> Hit {
+        Hit {
+            created,
+            source: source.map(str::to_string),
+            ..hit(path)
         }
     }
 
@@ -726,5 +847,73 @@ mod scope_filter_tests {
         assert!(sigmoid(0.0) > 0.49 && sigmoid(0.0) < 0.51);
         assert!(sigmoid(5.0) > sigmoid(-5.0));
         assert!((0.0..=1.0).contains(&sigmoid(10.0)));
+    }
+
+    // --- --since / --source filters (ADR 0017) ----------------------------------------------------
+
+    #[test]
+    fn parse_duration_units() {
+        assert_eq!(parse_duration("90s").unwrap(), 90);
+        assert_eq!(parse_duration("30m").unwrap(), 30 * 60);
+        assert_eq!(parse_duration("6h").unwrap(), 6 * 3600);
+        assert_eq!(parse_duration("10d").unwrap(), 10 * 86_400);
+        assert_eq!(parse_duration("2w").unwrap(), 2 * 604_800);
+        // A bare number means days; the unit is case-insensitive; surrounding whitespace is trimmed.
+        assert_eq!(parse_duration("7").unwrap(), 7 * 86_400);
+        assert_eq!(parse_duration("3D").unwrap(), 3 * 86_400);
+        assert_eq!(parse_duration("  5h ").unwrap(), 5 * 3600);
+    }
+
+    #[test]
+    fn parse_duration_rejects_garbage() {
+        for bad in ["", "abc", "10x", "1.5d", "10 d", "-3d"] {
+            assert!(parse_duration(bad).is_err(), "expected error for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn since_keeps_in_window_drops_older() {
+        // cutoff = 1000; a chunk exactly at the cutoff survives, one second older drops, NULL drops.
+        let hits = vec![
+            hit_meta("a.md", Some(1001), None),
+            hit_meta("b.md", Some(1000), None),
+            hit_meta("c.md", Some(999), None),
+            hit_meta("d.md", None, None),
+        ];
+        let kept = apply_filters(hits, Some(1000), None);
+        let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["a.md", "b.md"]);
+    }
+
+    #[test]
+    fn source_matches_case_insensitively_and_excludes_null() {
+        let hits = vec![
+            hit_meta("a.md", None, Some("Corti")),
+            hit_meta("b.md", None, Some("slack")),
+            hit_meta("c.md", None, None),
+        ];
+        let kept = apply_filters(hits, None, Some("corti"));
+        let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["a.md"]);
+    }
+
+    #[test]
+    fn filters_preserve_rank_order_of_survivors() {
+        // apply_filters prunes in place (no reordering, no backfill) — RRF order is untouched (G7/G8).
+        let hits = vec![
+            hit_meta("first.md", Some(2000), Some("corti")),
+            hit_meta("second.md", Some(500), Some("corti")), // dropped by --since
+            hit_meta("third.md", Some(3000), Some("corti")),
+        ];
+        let kept = apply_filters(hits, Some(1000), Some("corti"));
+        let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["first.md", "third.md"]);
+    }
+
+    #[test]
+    fn no_filters_is_passthrough() {
+        let hits = vec![hit_meta("a.md", None, None), hit_meta("b.md", Some(1), None)];
+        let kept = apply_filters(hits, None, None);
+        assert_eq!(kept.len(), 2);
     }
 }
