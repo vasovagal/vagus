@@ -912,7 +912,10 @@ mod scope_filter_tests {
 
     #[test]
     fn no_filters_is_passthrough() {
-        let hits = vec![hit_meta("a.md", None, None), hit_meta("b.md", Some(1), None)];
+        let hits = vec![
+            hit_meta("a.md", None, None),
+            hit_meta("b.md", Some(1), None),
+        ];
         let kept = apply_filters(hits, None, None);
         assert_eq!(kept.len(), 2);
     }
