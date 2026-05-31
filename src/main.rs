@@ -134,12 +134,16 @@ enum Command {
         /// Instead of moving, suggest destinations.
         #[arg(long)]
         suggest: bool,
-        /// With --suggest, emit JSON (for the /process-inbox skill).
+        /// With --suggest, emit JSON (for the /process-inbox skill). With --stats, emit the
+        /// per-step timing breakdown as one stable JSON object instead of the table.
         #[arg(long)]
         json: bool,
         /// Show how a suggestion is computed (query text, search hits, folder derivation).
         #[arg(long)]
         thought_process: bool,
+        /// After filing, print a per-step timing breakdown (enrich/move/index sub-steps + total).
+        #[arg(long)]
+        stats: bool,
     },
     /// Print a short guide to capturing, searching, and filing notes with PARA.
     Tutorial,
@@ -234,7 +238,8 @@ fn main() -> Result<()> {
             suggest,
             json,
             thought_process,
-        } => notes::file(&cfg, &path, to.as_deref(), suggest, json, thought_process)?,
+            stats,
+        } => notes::file(&cfg, &path, to.as_deref(), suggest, json, thought_process, stats)?,
         Command::Tutorial => cmd_tutorial(&cfg),
         Command::Doctor => cmd_doctor(&cfg)?,
         Command::Skills { action } => match action {
