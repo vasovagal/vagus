@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS chunks(
 CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
 
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+
+-- `--smart` query-expansion cache (ADR 0016). The local rewriter is deterministic (fixed seed), so
+-- its typed lex/vec/hyde output is a pure function of the query + model identity + decoding params.
+-- The `key` already folds all of those in (see `rewrite::expansion_cache_key`), so a model/param swap
+-- yields a fresh key and stale rows are simply never read. Derived cache, fully rebuildable (G2);
+-- independent of vault content (only the LLM step is cached, retrieval always runs live).
+CREATE TABLE IF NOT EXISTS expansion_cache(
+  key        TEXT PRIMARY KEY,   -- sha256(query + model/tokenizer ids + sampling params + token cap)
+  value      TEXT NOT NULL,      -- JSON-serialized Vec<rewrite::Variant>
+  created_at INTEGER NOT NULL    -- unix secs
+);
 "#;
 
 pub struct Db {
@@ -88,6 +99,35 @@ impl Db {
         self.conn.execute(
             "INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2",
             params![k, v],
+        )?;
+        Ok(())
+    }
+
+    // --- expansion cache (`--smart`, ADR 0016) ------------------------------
+    // Only the generate-gated smart path uses these, so gate them too (lean-build warning-free). The
+    // `expansion_cache` table itself is created unconditionally so the DB schema is feature-invariant.
+
+    /// Cached query-expansion payload for `key`, if present (the JSON blob; the caller deserializes).
+    #[cfg(feature = "generate")]
+    pub fn expansion_cache_get(&self, key: &str) -> Result<Option<String>> {
+        let v = self
+            .conn
+            .query_row(
+                "SELECT value FROM expansion_cache WHERE key=?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(v)
+    }
+
+    /// Store (or refresh) the expansion payload for `key`.
+    #[cfg(feature = "generate")]
+    pub fn expansion_cache_put(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO expansion_cache(key,value,created_at) VALUES(?1,?2,?3)
+             ON CONFLICT(key) DO UPDATE SET value=?2, created_at=?3",
+            params![key, value, crate::util::now_unix()],
         )?;
         Ok(())
     }

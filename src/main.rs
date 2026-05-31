@@ -102,6 +102,10 @@ enum Command {
         /// `source` are excluded when this is set (ADR 0017). A post-rank filter — RRF is unchanged.
         #[arg(long, value_name = "STR")]
         source: Option<String>,
+        /// Print a per-stage timing breakdown to stderr (rewrite/embed/rerank load + compute, fuse,
+        /// total). Diagnostic for `--smart`/`--rerank`; stdout and the `--json` shape are unchanged.
+        #[arg(long)]
+        timings: bool,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -210,6 +214,7 @@ fn main() -> Result<()> {
             smart,
             since,
             source,
+            timings,
         } => search::run(
             &cfg,
             &query,
@@ -225,6 +230,7 @@ fn main() -> Result<()> {
             smart,
             since.as_deref(),
             source.as_deref(),
+            timings,
         )?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]

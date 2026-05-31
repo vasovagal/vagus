@@ -78,7 +78,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G13 — Honest artifact (verified).** `ort` 2.0.0-rc.12 statically links `libonnxruntime.a`, so the
   installed binary is self-contained (system dylibs only; no `libonnxruntime.dylib`). If a future
   `ort`/platform ships a *shared* onnxruntime instead, the artifact becomes binary+dylib — re-verify
-  with `otool -L` and update this note. `model2vec` is the onnxruntime-free fallback.
+  with `otool -L` and update this note. `model2vec` is the onnxruntime-free fallback. The macOS Metal
+  backend for the candle rewriter (ADR 0016) links only system frameworks (`Metal`, `Foundation`,
+  `CoreFoundation`, `CoreML`) — re-verified self-contained via `otool -L` (still system-only).
 
 ## Product
 

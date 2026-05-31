@@ -26,7 +26,10 @@ const GGUF_FILE: &str = "qmd-query-expansion-1.7B-q4_k_m.gguf";
 const TOKENIZER_REPO: &str = "Qwen/Qwen3-1.7B";
 
 // Qwen3 non-thinking sampling (qmd's values); greedy (temp 0) causes repetition loops.
-const MAX_NEW_TOKENS: usize = 512;
+// `/no_think` expansion is a handful of typed `lex:/vec:/hyde:` lines (~70 tokens before EOS), so this
+// ceiling is hit only on a pathological non-terminating generation; at CPU decode rates (~15-20 tok/s)
+// 192 bounds that worst case to a few seconds instead of ~30s, without clipping real output.
+const MAX_NEW_TOKENS: usize = 192;
 const REPEAT_LAST_N: usize = 64;
 const REPEAT_PENALTY: f32 = 1.1;
 const TEMPERATURE: f64 = 0.7;
@@ -34,7 +37,7 @@ const TOP_K: usize = 20;
 const TOP_P: f64 = 0.8;
 const SEED: u64 = 299_792_458;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Lex,
     Vec,
@@ -51,9 +54,46 @@ impl Kind {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Variant {
     pub kind: Kind,
     pub text: String,
+}
+
+/// Cache key for an expansion (Fix C / ADR 0016): the query folded together with the full generation
+/// identity — model repo/file/tokenizer (incl. the `VAGUS_REWRITE_*` env overrides) plus every
+/// sampling parameter and the token cap. Because expansion is deterministic (fixed `SEED`), the same
+/// inputs always yield the same output, and any change to the model or decoding produces a different
+/// key — so a stale expansion is never served.
+pub fn expansion_cache_key(query: &str) -> String {
+    let repo = std::env::var("VAGUS_REWRITE_REPO").unwrap_or_else(|_| GGUF_REPO.to_string());
+    let file = std::env::var("VAGUS_REWRITE_FILE").unwrap_or_else(|_| GGUF_FILE.to_string());
+    let tok =
+        std::env::var("VAGUS_REWRITE_TOKENIZER").unwrap_or_else(|_| TOKENIZER_REPO.to_string());
+    let canonical = format!(
+        "v1|{repo}|{file}|{tok}|max={MAX_NEW_TOKENS}|seed={SEED}|temp={TEMPERATURE}|topk={TOP_K}|topp={TOP_P}|rp={REPEAT_PENALTY}|rln={REPEAT_LAST_N}|q={query}"
+    );
+    crate::util::sha256_hex(canonical.as_bytes())
+}
+
+/// Pick the rewriter's compute device. On macOS, prefer the Metal GPU — candle ships dedicated
+/// quantized matmul kernels, a large speedup for the token-by-token decode over CPU `gemm` (ADR 0016)
+/// — falling back to CPU if Metal can't initialize. Every other platform uses CPU. The binary stays
+/// self-contained: Metal.framework is a macOS system framework (ADR 0014/G13).
+#[cfg(target_os = "macos")]
+fn select_device() -> Device {
+    match Device::new_metal(0) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("vagus: Metal GPU unavailable ({e}); using CPU for the rewriter");
+            Device::Cpu
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn select_device() -> Device {
+    Device::Cpu
 }
 
 pub struct Rewriter {
@@ -86,7 +126,7 @@ impl Rewriter {
             .with_context(|| format!("downloading {tok_repo}/tokenizer.json"))?;
 
         let tokenizer = Tokenizer::from_file(&tok_path).map_err(anyhow::Error::msg)?;
-        let device = Device::Cpu;
+        let device = select_device();
         let mut fh = std::fs::File::open(&gguf_path)
             .with_context(|| format!("open {}", gguf_path.display()))?;
         let content = gguf_file::Content::read(&mut fh).map_err(|e| e.with_path(&gguf_path))?;
@@ -281,5 +321,37 @@ mod tests {
         let fb = fallback("my query");
         assert_eq!(fb.len(), 3);
         assert_eq!(fb[0].kind, Kind::Hyde);
+    }
+
+    #[test]
+    fn expansion_cache_key_is_deterministic_and_query_sensitive() {
+        // Same query → same key (so a repeat hits the cache, Fix C); different query → different key
+        // (so distinct queries never collide). 64 hex chars = sha256.
+        let a = expansion_cache_key("vice");
+        assert_eq!(a, expansion_cache_key("vice"));
+        assert_ne!(a, expansion_cache_key("vice president"));
+        assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn variant_round_trips_through_json() {
+        // The cache stores `Vec<Variant>` as JSON; a faithful round-trip keeps cache-hit ranking
+        // identical to a fresh expansion.
+        let v = vec![
+            Variant {
+                kind: Kind::Lex,
+                text: "vice leadership".into(),
+            },
+            Variant {
+                kind: Kind::Hyde,
+                text: "a passage about vice".into(),
+            },
+        ];
+        let json = serde_json::to_string(&v).unwrap();
+        let back: Vec<Variant> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].kind, Kind::Lex);
+        assert_eq!(back[0].text, "vice leadership");
+        assert_eq!(back[1].kind, Kind::Hyde);
     }
 }

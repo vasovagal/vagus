@@ -7,6 +7,11 @@
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
+// Only the `--smart` path (smart_query) prewarms models on threads, so this is generate-gated to keep
+// the lean (`--no-default-features`) build warning-free.
+#[cfg(feature = "generate")]
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::ValueEnum;
@@ -26,6 +31,49 @@ const RRF_K: f32 = 60.0;
 /// Minimum candidate pool the cross-encoder reranks (the deeper fused set, before truncating to the
 /// requested `limit`). Scales with `limit` but never drops below this.
 const RERANK_POOL_MIN: usize = 30;
+
+/// Per-stage wall-clock timings (ms) for an advanced retrieval run, printed to stderr by `--timings`.
+/// A diagnostic + regression guard (mirrors `IndexTimings`); it never touches stdout or the `--json`
+/// Hit shape (G9a). A field stays 0.0 for any stage the chosen mode/path didn't run, and `print`
+/// elides zero rows. Crucially this separates each model's **load** from its **compute** — the load
+/// rows fall to ~0 once Fix B prewarms them off the critical path.
+#[derive(Default)]
+struct SmartTimings {
+    rewrite_load_ms: f64,
+    rewrite_decode_ms: f64,
+    embed_load_ms: f64,
+    retrieval_ms: f64,
+    fuse_ms: f64,
+    rerank_load_ms: f64,
+    rerank_ms: f64,
+    total_ms: f64,
+}
+
+impl SmartTimings {
+    fn print(&self, label: &str) {
+        eprintln!("vagus --timings ({label}):");
+        let rows: [(&str, f64); 7] = [
+            ("rewrite_load", self.rewrite_load_ms),
+            ("rewrite_decode", self.rewrite_decode_ms),
+            ("embed_load", self.embed_load_ms),
+            ("retrieval", self.retrieval_ms),
+            ("fuse", self.fuse_ms),
+            ("rerank_load", self.rerank_load_ms),
+            ("rerank", self.rerank_ms),
+        ];
+        for (name, ms) in rows {
+            if ms > 0.0 {
+                eprintln!("  {name:<15} {ms:>9.1} ms");
+            }
+        }
+        eprintln!("  {:<15} {:>9.1} ms", "total", self.total_ms);
+    }
+}
+
+/// Milliseconds elapsed since `t`, as `f64` (mirrors `index::elapsed_ms`).
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
 
 /// Parse a `--since` duration into seconds (dependency-free, ADR 0017). Accepts a single
 /// number+unit token — `30s`, `90m`, `6h`, `10d`, `2w` — or a bare integer interpreted as **days**
@@ -219,7 +267,10 @@ pub fn query(
     rerank: bool,
     since: Option<i64>,
     source: Option<&str>,
+    timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
+    let t_total = Instant::now();
+    let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
     // Retrieve a deeper pool when reranking (the cross-encoder needs candidates) OR when filtering
     // (the post-rank `--since`/`--source` stage may drop many top hits, so depth lets it still fill
@@ -229,6 +280,7 @@ pub fn query(
     } else {
         limit
     };
+    let t0 = Instant::now();
     let ranked: Vec<Scored> = match mode {
         Mode::Bm25 => {
             let lex = Lex::open(&cfg.tantivy_dir())?;
@@ -276,17 +328,23 @@ pub fn query(
                 .collect()
         }
     };
+    t.retrieval_ms = ms_since(t0);
     // Bodies are needed for `--full` output and (transiently) to feed the cross-encoder.
     let keep_body = full || rerank;
+    let t0 = Instant::now();
     let mut hits = hydrate(&db, ranked, keep_body)?;
+    t.fuse_ms = ms_since(t0);
 
     // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF — G8 — untouched).
     if rerank && !hits.is_empty() {
+        let t0 = Instant::now();
         let mut rr = Reranker::new(&cfg.cache_dir)?;
+        t.rerank_load_ms = ms_since(t0);
         let docs: Vec<String> = hits
             .iter()
             .map(|h| h.body.clone().unwrap_or_default())
             .collect();
+        let t0 = Instant::now();
         let order = rr.rerank(q, &docs)?; // (index, raw_logit), best-first
         let mut reordered = Vec::with_capacity(order.len());
         for (idx, score) in order {
@@ -296,6 +354,7 @@ pub fn query(
             reordered.push(h);
         }
         hits = reordered;
+        t.rerank_ms = ms_since(t0);
     }
 
     // Post-rank frontmatter filter (ADR 0017): a SEPARATE stage on the already-ranked hits (after
@@ -311,6 +370,10 @@ pub fn query(
         for h in &mut hits {
             h.body = None;
         }
+    }
+    t.total_ms = ms_since(t_total);
+    if timings {
+        t.print(if rerank { "rerank" } else { "plain" });
     }
     Ok(apply_scope(hits, scope))
 }
@@ -351,16 +414,55 @@ fn smart_query(
     full: bool,
     since: Option<i64>,
     source: Option<&str>,
+    timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
-    use crate::rewrite::{Kind, Rewriter};
+    use crate::rewrite::{Kind, Rewriter, Variant};
 
+    let t_total = Instant::now();
+    let mut t = SmartTimings::default();
     let pool = (limit * 4).max(RERANK_POOL_MIN);
     let db = Db::open(&cfg.db_path())?;
 
-    // 1) Expand, then drop the LLM to free RAM before the embedder/reranker load.
-    let variants = {
-        let mut rw = Rewriter::new(&cfg.cache_dir)?;
-        rw.expand(q)?
+    // Fix B: warm the two ONNX models (embedder ~2s, reranker ~0.15s) on background threads so their
+    // cold load overlaps the multi-second LLM decode below instead of running serially after it. The
+    // rewrite→embed→rerank *data* dependency is unchanged; only the independent *model loads* move off
+    // the critical path. NOT a daemon — the threads are joined within this one-shot call and die with
+    // the process (G14). Trades a little peak RAM (all three models briefly resident) for latency. On a
+    // worker panic we rebuild on the main thread, so run_query's "smart unavailable → --rerank"
+    // graceful fallback still holds.
+    let mut emb_warm: Option<JoinHandle<Result<Embedder>>> = Some({
+        let cache = cfg.cache_dir.clone();
+        std::thread::spawn(move || Embedder::new(&cache))
+    });
+    let rr_warm: JoinHandle<Result<Reranker>> = {
+        let cache = cfg.cache_dir.clone();
+        std::thread::spawn(move || Reranker::new(&cache))
+    };
+
+    // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
+    //    the cache first (Fix C); a hit skips the LLM entirely — load + decode — which is the big win
+    //    for iterative re-querying. On a miss, run the local LLM (the long pole; the prewarm threads
+    //    load meanwhile), then store the result. The Rewriter is dropped after expanding, freeing RAM.
+    let cache_key = crate::rewrite::expansion_cache_key(q);
+    let cached: Option<Vec<Variant>> = db
+        .expansion_cache_get(&cache_key)?
+        .and_then(|json| serde_json::from_str(&json).ok());
+    let variants = match cached {
+        // Cache hit: rewrite_load_ms / rewrite_decode_ms stay 0.0 — no model was touched.
+        Some(v) => v,
+        None => {
+            let t0 = Instant::now();
+            let mut rw = Rewriter::new(&cfg.cache_dir)?;
+            t.rewrite_load_ms = ms_since(t0);
+            let t0 = Instant::now();
+            let v = rw.expand(q)?;
+            t.rewrite_decode_ms = ms_since(t0);
+            // Best-effort cache write; a failure here just means the next run regenerates.
+            if let Ok(json) = serde_json::to_string(&v) {
+                let _ = db.expansion_cache_put(&cache_key, &json);
+            }
+            v
+        }
     };
 
     // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each
@@ -377,9 +479,21 @@ fn smart_query(
     for (is_vec, text) in plans {
         if is_vec {
             if emb.is_none() {
-                emb = Some(Embedder::new(&cfg.cache_dir)?);
+                let t0 = Instant::now();
+                // Collect the prewarmed embedder (Fix B); join is instant if the thread finished
+                // during the LLM decode. A worker panic falls back to a foreground build.
+                let e = match emb_warm.take() {
+                    Some(h) => match h.join() {
+                        Ok(r) => r?,
+                        Err(_) => Embedder::new(&cfg.cache_dir)?,
+                    },
+                    None => Embedder::new(&cfg.cache_dir)?,
+                };
+                emb = Some(e);
                 matrix = db.all_embeddings()?;
+                t.embed_load_ms += ms_since(t0);
             }
+            let t0 = Instant::now();
             let qv = emb.as_mut().unwrap().embed_query(text)?;
             lists.push(
                 cosine_topk(&qv, &matrix, pool)
@@ -387,17 +501,21 @@ fn smart_query(
                     .map(|(id, _)| id)
                     .collect(),
             );
+            t.retrieval_ms += ms_since(t0);
         } else {
+            let t0 = Instant::now();
             lists.push(
                 lex.search(text, pool)?
                     .into_iter()
                     .map(|(id, _)| id)
                     .collect(),
             );
+            t.retrieval_ms += ms_since(t0);
         }
     }
 
     // 3) Fuse all lists, hydrate with bodies.
+    let t0 = Instant::now();
     let ranked: Vec<Scored> = rrf(&lists, pool)
         .into_iter()
         .map(|(id, r)| Scored {
@@ -409,19 +527,28 @@ fn smart_query(
         })
         .collect();
     let mut hits = hydrate(&db, ranked, true)?;
+    t.fuse_ms = ms_since(t0);
 
     // 4) Rerank against the ORIGINAL query on full bodies, then reorder.
     if !hits.is_empty() {
-        let mut rr = Reranker::new(&cfg.cache_dir)?;
+        let t0 = Instant::now();
+        // Collect the prewarmed reranker (Fix B); a worker panic falls back to a foreground build.
+        let mut rr = match rr_warm.join() {
+            Ok(r) => r?,
+            Err(_) => Reranker::new(&cfg.cache_dir)?,
+        };
+        t.rerank_load_ms = ms_since(t0);
         let docs: Vec<String> = hits
             .iter()
             .map(|h| h.body.clone().unwrap_or_default())
             .collect();
+        let t0 = Instant::now();
         for (idx, score) in rr.rerank(q, &docs)? {
             hits[idx].rerank = Some(score);
             hits[idx].score = sigmoid(score);
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        t.rerank_ms = ms_since(t0);
     }
 
     // Post-rank `--since`/`--source` filter (ADR 0017) — the same separate stage as the plain path,
@@ -432,6 +559,10 @@ fn smart_query(
         for h in &mut hits {
             h.body = None;
         }
+    }
+    t.total_ms = ms_since(t_total);
+    if timings {
+        t.print("smart");
     }
     Ok(apply_scope(hits, scope))
 }
@@ -466,10 +597,11 @@ fn run_query(
     smart: bool,
     since: Option<i64>,
     source: Option<&str>,
+    timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     #[cfg(feature = "generate")]
     if smart {
-        match smart_query(cfg, q, limit, scope, full, since, source) {
+        match smart_query(cfg, q, limit, scope, full, since, source, timings) {
             Ok(r) => return Ok(r),
             Err(e) => {
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
@@ -492,6 +624,7 @@ fn run_query(
         rerank || smart,
         since,
         source,
+        timings,
     )
 }
 
@@ -511,6 +644,7 @@ pub fn run(
     smart: bool,
     since: Option<&str>,
     source: Option<&str>,
+    timings: bool,
 ) -> Result<()> {
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
     let since_cut = match since {
@@ -530,7 +664,7 @@ pub fn run(
         Scope::discover()?
     };
     let (mut hits, elided) = run_query(
-        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source,
+        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, timings,
     )?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
