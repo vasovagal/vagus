@@ -9,6 +9,8 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-31
+
 ### Added
 
 - Multi-agent / worktree guardrails (ADR 0018): worktree-per-agent isolation as a convention
