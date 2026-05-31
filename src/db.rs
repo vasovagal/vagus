@@ -29,7 +29,9 @@ CREATE TABLE IF NOT EXISTS chunks(
   ord          INTEGER NOT NULL,
   heading_path TEXT NOT NULL,
   body         TEXT NOT NULL,
-  embedding    BLOB                                              -- f32 LE, len = dims*4; NULL until embedded
+  embedding    BLOB,                                             -- f32 LE, len = dims*4; NULL until embedded
+  created_at   INTEGER,                                          -- unix secs; note-level (frontmatter `created`, else file mtime). G3 fallback. ADR 0017
+  source       TEXT                                              -- note-level (frontmatter `source`); NULL when absent. ADR 0017
 );
 CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
 
@@ -48,7 +50,26 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.execute_batch(SCHEMA).context("applying schema")?;
+        Self::migrate(&conn).context("migrating schema")?;
         Ok(Self { conn })
+    }
+
+    /// Idempotent additive migrations for DBs created before a column existed. The CHUNK_VERSION bump
+    /// clears *rows* (G4 auto-reindex) but never alters the table shape, so a pre-existing `chunks`
+    /// table needs its new columns added here. `CREATE TABLE IF NOT EXISTS` covers fresh DBs.
+    /// (ADR 0017: `created_at` + `source` for the `--since` / `--source` filters.)
+    fn migrate(conn: &Connection) -> Result<()> {
+        let have: std::collections::HashSet<String> = conn
+            .prepare("PRAGMA table_info(chunks)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !have.contains("created_at") {
+            conn.execute_batch("ALTER TABLE chunks ADD COLUMN created_at INTEGER;")?;
+        }
+        if !have.contains("source") {
+            conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT;")?;
+        }
+        Ok(())
     }
 
     // --- meta ---------------------------------------------------------------
@@ -130,6 +151,21 @@ impl Db {
         Ok(row)
     }
 
+    /// Note-level filter fields (`created_at`, `source`) for a chunk id, if present. Read separately
+    /// from `chunk_row` so the hot display join (path/heading/body) stays unchanged; the `--since` /
+    /// `--source` post-rank filter (ADR 0017) only needs these for the candidate survivors.
+    pub fn chunk_filter_fields(&self, id: &str) -> Result<Option<(Option<i64>, Option<String>)>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT created_at, source FROM chunks WHERE id=?1",
+                params![id],
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     pub fn chunk_ids_for(&self, path: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT id FROM chunks WHERE path=?1")?;
         let rows = stmt.query_map(params![path], |r| r.get::<_, String>(0))?;
@@ -137,18 +173,34 @@ impl Db {
     }
 
     /// Replace all chunks for a file (delete-then-insert). Embeddings are left NULL here; the embed
-    /// step fills them. Returns the prior chunk ids (for tantivy cleanup, guardrail G5).
-    pub fn replace_chunks(&self, path: &str, chunks: &[Chunk]) -> Result<Vec<String>> {
+    /// step fills them. `created_at` (unix secs) and `source` are **note-level** values (parsed from
+    /// frontmatter, with a mtime fallback for `created_at` — G3/ADR 0017) attached to every chunk of
+    /// the note. Returns the prior chunk ids (for tantivy cleanup, guardrail G5).
+    pub fn replace_chunks(
+        &self,
+        path: &str,
+        chunks: &[Chunk],
+        created_at: Option<i64>,
+        source: Option<&str>,
+    ) -> Result<Vec<String>> {
         let old = self.chunk_ids_for(path)?;
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM chunks WHERE path=?1", params![path])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO chunks(id,path,ord,heading_path,body,embedding)
-                 VALUES(?1,?2,?3,?4,?5,NULL)",
+                "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source)
+                 VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)",
             )?;
             for c in chunks {
-                stmt.execute(params![c.id, path, c.ord as i64, c.heading_path, c.body])?;
+                stmt.execute(params![
+                    c.id,
+                    path,
+                    c.ord as i64,
+                    c.heading_path,
+                    c.body,
+                    created_at,
+                    source
+                ])?;
             }
         }
         tx.commit()?;

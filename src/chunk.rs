@@ -56,6 +56,51 @@ fn level_num(l: HeadingLevel) -> usize {
     }
 }
 
+/// Hand-parsed note-level frontmatter values used as indexed search filters (ADR 0017). Only the keys
+/// we filter on are extracted; everything else in the block is ignored (and never indexed as content).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Frontmatter {
+    /// Raw `created` value (e.g. `2026-05-29T18:02`), if present. Parsed to a unix timestamp by the
+    /// caller (`index`) so this module stays free of a timezone dependency.
+    pub created: Option<String>,
+    /// Raw `source` value (provenance), if present. NULL `source` never matches `--source`.
+    pub source: Option<String>,
+}
+
+/// Extract the `created` / `source` keys from a leading YAML frontmatter block. Mirrors
+/// `strip_frontmatter`'s block detection (must be the very first line `---` … closing `---`); a note
+/// without frontmatter (G3) returns all-`None`. Hand-parsed (no YAML dep) — `key: value`, trimmed,
+/// with surrounding single/double quotes stripped from the value.
+pub fn parse_frontmatter(text: &str) -> Frontmatter {
+    let mut fm = Frontmatter::default();
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return fm;
+    }
+    for line in lines {
+        if line.trim_end() == "---" {
+            break; // end of the frontmatter block
+        }
+        let Some((key, val)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let val = val
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string();
+        if val.is_empty() {
+            continue;
+        }
+        match key {
+            "created" => fm.created.get_or_insert(val),
+            "source" => fm.source.get_or_insert(val),
+            _ => continue,
+        };
+    }
+    fm
+}
+
 /// Return the note body with a leading YAML frontmatter block (`---` … `---`) removed.
 fn strip_frontmatter(text: &str) -> String {
     let mut lines = text.lines();

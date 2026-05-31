@@ -12,7 +12,9 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result, bail};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::chunk::chunk_markdown;
+use chrono::{Local, NaiveDateTime, TimeZone};
+
+use crate::chunk::{chunk_markdown, parse_frontmatter};
 use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL};
 use crate::db::Db;
 use crate::embed::Embedder;
@@ -58,6 +60,20 @@ fn mtime_secs(path: &Path) -> Result<f64> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0))
+}
+
+/// Note-level `created_at` (unix secs) for the `--since` filter (ADR 0017): the frontmatter `created`
+/// value parsed as `%Y-%m-%dT%H:%M` in **local** time (matching how notes.rs writes it), or — when
+/// the key is absent, empty, or unparseable — a **G3 fallback to the file mtime** so a bare,
+/// frontmatter-free note is still `--since`-filterable.
+fn created_at_secs(created: Option<&str>, mtime: f64) -> i64 {
+    if let Some(raw) = created
+        && let Ok(naive) = NaiveDateTime::parse_from_str(raw.trim(), "%Y-%m-%dT%H:%M")
+        && let Some(dt) = Local.from_local_datetime(&naive).single()
+    {
+        return dt.timestamp();
+    }
+    mtime as i64 // G3 mtime fallback
 }
 
 /// Run an incremental index (or full rebuild when `reindex`).
@@ -144,8 +160,12 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         // New or changed content: persist the file row first (chunks FK-reference it), then chunks.
         db.upsert_file(&rel, mtime, &sha, now_unix())?;
         let text = String::from_utf8_lossy(&bytes);
+        // Note-level indexed filters (ADR 0017): `created_at` (frontmatter `created`, else mtime — G3)
+        // and `source` (frontmatter `source`, else NULL), attached to every chunk of this note.
+        let fm = parse_frontmatter(&text);
+        let created_at = created_at_secs(fm.created.as_deref(), mtime);
         let chunks = chunk_markdown(&rel, &text);
-        db.replace_chunks(&rel, &chunks)?;
+        db.replace_chunks(&rel, &chunks, Some(created_at), fm.source.as_deref())?;
         lex.replace_file(&writer, &rel, &chunks)?;
         if !chunks.is_empty() {
             if embedder.is_none() {
