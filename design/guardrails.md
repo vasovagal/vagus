@@ -101,3 +101,23 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   [ADR 0011](./adr/0011-plugin-protocol.md), `docs/plugin-contract.md`) Plugins are for **networked
   capture**, *not* search-time transforms: the reranker/rewriter live in core (G17), because the NDJSON
   contract is one-way note→index and they are neither networked nor a foreign runtime.
+
+## Concurrency & agents
+
+- **G21 — Worktree isolation for parallel work.** Multiple agents never share one checkout.
+  Swarm/parallel tasks run in their own git worktree (`.claude/worktrees/<name>` in-repo, or org-level
+  `~/code/vasovagal/.vagus-worktrees/`), branched **fresh from `origin/main`** (`worktree.baseRef =
+  "fresh"`). Convention, reinforced by the `Agent`/`Workflow` `isolation: 'worktree'` option — **not** a
+  blocking lock. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
+- **G22 — No direct commits to `main`.** Changes land via a feature branch + PR (matches the CI laws /
+  `RELEASING.md`: a tag trusts the green `main` it was cut from). A `git-guard` `PreToolUse` hook
+  (`scripts/git-guard.sh`) denies `git commit` on `main` and `git push` to `main`; it **fails open** so
+  a missing `jq`/non-git cwd never blocks work. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
+- **G23 — Worktree hygiene.** Remove a worktree once its branch merges. `scripts/worktree-janitor.sh`
+  lists worktrees whose branch is merged into `origin/main` (a `SessionStart` notice surfaces them) and
+  `--prune` removes the clean ones, refusing any dirty worktree.
+  ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
+- **G24 — Leave breadcrumbs.** Every architectural decision updates the matching ADR and moves the
+  README ADR index, `guardrails.md`, and `CLAUDE.md` in the **same change**. Nudged softly (a commit-time
+  reminder when `src/**` changes without a `design/**` or `CHANGELOG.md` change staged, plus the PR
+  template checklist), **not** gated. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
