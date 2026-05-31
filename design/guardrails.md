@@ -111,10 +111,13 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `~/code/vasovagal/.vagus-worktrees/`), branched **fresh from `origin/main`** (`worktree.baseRef =
   "fresh"`). Convention, reinforced by the `Agent`/`Workflow` `isolation: 'worktree'` option — **not** a
   blocking lock. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
-- **G22 — No direct commits to `main`.** Changes land via a feature branch + PR (matches the CI laws /
-  `RELEASING.md`: a tag trusts the green `main` it was cut from). A `git-guard` `PreToolUse` hook
-  (`scripts/git-guard.sh`) denies `git commit` on `main` and `git push` to `main`; it **fails open** so
-  a missing `jq`/non-git cwd never blocks work. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
+- **G22 — No direct commits to `main`, except releases.** Code/doc changes land via a feature branch +
+  PR (matches the CI laws / `RELEASING.md`: a tag trusts the green `main` it was cut from). **Releases
+  are exempt** and may land directly on `main`: a version bump or the CI formula bump — a commit staging
+  only `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`/`Formula/` — plus **`vX.Y.Z` tag pushes**. A `git-guard`
+  `PreToolUse` hook (`scripts/git-guard.sh`) denies non-release commits on `main` and pushes of the
+  `main` branch, while allowing release-only commits and tag pushes; it **fails open** so a missing
+  `jq`/non-git cwd never blocks work. ([ADR 0018](./adr/0018-multi-agent-guardrails.md))
 - **G23 — Worktree hygiene.** Remove a worktree once its branch merges. `scripts/worktree-janitor.sh`
   lists worktrees whose branch is merged into `origin/main` (a `SessionStart` notice surfaces them) and
   `--prune` removes the clean ones, refusing any dirty worktree.

@@ -2,7 +2,9 @@
 # git-guard.sh — vagus PreToolUse(Bash) hook. ADR 0018 / G22 + G24.
 #
 # Two jobs, both FAIL-OPEN (a missing dep or non-git cwd never blocks work):
-#   G22  deny `git commit` on `main` and `git push` to `main` — land changes via a feature branch + PR.
+#   G22  deny `git commit` on `main` and `git push` of the `main` branch — land changes via a feature
+#        branch + PR. Releases are exempt: a release-only commit (staging just Cargo.toml / Cargo.lock /
+#        CHANGELOG.md / Formula/) and `vX.Y.Z` tag pushes are allowed on `main` (RELEASING.md).
 #   G24  on a `git commit` that stages src/** but no design/** or CHANGELOG.md, emit a soft reminder
 #        to leave a breadcrumb (allowed, not blocked).
 #
@@ -41,15 +43,25 @@ deny() {
   exit 0
 }
 
-# --- G22: no direct commits/pushes to main ---------------------------------
+# --- G22: no direct commits/pushes to main (releases exempt) ---------------
+# Release commits may land directly on main (RELEASING.md): a version bump or the CI formula bump — a
+# commit staging ONLY release files (Cargo.toml / Cargo.lock / CHANGELOG.md / Formula/) — plus vX.Y.Z
+# tag pushes. Anything touching code or docs still needs a feature branch + PR.
 if [ "$verb" = "commit" ] && [ "$branch" = "main" ]; then
-  deny "G22 (ADR 0018): no direct commits to main. Create a feature branch (git switch -c feat/<name>) and open a PR."
+  staged="$(git diff --cached --name-only 2>/dev/null || true)"
+  # Deny unless something is staged AND every staged path is a release file.
+  if [ -z "$staged" ] || printf '%s\n' "$staged" | grep -qvE '^(Cargo\.toml|Cargo\.lock|CHANGELOG\.md|Formula/)'; then
+    deny "G22 (ADR 0018): no direct commits to main. Create a feature branch (git switch -c feat/<name>) and open a PR. (Release-only commits — Cargo.toml / Cargo.lock / CHANGELOG.md / Formula/ — are allowed on main.)"
+  fi
 fi
 
 if [ "$verb" = "push" ]; then
-  # Pushing while on main, or an explicit '... main' ref in the push command.
-  if [ "$branch" = "main" ] || printf '%s' "$cmd" | grep -Eq '(^|[[:space:]])main([[:space:]]|$)'; then
-    deny "G22 (ADR 0018): no direct pushes to main. Push your feature branch and open a PR."
+  # Release carve-out: allow tag pushes (vX.Y.Z / --tags / --follow-tags) from anywhere, including main —
+  # cutting a release tags a green main (RELEASING.md). Otherwise deny pushing the main branch itself.
+  if printf '%s' "$cmd" | grep -Eq '(--tags|--follow-tags|(^|[[:space:]])v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$))'; then
+    :
+  elif [ "$branch" = "main" ] || printf '%s' "$cmd" | grep -Eq '(^|[[:space:]])main([[:space:]]|$)'; then
+    deny "G22 (ADR 0018): no direct pushes to the main branch. Push your feature branch and open a PR. (Release tag pushes vX.Y.Z are allowed.)"
   fi
 fi
 

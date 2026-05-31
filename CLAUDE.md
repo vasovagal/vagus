@@ -58,8 +58,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
     embedder changes; roll via `CHUNK_VERSION`.
 14. **Multi-agent isolation** (ADR 0018/G21–G23). Parallel/swarm work runs in its own git worktree
     (`.claude/worktrees/<name>` or org-level `.vagus-worktrees/`, branched fresh from `origin/main`) —
-    never dueling agents in one checkout. **No direct commits to `main`** (feature branch + PR; a
-    `git-guard` hook enforces it). Prune a worktree once its branch merges (`scripts/worktree-janitor.sh`).
+    never dueling agents in one checkout. **No direct commits to `main`** except releases — a version
+    or formula bump (Cargo.toml/Cargo.lock/CHANGELOG.md/Formula/) and `vX.Y.Z` tag pushes are allowed;
+    everything else goes via feature branch + PR (a `git-guard` hook enforces it). Prune a worktree once
+    its branch merges (`scripts/worktree-janitor.sh`).
 15. **Leave breadcrumbs** (ADR 0018/G24). Architectural changes update the matching ADR and keep the
     `design/README.md` ADR index, `design/guardrails.md`, and this file **in sync, same change**.
 

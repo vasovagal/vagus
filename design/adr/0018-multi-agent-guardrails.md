@@ -1,6 +1,7 @@
 # ADR 0018 — Multi-agent operation & worktree guardrails
 
-- **Status:** Accepted (2026-05-30)
+- **Status:** Accepted (2026-05-30); **amended 2026-05-31** — G22 carves out releases (version/formula
+  bump commits + `vX.Y.Z` tag pushes may land directly on `main`).
 
 ## Context
 
@@ -28,10 +29,13 @@ ordinary solo work.
   (`.claude/settings.json` pins `worktree.baseRef = "fresh"`). This is reinforced by the native
   `Agent`/`Workflow` `isolation: 'worktree'` option, which the orchestrator uses for fan-out. We do
   **not** install a blocking lock hook (see rejected alternatives). (G21)
-- **No direct commits to `main`.** Changes land via a feature branch + PR, matching the CI laws. A
-  `git-guard` `PreToolUse` hook (`scripts/git-guard.sh`) denies `git commit` while `HEAD` is `main`
-  and denies `git push` to `main`, pointing the agent at a feature branch. The hook **fails open**
-  (a missing `jq` or non-git cwd never blocks work). (G22)
+- **No direct commits to `main`, except releases.** Code/doc changes land via a feature branch + PR,
+  matching the CI laws. **Releases are exempt** and may land directly on `main` (`RELEASING.md`): a
+  version bump or the CI formula bump — a commit staging only `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`/
+  `Formula/` — plus `vX.Y.Z` tag pushes. A `git-guard` `PreToolUse` hook (`scripts/git-guard.sh`) denies
+  non-release `git commit`s while `HEAD` is `main` and denies pushing the `main` branch, but allows
+  release-only commits and tag pushes, pointing the agent at a feature branch otherwise. The hook
+  **fails open** (a missing `jq` or non-git cwd never blocks work). (G22)
 - **Worktree hygiene.** A worktree is removed once its branch merges. `scripts/worktree-janitor.sh`
   lists worktrees whose branch is already merged into `origin/main` (run in `--list` mode by a
   `SessionStart` hook, quiet when there is nothing to report) and `--prune` removes the clean ones,
@@ -52,8 +56,8 @@ ordinary solo work.
 - Two agents in two worktrees get isolated checkouts and isolated `target/` dirs; two agents in the
   *same* checkout is now a documented anti-pattern rather than a silent footgun — but nothing
   mechanically prevents it (deliberately, to keep solo edits friction-free).
-- `main` stays releasable by construction: the only path onto it is a merged PR, preserving the
-  "tag trusts green main" release law.
+- `main` stays releasable by construction: the only paths onto it are a merged PR **or a release commit
+  (version/formula bump, then a `vX.Y.Z` tag)**, preserving the "tag trusts green main" release law.
 - The design record self-heals against the most common drift (an ADR with no index line, a guardrail
   with no CLAUDE.md mirror) via review + the soft nudge, without a CI gate that would block on
   judgment calls (is *this* change "architectural"?).
