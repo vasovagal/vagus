@@ -7,9 +7,10 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::chunk::chunk_markdown;
@@ -25,6 +26,25 @@ pub struct IndexStats {
     pub changed: usize,
     pub unchanged: usize,
     pub removed: usize,
+}
+
+/// Per-step wall-clock timings (milliseconds) for the index sub-steps, accumulated across every
+/// changed/new file in a run. Surfaced by `vagus file --stats` so the embedding bottleneck is
+/// visible. The final `commit_ms` covers the single post-loop tantivy commit (+ merge wait).
+#[derive(Debug, Default, Serialize)]
+pub struct IndexTimings {
+    /// Markdown chunking (`chunk_markdown`).
+    pub chunk_ms: f64,
+    /// SQLite chunk-row replacement (`db.replace_chunks`).
+    pub replace_chunks_ms: f64,
+    /// Building + adding tantivy docs (`lex.replace_file`).
+    pub tantivy_add_ms: f64,
+    /// Computing embeddings (`emb.embed_documents`) — the usual bottleneck.
+    pub embed_ms: f64,
+    /// Inserting embedding vectors (`db.set_embedding` loop).
+    pub insert_embedding_ms: f64,
+    /// The single tantivy `writer.commit()` (+ `wait_merging_threads`) after the loop.
+    pub commit_ms: f64,
 }
 
 fn is_hidden(e: &DirEntry) -> bool {
@@ -61,7 +81,19 @@ fn mtime_secs(path: &Path) -> Result<f64> {
 }
 
 /// Run an incremental index (or full rebuild when `reindex`).
+///
+/// Thin wrapper over [`run_timed`] for callers that don't want the per-step timing breakdown.
 pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
+    run_timed(cfg, reindex, None)
+}
+
+/// Like [`run`], but when `timings` is `Some`, accumulates per-step wall-clock durations
+/// (milliseconds) into it. Passing `None` skips the (negligible) bookkeeping entirely.
+pub fn run_timed(
+    cfg: &Config,
+    reindex: bool,
+    mut timings: Option<&mut IndexTimings>,
+) -> Result<IndexStats> {
     if !cfg.vault.exists() {
         bail!(
             "vault not found: {} (set VAGUS_VAULT or create the vault + ~/brain symlink)",
@@ -144,18 +176,44 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         // New or changed content: persist the file row first (chunks FK-reference it), then chunks.
         db.upsert_file(&rel, mtime, &sha, now_unix())?;
         let text = String::from_utf8_lossy(&bytes);
+
+        let t0 = Instant::now();
         let chunks = chunk_markdown(&rel, &text);
+        if let Some(t) = timings.as_mut() {
+            t.chunk_ms += elapsed_ms(t0);
+        }
+
+        let t0 = Instant::now();
         db.replace_chunks(&rel, &chunks)?;
+        if let Some(t) = timings.as_mut() {
+            t.replace_chunks_ms += elapsed_ms(t0);
+        }
+
+        let t0 = Instant::now();
         lex.replace_file(&writer, &rel, &chunks)?;
+        if let Some(t) = timings.as_mut() {
+            t.tantivy_add_ms += elapsed_ms(t0);
+        }
+
         if !chunks.is_empty() {
             if embedder.is_none() {
                 embedder = Some(Embedder::new(&cfg.cache_dir)?);
             }
             let emb = embedder.as_mut().unwrap();
             let bodies: Vec<String> = chunks.iter().map(|c| c.body.clone()).collect();
+
+            let t0 = Instant::now();
             let vecs = emb.embed_documents(bodies)?;
+            if let Some(t) = timings.as_mut() {
+                t.embed_ms += elapsed_ms(t0);
+            }
+
+            let t0 = Instant::now();
             for (c, v) in chunks.iter().zip(vecs) {
                 db.set_embedding(&c.id, &v)?;
+            }
+            if let Some(t) = timings.as_mut() {
+                t.insert_embedding_ms += elapsed_ms(t0);
             }
         }
         if prior.is_some() {
@@ -174,9 +232,57 @@ pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
         }
     }
 
+    let t0 = Instant::now();
     writer.commit()?;
     // Let tantivy's merge policy finish any scheduled merges so segments stay bounded instead of
     // accumulating across per-file commits (the writer would otherwise drop before they run).
     writer.wait_merging_threads()?;
+    if let Some(t) = timings.as_mut() {
+        t.commit_ms += elapsed_ms(t0);
+    }
     Ok(stats)
+}
+
+/// Milliseconds since `start`, as `f64`.
+fn elapsed_ms(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_timings_serializes_with_stable_keys() {
+        let t = IndexTimings {
+            chunk_ms: 1.0,
+            replace_chunks_ms: 2.0,
+            tantivy_add_ms: 3.0,
+            embed_ms: 4.0,
+            insert_embedding_ms: 5.0,
+            commit_ms: 6.0,
+        };
+        let v: serde_json::Value = serde_json::to_value(&t).unwrap();
+        let obj = v.as_object().unwrap();
+        // Stable shape (G13): exactly these keys, no more, no less.
+        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "chunk_ms",
+                "commit_ms",
+                "embed_ms",
+                "insert_embedding_ms",
+                "replace_chunks_ms",
+                "tantivy_add_ms",
+            ]
+        );
+        assert_eq!(obj["embed_ms"], serde_json::json!(4.0));
+    }
+
+    #[test]
+    fn elapsed_ms_is_nonnegative() {
+        assert!(elapsed_ms(Instant::now()) >= 0.0);
+    }
 }

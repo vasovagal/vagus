@@ -6,6 +6,7 @@
 use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
@@ -248,6 +249,7 @@ pub fn inbox(cfg: &Config, json: bool) -> Result<()> {
 
 // --- file (assisted filing) -------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn file(
     cfg: &Config,
     path: &str,
@@ -255,6 +257,7 @@ pub fn file(
     suggest: bool,
     json: bool,
     thought_process: bool,
+    stats: bool,
 ) -> Result<()> {
     let src = resolve(cfg, path);
     if !src.exists() {
@@ -274,12 +277,71 @@ pub fn file(
             .ok_or_else(|| anyhow!("bad source filename"))?,
     );
 
-    enrich_frontmatter(&src, to)?;
-    fs::rename(&src, &dest).with_context(|| format!("moving to {}", dest.display()))?;
-    index::run(cfg, false)?; // reconcile: old path removed, new path indexed
+    let total_start = Instant::now();
 
-    println!("filed {} → {}", path, vault_rel(cfg, &dest));
+    let t0 = Instant::now();
+    enrich_frontmatter(&src, to)?;
+    let enrich_ms = elapsed_ms(t0);
+
+    let t0 = Instant::now();
+    fs::rename(&src, &dest).with_context(|| format!("moving to {}", dest.display()))?;
+    let move_ms = elapsed_ms(t0);
+
+    // reconcile: old path removed, new path indexed. Capture per-step index timings only when asked.
+    let mut idx = stats.then(index::IndexTimings::default);
+    index::run_timed(cfg, false, idx.as_mut())?;
+
+    let dest_rel = vault_rel(cfg, &dest);
+
+    if stats {
+        let idx = idx.unwrap_or_default();
+        let total_ms = elapsed_ms(total_start);
+        if json {
+            // Stable shape (G13): emitted only on the `--stats --json` path; the default and
+            // `--suggest --json` outputs are untouched.
+            let out = serde_json::json!({
+                "filed": path,
+                "dest": dest_rel,
+                "timings": {
+                    "enrich_ms": enrich_ms,
+                    "move_ms": move_ms,
+                    "chunk_ms": idx.chunk_ms,
+                    "replace_chunks_ms": idx.replace_chunks_ms,
+                    "tantivy_add_ms": idx.tantivy_add_ms,
+                    "embed_ms": idx.embed_ms,
+                    "insert_embedding_ms": idx.insert_embedding_ms,
+                    "commit_ms": idx.commit_ms,
+                    "total_ms": total_ms,
+                },
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            println!("filed {path} → {dest_rel}");
+            let rows = [
+                ("enrich", enrich_ms),
+                ("move", move_ms),
+                ("chunk", idx.chunk_ms),
+                ("replace_chunks", idx.replace_chunks_ms),
+                ("tantivy_add", idx.tantivy_add_ms),
+                ("embed", idx.embed_ms),
+                ("insert_embedding", idx.insert_embedding_ms),
+                ("commit", idx.commit_ms),
+            ];
+            let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+            for (label, ms) in rows {
+                println!("  {label:<width$}  {ms:>8.1} ms");
+            }
+            println!("  {:<width$}  {total_ms:>8.1} ms", "total");
+        }
+    } else {
+        println!("filed {} → {}", path, dest_rel);
+    }
     Ok(())
+}
+
+/// Milliseconds since `start`, as `f64`.
+fn elapsed_ms(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Set/insert `status: active`, `para: <bucket>`, `modified: <now>` while preserving other fields.
