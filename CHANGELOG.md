@@ -23,12 +23,19 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Changed
 
-- `vagus search --smart` is substantially faster. The embedder and cross-encoder reranker now load on
-  background threads that overlap the local LLM's query-expansion decode, so their cold loads (~2 s
-  embedder + ~0.15 s reranker) no longer sit serially on the critical path; and the rewriter's token
-  ceiling is capped (512 → 192) to bound a pathological non-terminating generation. ~9.5 s → ~6.4 s on
-  a small vault, with ranking (RRF + rerank) unchanged. Not a daemon — the warm-up threads are joined
-  within the one-shot process (G14).
+- `vagus search --smart` is substantially faster — **~9.5 s → ~5 s on a cold query and ~2.3 s on a
+  repeat** on a small vault, with ranking (RRF + rerank) unchanged. Four changes (ADR 0016):
+  - The embedder and cross-encoder reranker now load on background threads that overlap the local
+    LLM's query-expansion decode, so their cold loads (~2 s embedder + ~0.15 s reranker) no longer sit
+    serially on the critical path. Not a daemon — the threads are joined within the one-shot process
+    (G14).
+  - On macOS the quantized rewriter now decodes on the **Apple GPU via candle's Metal backend** (~2.5×
+    faster decode), falling back to CPU if Metal can't initialize. macOS-only; Linux/lean builds are
+    unchanged, and the binary stays self-contained (system frameworks only — G13).
+  - The deterministic query expansion is **cached** (`meta.db`, keyed on query + model identity +
+    sampling params), so a repeat query skips the LLM entirely.
+  - The rewriter's token ceiling is capped (512 → 192) to bound a pathological non-terminating
+    generation; real output is never clipped.
 
 ## [0.4.0] — 2026-05-30
 

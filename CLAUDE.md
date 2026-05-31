@@ -46,7 +46,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
 11. **Stay Obsidian-compatible** (plain `.md`, optional `[[wikilinks]]`/frontmatter). Artifact note
     (verified): `ort` statically links onnxruntime, so the installed binary is self-contained (system
     dylibs only). Re-verify with `otool -L` if `ort`/platform changes; `model2vec` is the
-    onnxruntime-free fallback.
+    onnxruntime-free fallback. macOS enables candle's Metal backend for the rewriter (ADR 0016) —
+    links only system frameworks (`Metal`/`Foundation`/`CoreFoundation`), still `otool`-clean.
 12. **Three tiers, "no versioned runtime" identity.** vagus is a self-contained Rust *universe* (no
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`

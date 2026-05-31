@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
+// Only the `--smart` path (smart_query) prewarms models on threads, so this is generate-gated to keep
+// the lean (`--no-default-features`) build warning-free.
+#[cfg(feature = "generate")]
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -413,7 +416,7 @@ fn smart_query(
     source: Option<&str>,
     timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
-    use crate::rewrite::{Kind, Rewriter};
+    use crate::rewrite::{Kind, Rewriter, Variant};
 
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
@@ -436,16 +439,30 @@ fn smart_query(
         std::thread::spawn(move || Reranker::new(&cache))
     };
 
-    // 1) Expand the query with the local LLM (the long pole; the prewarm threads load meanwhile). The
-    //    Rewriter is dropped at the end of this block, freeing its RAM before reranking runs.
-    let variants = {
-        let t0 = Instant::now();
-        let mut rw = Rewriter::new(&cfg.cache_dir)?;
-        t.rewrite_load_ms = ms_since(t0);
-        let t0 = Instant::now();
-        let v = rw.expand(q)?;
-        t.rewrite_decode_ms = ms_since(t0);
-        v
+    // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
+    //    the cache first (Fix C); a hit skips the LLM entirely — load + decode — which is the big win
+    //    for iterative re-querying. On a miss, run the local LLM (the long pole; the prewarm threads
+    //    load meanwhile), then store the result. The Rewriter is dropped after expanding, freeing RAM.
+    let cache_key = crate::rewrite::expansion_cache_key(q);
+    let cached: Option<Vec<Variant>> = db
+        .expansion_cache_get(&cache_key)?
+        .and_then(|json| serde_json::from_str(&json).ok());
+    let variants = match cached {
+        // Cache hit: rewrite_load_ms / rewrite_decode_ms stay 0.0 — no model was touched.
+        Some(v) => v,
+        None => {
+            let t0 = Instant::now();
+            let mut rw = Rewriter::new(&cfg.cache_dir)?;
+            t.rewrite_load_ms = ms_since(t0);
+            let t0 = Instant::now();
+            let v = rw.expand(q)?;
+            t.rewrite_decode_ms = ms_since(t0);
+            // Best-effort cache write; a failure here just means the next run regenerates.
+            if let Ok(json) = serde_json::to_string(&v) {
+                let _ = db.expansion_cache_put(&cache_key, &json);
+            }
+            v
+        }
     };
 
     // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each

@@ -47,12 +47,23 @@ sha2 = "0.11.0"
 tantivy = "0.26.1"
 terminal_size = "0.4"
 walkdir = "2.5.0"
-# tier-1 local generative rewriter (ADR 0016), behind the `generate` feature. candle is pure-Rust
-# CPU (no ort/onnxruntime conflict; self-contained binary preserved — G13). hf-hub/tokenizers are
-# pinned to fastembed's lines (0.5 / 0.22) so Cargo unifies them — do NOT bump to hf-hub 1.x.
+# tier-1 local generative rewriter (ADR 0016), behind the `generate` feature. CPU by default (no
+# ort/onnxruntime conflict; self-contained binary preserved — G13); macOS additionally enables the
+# Metal GPU backend below. hf-hub/tokenizers are pinned to fastembed's lines (0.5 / 0.22) so Cargo
+# unifies them — do NOT bump to hf-hub 1.x.
 candle-core = { version = "0.10.2", optional = true }
 candle-transformers = { version = "0.10.2", optional = true }
 # sync (ureq) backend only — avoid dragging in hf-hub's async tokio/reqwest extras (fastembed already
 # pulls reqwest/native-tls via its own hf-hub feature; we don't need the async stack on top).
 hf-hub = { version = "0.5", optional = true, default-features = false, features = ["ureq"] }
 tokenizers = { version = "0.22", optional = true }
+
+# macOS: enable candle's Metal backend so the quantized rewriter decodes on the Apple GPU instead of
+# the CPU `gemm` (a large speedup for the autoregressive decode — ADR 0016). Cargo feature-unions this
+# with the base candle deps above, so it only adds `metal` on macOS; the Linux release targets and the
+# `--no-default-features` lean lane compile exactly as before. The binary stays self-contained —
+# Metal.framework is a macOS system framework (ADR 0014/G13). Falls back to CPU at runtime if Metal
+# can't initialize (see `rewrite::select_device`).
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.10.2", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.10.2", optional = true, features = ["metal"] }
