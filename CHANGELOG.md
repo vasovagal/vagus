@@ -17,6 +17,18 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   template. Documented as guardrails G21–G24.
 - This `CHANGELOG.md`, plus a `CLAUDE.md` convention to run `cargo fmt` before pushing and to record
   meaningful work here.
+- `vagus search --timings`: print a per-stage wall-clock breakdown (rewrite/embed/rerank load +
+  compute, fuse, total) to stderr for `--smart`/`--rerank`. A diagnostic + regression guard; stdout
+  and the `--json` Hit shape are unchanged (G9a).
+
+### Changed
+
+- `vagus search --smart` is substantially faster. The embedder and cross-encoder reranker now load on
+  background threads that overlap the local LLM's query-expansion decode, so their cold loads (~2 s
+  embedder + ~0.15 s reranker) no longer sit serially on the critical path; and the rewriter's token
+  ceiling is capped (512 → 192) to bound a pathological non-terminating generation. ~9.5 s → ~6.4 s on
+  a small vault, with ranking (RRF + rerank) unchanged. Not a daemon — the warm-up threads are joined
+  within the one-shot process (G14).
 
 ## [0.4.0] — 2026-05-30
 

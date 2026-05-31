@@ -26,7 +26,10 @@ const GGUF_FILE: &str = "qmd-query-expansion-1.7B-q4_k_m.gguf";
 const TOKENIZER_REPO: &str = "Qwen/Qwen3-1.7B";
 
 // Qwen3 non-thinking sampling (qmd's values); greedy (temp 0) causes repetition loops.
-const MAX_NEW_TOKENS: usize = 512;
+// `/no_think` expansion is a handful of typed `lex:/vec:/hyde:` lines (~70 tokens before EOS), so this
+// ceiling is hit only on a pathological non-terminating generation; at CPU decode rates (~15-20 tok/s)
+// 192 bounds that worst case to a few seconds instead of ~30s, without clipping real output.
+const MAX_NEW_TOKENS: usize = 192;
 const REPEAT_LAST_N: usize = 64;
 const REPEAT_PENALTY: f32 = 1.1;
 const TEMPERATURE: f64 = 0.7;

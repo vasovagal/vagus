@@ -374,8 +374,9 @@ fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<(
         &Scope::none(),
         false,
         false,
-        None, // no --since for filing suggestions (ADR 0017)
-        None, // no --source for filing suggestions (ADR 0017)
+        None,  // no --since for filing suggestions (ADR 0017)
+        None,  // no --source for filing suggestions (ADR 0017)
+        false, // no --timings on the filing path
     )
     .unwrap_or_default();
 
