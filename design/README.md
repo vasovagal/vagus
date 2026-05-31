@@ -43,3 +43,7 @@ silently breaking an invariant.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); amends 0003 + G17.
 - `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); amends G17 (next).
+- `0017-indexed-frontmatter-filters.md` — `search --since`/`--source` via SQLite-denormalized
+  `created_at`/`source` (no tantivy schema change); adds G9b.
+- `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
+  worktree janitor, soft breadcrumb nudge; adds G21–G24.

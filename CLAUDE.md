@@ -55,6 +55,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the
     embedder changes; roll via `CHUNK_VERSION`.
+14. **Multi-agent isolation** (ADR 0018/G21–G23). Parallel/swarm work runs in its own git worktree
+    (`.claude/worktrees/<name>` or org-level `.vagus-worktrees/`, branched fresh from `origin/main`) —
+    never dueling agents in one checkout. **No direct commits to `main`** (feature branch + PR; a
+    `git-guard` hook enforces it). Prune a worktree once its branch merges (`scripts/worktree-janitor.sh`).
+15. **Leave breadcrumbs** (ADR 0018/G24). Architectural changes update the matching ADR and keep the
+    `design/README.md` ADR index, `design/guardrails.md`, and this file **in sync, same change**.
 
 ## Layout
 
@@ -91,4 +97,10 @@ native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-sa
   `search`, `notes`, `db`, `config`, `cli`).
 - All data-producing commands support a stable `--json` shape so the skills parse rather than scrape.
 - Commit `Cargo.lock` (this is a binary crate).
+- **Run `cargo fmt` before pushing** — never burn a CI cycle on formatting (`ci.yml` runs
+  `cargo fmt --check`). Run it and move on: **don't** read the reformatted output back into context —
+  it's almost always fine. Only inspect formatting if something downstream actually breaks.
+- **Meaningful work goes in `CHANGELOG.md`.** User-noticeable changes get an entry under `## [Unreleased]`
+  in the same change (Keep a Changelog: Added/Changed/Fixed/Removed). Internal refactors / test-only
+  changes don't need one.
 - Personal repo under the **`vasovagal`** GitHub org — **not** `scientist-hq` (that's work).
