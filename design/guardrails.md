@@ -24,9 +24,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   Any mismatch ⇒ refuse incremental indexing, require `reindex`. Never mix embedding spaces. (Currently
   `google/embeddinggemma-300m` / **768** — [ADR 0006](./adr/0006-embeddings-local-no-daemon.md). Bumping
   `CHUNK_VERSION` alongside an identity change makes the one-time reindex automatic.)
-- **G5 — Both stores move together.** On a changed/deleted file, delete its tantivy docs
-  (`delete_term(path)` → `commit()`) **and** delete its SQLite vector rows (the vector store has no
-  FK/triggers). One mtime+sha256 hash-diff drives both; `doctor` cross-checks counts.
+- **G5 — All stores move together.** On a changed/deleted file, delete its tantivy docs
+  (`delete_term(path)` → `commit()`), its SQLite vector rows (no FK/triggers), **and** its usearch
+  vectors (`remove(key_for(id))`, [ADR 0019](./adr/0019-usearch-ann-backend.md)). One mtime+sha256
+  hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
+  usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
+  rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
   the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
   many adds + one commit.
@@ -70,17 +73,24 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 - **G10 — fastembed cache dir is explicit.** Never rely on fastembed's `./.fastembed_cache` CWD
   default; set it to `~/Library/Caches/vagus/models` via `with_cache_dir` / `FASTEMBED_CACHE_DIR`.
-- **G11 — Retrieval is hand-rolled** (tantivy BM25 + brute-force cosine + RRF;
-  [ADR 0003](./adr/0003-search-stack.md)). `frankensearch`/`qmd` are **design references, not
-  dependencies** ([ADR 0007](./adr/0007-lean-on-frankensearch.md)). Don't add a heavyweight
-  search-engine dependency without an ADR; if you ever do, pin/vendor it.
+- **G11 — Retrieval fusion is hand-rolled** (tantivy BM25 + RRF k=60; [ADR 0003](./adr/0003-search-stack.md)).
+  The cosine component is the embedded **usearch HNSW** vector index, statically linked and pinned
+  ([ADR 0019](./adr/0019-usearch-ann-backend.md)) — with an exact brute-force fallback (`--exact`). The
+  *fusion* (`rrf()`) and rerank stages are still hand-rolled and untouched by the backend (G7/G8).
+  `frankensearch`/`qmd` remain **design references, not dependencies**
+  ([ADR 0007](./adr/0007-lean-on-frankensearch.md)). Don't add another heavyweight search-engine
+  dependency without an ADR; if you do, pin/vendor it (usearch is pinned `=2.25.3`, `Cargo.lock` committed).
 - **G12 — Don't bump `ort` independently.** It's version-locked by fastembed (`=2.0.0-rc.12`).
 - **G13 — Honest artifact (verified).** `ort` 2.0.0-rc.12 statically links `libonnxruntime.a`, so the
   installed binary is self-contained (system dylibs only; no `libonnxruntime.dylib`). If a future
   `ort`/platform ships a *shared* onnxruntime instead, the artifact becomes binary+dylib — re-verify
   with `otool -L` and update this note. `model2vec` is the onnxruntime-free fallback. The macOS Metal
   backend for the candle rewriter (ADR 0016) links only system frameworks (`Metal`, `Foundation`,
-  `CoreFoundation`, `CoreML`) — re-verified self-contained via `otool -L` (still system-only).
+  `CoreFoundation`, `CoreML`) — re-verified self-contained via `otool -L` (still system-only). The
+  **usearch** vector index ([ADR 0019](./adr/0019-usearch-ann-backend.md)) compiles its C++ via
+  `cxx-build` and static-links its `numkong` SIMD lib (`rustc-link-lib=static=numkong`); with `openmp`
+  OFF the binary links only OS frameworks + `libc++` — re-verified `otool`-clean (no `libomp`,
+  no shared onnxruntime). Re-verify with `otool -L`/`ldd` on any usearch/platform bump.
 
 ## Product
 

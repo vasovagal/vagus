@@ -80,6 +80,46 @@ impl Db {
         if !have.contains("source") {
             conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT;")?;
         }
+        // `vec_key` (ADR 0019): the u64 usearch key for each chunk, derived from its id, with an index
+        // for the reverse `key -> id` lookup at search time. Additive — no CHUNK_VERSION bump / re-embed.
+        if !have.contains("vec_key") {
+            conn.execute_batch(
+                "ALTER TABLE chunks ADD COLUMN vec_key INTEGER;
+                 CREATE INDEX IF NOT EXISTS chunks_vec_key ON chunks(vec_key);",
+            )?;
+        }
+        Self::backfill_vec_keys(conn)?;
+        Ok(())
+    }
+
+    /// One-time backfill of `vec_key` for rows that predate the column (G2-derived, no re-embed). New
+    /// chunks get their key at insert time in `replace_chunks`, so after the first pass this is a fast
+    /// indexed no-op. Guarded by a `LIMIT 1` probe so a normal open never scans the whole table.
+    fn backfill_vec_keys(conn: &Connection) -> Result<()> {
+        let pending: bool = conn
+            .query_row(
+                "SELECT 1 FROM chunks WHERE vec_key IS NULL LIMIT 1",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !pending {
+            return Ok(());
+        }
+        let ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM chunks WHERE vec_key IS NULL")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut up = tx.prepare("UPDATE chunks SET vec_key=?1 WHERE id=?2")?;
+            for id in &ids {
+                up.execute(params![crate::util::key_for(id) as i64, id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -228,10 +268,12 @@ impl Db {
         tx.execute("DELETE FROM chunks WHERE path=?1", params![path])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source)
-                 VALUES(?1,?2,?3,?4,?5,NULL,?6,?7)",
+                "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
+                 VALUES(?1,?2,?3,?4,?5,NULL,?6,?7,?8)",
             )?;
             for c in chunks {
+                // `vec_key` is the usearch key derived from the id (ADR 0019); stored as i64 (SQLite has
+                // no u64) and reinterpreted on read. Set at insert so it never needs backfilling later.
                 stmt.execute(params![
                     c.id,
                     path,
@@ -239,7 +281,8 @@ impl Db {
                     c.heading_path,
                     c.body,
                     created_at,
-                    source
+                    source,
+                    crate::util::key_for(&c.id) as i64
                 ])?;
             }
         }
@@ -265,6 +308,30 @@ impl Db {
             out.push((id, v));
         }
         Ok(out)
+    }
+
+    /// Reverse `vec_key -> chunk id` map for a set of usearch keys (ADR 0019). usearch returns u64
+    /// keys; the search path resolves them back to chunk ids through the indexed `vec_key` column.
+    /// `keys` is small (top-k candidates), so a single `IN (...)` query is fine.
+    pub fn chunk_ids_for_keys(&self, keys: &[u64]) -> Result<HashMap<u64, String>> {
+        let mut map = HashMap::new();
+        if keys.is_empty() {
+            return Ok(map);
+        }
+        let placeholders = std::iter::repeat_n("?", keys.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT vec_key, id FROM chunks WHERE vec_key IN ({placeholders})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<i64> = keys.iter().map(|k| *k as i64).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (k, id) = row?;
+            map.insert(k, id);
+        }
+        Ok(map)
     }
 
     pub fn set_embedding(&self, chunk_id: &str, vec: &[f32]) -> Result<()> {

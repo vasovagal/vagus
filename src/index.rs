@@ -16,11 +16,12 @@ use walkdir::{DirEntry, WalkDir};
 use chrono::{Local, NaiveDateTime, TimeZone};
 
 use crate::chunk::{chunk_markdown, parse_frontmatter};
-use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL};
+use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL, VEC_INDEX_VERSION};
 use crate::db::Db;
 use crate::embed::Embedder;
 use crate::lex::Lex;
-use crate::util::{now_unix, sha256_hex};
+use crate::util::{key_for, now_unix, sha256_hex};
+use crate::vector::{UsearchIndex, VectorIndex};
 
 #[derive(Debug, Default)]
 pub struct IndexStats {
@@ -47,6 +48,8 @@ pub struct IndexTimings {
     pub insert_embedding_ms: f64,
     /// The single tantivy `writer.commit()` (+ `wait_merging_threads`) after the loop.
     pub commit_ms: f64,
+    /// The single post-loop usearch persist: incremental `save()` or a full rebuild-from-BLOBs (ADR 0019).
+    pub vector_ms: f64,
 }
 
 fn is_hidden(e: &DirEntry) -> bool {
@@ -137,6 +140,9 @@ pub fn run_timed(
     if reindex {
         db.clear_all()?;
         let _ = std::fs::remove_dir_all(cfg.tantivy_dir());
+        // The usearch sidecar is a derived cache; `clear_all` doesn't touch it, so drop it explicitly
+        // or a stale index would survive the rebuild (ADR 0019/G5).
+        let _ = std::fs::remove_file(cfg.vector_path());
     }
     let lex = Lex::open(&cfg.tantivy_dir())?;
     let mut writer = lex.writer()?;
@@ -153,6 +159,32 @@ pub fn run_timed(
     db.meta_set("embed_dims", &dims)?;
     db.meta_set("tantivy_version", "0.26")?;
     db.meta_set("chunk_version", CHUNK_VERSION)?;
+
+    // Vector index (ADR 0019). `vindex = Some` ⇒ mutate the existing usearch sidecar incrementally
+    // (add new keys, remove old ones) in lockstep with SQLite + tantivy (G5). `None` ⇒ a full
+    // rebuild-from-BLOBs after the loop: triggered by `reindex`, a missing sidecar, a vec-index
+    // identity/param change, or a size drift between the sidecar and the embedded-chunk count. The
+    // rebuild repacks the authoritative f32 BLOBs with NO re-embed (the embedding identity is
+    // unchanged, so CHUNK_VERSION/G4 are untouched).
+    let sidecar = cfg.vector_path();
+    let vec_meta_ok = !reindex
+        && db.meta_get("vec_backend")?.as_deref() == Some("usearch")
+        && db.meta_get("vec_index_version")?.as_deref() == Some(VEC_INDEX_VERSION)
+        && db.meta_get("vec_dims")?.as_deref() == Some(dims.as_str())
+        && sidecar.exists();
+    let vindex: Option<UsearchIndex> = if vec_meta_ok {
+        let idx = UsearchIndex::open_writable(&sidecar, EMBED_DIMS)?;
+        let embedded =
+            db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")? as usize;
+        // Size drift (e.g. an interrupted prior run) ⇒ fall back to a clean rebuild.
+        if idx.len() == embedded {
+            Some(idx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Lazily loaded on the first changed file, so a no-op `index` never loads the model.
     let mut embedder: Option<Embedder> = None;
@@ -204,9 +236,16 @@ pub fn run_timed(
         }
 
         let t0 = Instant::now();
-        db.replace_chunks(&rel, &chunks, Some(created_at), fm.source.as_deref())?;
+        // The OLD chunk ids (pre-replacement) drive incremental vector removal (G5): on a changed file
+        // the new chunk set can differ, so we remove every old key then add every new one below.
+        let old_ids = db.replace_chunks(&rel, &chunks, Some(created_at), fm.source.as_deref())?;
         if let Some(t) = timings.as_mut() {
             t.replace_chunks_ms += elapsed_ms(t0);
+        }
+        if let Some(vi) = vindex.as_ref() {
+            for id in &old_ids {
+                vi.remove(key_for(id))?;
+            }
         }
 
         let t0 = Instant::now();
@@ -229,8 +268,13 @@ pub fn run_timed(
             }
 
             let t0 = Instant::now();
-            for (c, v) in chunks.iter().zip(vecs) {
-                db.set_embedding(&c.id, &v)?;
+            for (c, v) in chunks.iter().zip(&vecs) {
+                db.set_embedding(&c.id, v)?;
+                // Mirror the vector into the usearch sidecar in lockstep (G5) when mutating
+                // incrementally; the full-rebuild path repacks everything after the loop instead.
+                if let Some(vi) = vindex.as_ref() {
+                    vi.add(key_for(&c.id), v)?;
+                }
             }
             if let Some(t) = timings.as_mut() {
                 t.insert_embedding_ms += elapsed_ms(t0);
@@ -246,7 +290,12 @@ pub fn run_timed(
     // Deletions: indexed files no longer on disk.
     for path in existing.keys() {
         if !seen.contains(path) {
-            db.delete_file(path)?;
+            let removed = db.delete_file(path)?; // chunk ids, for tantivy + vector cleanup (G5)
+            if let Some(vi) = vindex.as_ref() {
+                for id in &removed {
+                    vi.remove(key_for(id))?;
+                }
+            }
             lex.delete_file(&writer, path);
             stats.removed += 1;
         }
@@ -259,6 +308,23 @@ pub fn run_timed(
     writer.wait_merging_threads()?;
     if let Some(t) = timings.as_mut() {
         t.commit_ms += elapsed_ms(t0);
+    }
+
+    // Persist the vector index after the single tantivy commit (G5: the stores move together). Either
+    // save the incrementally-mutated index, or do the one-time full rebuild from the now-current f32
+    // BLOBs (no re-embed). A no-op incremental run skips the save (the sidecar is already current).
+    let t0 = Instant::now();
+    let changed_any = stats.new + stats.changed + stats.removed > 0;
+    match &vindex {
+        Some(vi) if changed_any => vi.save(&sidecar)?,
+        Some(_) => {}
+        None => UsearchIndex::rebuild_from_db(&db, EMBED_DIMS)?.save(&sidecar)?,
+    }
+    db.meta_set("vec_backend", "usearch")?;
+    db.meta_set("vec_index_version", VEC_INDEX_VERSION)?;
+    db.meta_set("vec_dims", &dims)?;
+    if let Some(t) = timings.as_mut() {
+        t.vector_ms += elapsed_ms(t0);
     }
     Ok(stats)
 }
@@ -281,6 +347,7 @@ mod tests {
             embed_ms: 4.0,
             insert_embedding_ms: 5.0,
             commit_ms: 6.0,
+            vector_ms: 7.0,
         };
         let v: serde_json::Value = serde_json::to_value(&t).unwrap();
         let obj = v.as_object().unwrap();
@@ -296,6 +363,7 @@ mod tests {
                 "insert_embedding_ms",
                 "replace_chunks_ms",
                 "tantivy_add_ms",
+                "vector_ms",
             ]
         );
         assert_eq!(obj["embed_ms"], serde_json::json!(4.0));

@@ -19,6 +19,10 @@ Hybrid retrieval over a personal-scale Markdown vault (tens of thousands of chun
 - **Embeddings via `fastembed` (`bge-small-en-v1.5`, 384-dim)** through `ort` (=2.0.0-rc.12).
 - **Vectors: brute-force exact cosine in RAM**, stored as BLOBs in `rusqlite` (`bundled`). At this scale
   a full SIMD scan is sub-few-ms; zero extra deps. **No ANN crate yet.**
+  > **Superseded for the vector component by [ADR 0019](./0019-usearch-ann-backend.md) (2026-06-07):**
+  > the default semantic/hybrid backend is now an embedded **usearch HNSW** index (statically linked),
+  > with this brute-force scan kept as the exact fallback / `--exact` oracle. BM25 + RRF below are
+  > unchanged. The f32 BLOBs remain the authoritative, rebuildable source of truth.
 - **Fusion: Reciprocal Rank Fusion, k=60** (`score = Σ 1/(k + rank)`). Rank-based ⇒ no score
   normalization, **no per-list weighting** (G8 — an earlier "weight the original-query BM25 list ×2"
   note contradicted G8 and is removed; qmd's weighted-RRF/top-rank bonus are rejected).
@@ -41,6 +45,9 @@ ours for control + a clean dep tree and use frankensearch/qmd only as references
 ## Consequences
 
 - Brute force is fine now; revisit an ANN backend only if the corpus grows by orders of magnitude.
+  > **Update (ADR 0019, 2026-06-07):** with a >500k-chunk trajectory the corpus *is* expected to grow
+  > by orders of magnitude, so the ANN backend (usearch HNSW) was adopted. Brute force lives on as the
+  > exact `--exact` / oracle path.
 - tantivy 0.x has no index-format compatibility guarantee across minor bumps → `tantivy_version` gate.
 - **Reranking and query-expansion are now tiered** (no longer "deferred"):
   - A cross-encoder reranker (`jina-reranker-v1-turbo-en`) is an **in-core post-fusion stage**

@@ -29,7 +29,8 @@ silently breaking an invariant.
 
 - `0001-build-vs-adopt.md` — build the second-brain layer fresh; lean on `frankensearch` for retrieval.
 - `0002-language-rust.md` — Rust over Python.
-- `0003-search-stack.md` — tantivy + fastembed/ort + brute-force cosine + RRF(k=60).
+- `0003-search-stack.md` — tantivy + fastembed/ort + brute-force cosine + RRF(k=60). *(vector component
+  superseded by 0019.)*
 - `0004-icloud-markdown-only.md` — iCloud holds Markdown only; index/DB/cache live outside iCloud.
 - `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
 - `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default.
@@ -47,3 +48,5 @@ silently breaking an invariant.
   `created_at`/`source` (no tantivy schema change); adds G9b.
 - `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
   worktree janitor, soft breadcrumb nudge; adds G21–G24.
+- `0019-usearch-ann-backend.md` — embedded usearch HNSW vector index (statically linked), exact
+  brute-force fallback; supersedes 0003's vector component; updates G5/G11/G13.

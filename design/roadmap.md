@@ -26,7 +26,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 
 | Capability | Home | Engine / model | Status |
 |---|---|---|---|
-| BM25 + cosine + RRF (tier 0) | core `vagus` | tantivy + brute-force cosine | shipped |
+| BM25 + cosine + RRF (tier 0) | core `vagus` | tantivy + **usearch HNSW** (exact brute-force fallback) | shipped (ADR 0019) |
 | Embedder | core `vagus` | fastembed/ort — **EmbeddingGemma-300M** (768-dim, 2048 ctx) | shipped (ADR 0006) |
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
 | Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
@@ -65,4 +65,5 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - A real tokenizer in the chunk hot path (the `chars/3.5` heuristic suffices — G11).
 - llama-cpp-2 engine (adds cmake) — fallback only if candle's Qwen3 support regresses.
 - Quantized-Gemma via custom-ONNX (a footprint lever for later).
-- ANN vector backend (brute-force cosine is sub-few-ms at personal scale).
+- ~~ANN vector backend~~ — **shipped** as embedded usearch HNSW ([ADR 0019](./adr/0019-usearch-ann-backend.md)),
+  adopted ahead of the >500k-chunk trajectory; exact brute-force remains as the `--exact` fallback.

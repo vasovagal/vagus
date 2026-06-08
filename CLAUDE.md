@@ -24,9 +24,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
    vectors from different models/dims — it silently corrupts ranking. Current identity:
    `google/embeddinggemma-300m` / **768** (768-dim, 2048-ctx). Bump `CHUNK_VERSION` alongside any
    identity change so the one-time reindex is automatic.
-5. **Keep the two stores consistent off one hash-diff.** On a changed/deleted file: delete its tantivy
-   docs (`writer.delete_term(path)` → `commit()`) **and** delete its SQLite vector rows (the vector
-   store has no foreign keys/triggers). Same `chunk_id`/`path` keys drive both.
+5. **Keep all three stores consistent off one hash-diff.** On a changed/deleted file: delete its tantivy
+   docs (`writer.delete_term(path)` → `commit()`), its SQLite vector rows (no FK/triggers), **and** its
+   usearch vectors (`remove(key_for(id))` — ADR 0019). Same `chunk_id`/`vec_key` keys drive all three.
+   The f32 BLOBs are authoritative; the `.usearch` sidecar is a rebuildable derived cache (missing/stale
+   ⇒ rebuilt from the BLOBs, no re-embed).
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —
    always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or `FASTEMBED_CACHE_DIR`).
 7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`; no
@@ -34,9 +36,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
    and must not touch `rrf()`. Apply the embedder's prompt template (EmbeddingGemma: query
    `task: search result | query:`, document `title: none | text:` — documents *are* prefixed now) and
    **don't double-prefix**.
-8. **Retrieval is hand-rolled** (tantivy BM25 + brute-force cosine + RRF; see
-   `design/adr/0003-search-stack.md`). `frankensearch`/`qmd` are design references, **not
-   dependencies** (see `design/adr/0007-lean-on-frankensearch.md`). Don't add a heavyweight
+8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
+   cosine component is an embedded **usearch HNSW** vector index, statically linked and pinned, with an
+   exact brute-force fallback (`--exact`) — see `design/adr/0019-usearch-ann-backend.md`. `rrf()` and
+   rerank are untouched by the backend (G7/G8). `frankensearch`/`qmd` are design references, **not
+   dependencies** (see `design/adr/0007-lean-on-frankensearch.md`). Don't add another heavyweight
    search-engine dependency without an ADR.
 9. **Local-first, offline by default.** No cloud calls and no background daemon in **any** tier.
    Generation is *tiered*, not banned (see invariant 12): the reranker is a scoring model in core;
