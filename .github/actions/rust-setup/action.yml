@@ -21,10 +21,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Toolchain
+    - name: Toolchain (latest stable)
       shell: bash
       run: |
-        rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install stable --profile minimal
+        # CI must ride the LATEST stable rustc, not the runner image's baked-in (often weeks-old) stable.
+        # `rustup update stable` guarantees it; the bare `... || rustup toolchain install stable` skipped the
+        # update whenever a toolchain was already active. (LAWS §8: keep rust-setup identical across repos.)
+        rustup update stable --no-self-update
+        rustup default stable
         if [ -n "${{ inputs.components }}" ]; then rustup component add ${{ inputs.components }}; fi
         rustc -V && cargo -V
 

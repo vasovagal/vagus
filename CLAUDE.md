@@ -59,9 +59,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
 14. **Multi-agent isolation** (ADR 0018/G21–G23). Parallel/swarm work runs in its own git worktree
     (`.claude/worktrees/<name>` or org-level `.vagus-worktrees/`, branched fresh from `origin/main`) —
     never dueling agents in one checkout. **No direct commits to `main`** except releases — a version
-    or formula bump (Cargo.toml/Cargo.lock/CHANGELOG.md/Formula/) and `vX.Y.Z` tag pushes are allowed;
-    everything else goes via feature branch + PR (a `git-guard` hook enforces it). Prune a worktree once
-    its branch merges (`scripts/worktree-janitor.sh`).
+    bump (Cargo.toml/Cargo.lock/CHANGELOG.md) and `vX.Y.Z` tag pushes are allowed; everything else goes
+    via feature branch + PR (a `git-guard` hook enforces it). Prune a worktree once its branch merges
+    (`scripts/worktree-janitor.sh`).
 15. **Leave breadcrumbs** (ADR 0018/G24). Architectural changes update the matching ADR and keep the
     `design/README.md` ADR index, `design/guardrails.md`, and this file **in sync, same change**.
 
@@ -92,7 +92,9 @@ vagus status
 
 Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeline follows the laws in
 `xrl/agents` `LAWS.md`: split-by-event (`ci.yml` on PR/main, `release.yml` on tags — no test re-run),
-native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
+native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release. After
+`vX.Y.Z`, update `vasovagal/homebrew-tap/Formula/vagus.rb` via `scripts/render-formula.sh` (manual; CI
+never writes the tap).
 
 ## Conventions
 

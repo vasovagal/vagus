@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Render Formula/vagus.rb for a published release, to stdout.
+# Render the Homebrew formula for a published release, to stdout.
 # Downloads the release assets from the PUBLIC GitHub release to compute each sha256 (no token).
 #
-#   VERSION=0.1.0 scripts/render-formula.sh > Formula/vagus.rb
+#   VERSION=0.1.0 scripts/render-formula.sh > .../homebrew-tap/Formula/vagus.rb
 #
-# Used by both the release workflow's update-formula job and by hand for the first release.
+# Run by hand after a release to update the external shared tap (vasovagal/homebrew-tap); commit the
+# rendered formula there. CI never writes the tap.
 set -euo pipefail
 
 VERSION="${VERSION:?set VERSION, e.g. VERSION=0.1.0}"

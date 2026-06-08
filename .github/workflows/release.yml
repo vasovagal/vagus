@@ -1,8 +1,10 @@
 name: release
 
-# Law 3: a tag is a vote of confidence — this workflow does ONLY tag-specific work (build, publish,
-# bump the tap). It does not re-run the PR test matrix. Law 18: one workflow per release event, fanned
-# out by `needs:` only where there's a real dependency. Law 19: re-run-safe at every step.
+# Law 3: a tag is a vote of confidence — this workflow does ONLY tag-specific work (build, publish).
+# It does not re-run the PR test matrix. The Homebrew formula lives in the external shared tap
+# (vasovagal/homebrew-tap) and is updated manually post-release (scripts/render-formula.sh) — CI never
+# writes the tap. Law 18: one workflow per release event, fanned out by `needs:` only where there's a
+# real dependency. Law 19: re-run-safe at every step.
 on:
   push:
     tags: ["v*"]
@@ -49,7 +51,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: ./.github/actions/rust-setup
         with:
           cache-key: rel-${{ matrix.target }}
@@ -71,26 +73,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" "${{ steps.pkg.outputs.asset }}" --repo "$GITHUB_REPOSITORY" --clobber
-
-  update-formula:
-    needs: [check, build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout main (the formula lives in this repo; the tap tracks the default branch)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: main
-      - name: Regenerate Formula/vagus.rb from the published assets
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
-        run: |
-          VERSION="$VERSION" ./scripts/render-formula.sh > Formula/vagus.rb
-          cat Formula/vagus.rb
-      - name: Commit + push the bump (idempotent; [skip ci] avoids a rebuild loop)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- Formula/vagus.rb; then echo "formula unchanged"; exit 0; fi
-          git add Formula/vagus.rb
-          git commit -m "vagus ${{ needs.check.outputs.version }} [skip ci]"
-          git push origin HEAD:main

@@ -4,7 +4,7 @@
 # Two jobs, both FAIL-OPEN (a missing dep or non-git cwd never blocks work):
 #   G22  deny `git commit` on `main` and `git push` of the `main` branch — land changes via a feature
 #        branch + PR. Releases are exempt: a release-only commit (staging just Cargo.toml / Cargo.lock /
-#        CHANGELOG.md / Formula/) and `vX.Y.Z` tag pushes are allowed on `main` (RELEASING.md).
+#        CHANGELOG.md) and `vX.Y.Z` tag pushes are allowed on `main` (RELEASING.md).
 #   G24  on a `git commit` that stages src/** but no design/** or CHANGELOG.md, emit a soft reminder
 #        to leave a breadcrumb (allowed, not blocked).
 #
@@ -44,14 +44,15 @@ deny() {
 }
 
 # --- G22: no direct commits/pushes to main (releases exempt) ---------------
-# Release commits may land directly on main (RELEASING.md): a version bump or the CI formula bump — a
-# commit staging ONLY release files (Cargo.toml / Cargo.lock / CHANGELOG.md / Formula/) — plus vX.Y.Z
-# tag pushes. Anything touching code or docs still needs a feature branch + PR.
+# Release commits may land directly on main (RELEASING.md): a version bump — a commit staging ONLY
+# release files (Cargo.toml / Cargo.lock / CHANGELOG.md) — plus vX.Y.Z tag pushes. Anything touching
+# code or docs still needs a feature branch + PR. (The Homebrew formula now lives in the external
+# shared tap vasovagal/homebrew-tap and is updated by hand there — never committed to this repo's main.)
 if [ "$verb" = "commit" ] && [ "$branch" = "main" ]; then
   staged="$(git diff --cached --name-only 2>/dev/null || true)"
   # Deny unless something is staged AND every staged path is a release file.
-  if [ -z "$staged" ] || printf '%s\n' "$staged" | grep -qvE '^(Cargo\.toml|Cargo\.lock|CHANGELOG\.md|Formula/)'; then
-    deny "G22 (ADR 0018): no direct commits to main. Create a feature branch (git switch -c feat/<name>) and open a PR. (Release-only commits — Cargo.toml / Cargo.lock / CHANGELOG.md / Formula/ — are allowed on main.)"
+  if [ -z "$staged" ] || printf '%s\n' "$staged" | grep -qvE '^(Cargo\.toml|Cargo\.lock|CHANGELOG\.md)'; then
+    deny "G22 (ADR 0018): no direct commits to main. Create a feature branch (git switch -c feat/<name>) and open a PR. (Release-only commits — Cargo.toml / Cargo.lock / CHANGELOG.md — are allowed on main.)"
   fi
 fi
 

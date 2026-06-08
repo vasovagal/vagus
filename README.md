@@ -35,12 +35,13 @@ straight from a Claude Code session).
 ### Homebrew (macOS arm64, Linux arm64/amd64)
 
 ```sh
-brew tap vasovagal/vagus https://github.com/vasovagal/vagus.git
+brew tap vasovagal/tap
 brew install vagus
 ```
 
-(The formula lives in this repo at `Formula/vagus.rb`, so the tap points straight at it — no
-separate `homebrew-*` repo, no token.)
+(The formula lives in the shared tap `vasovagal/homebrew-tap`. After a release, the tap is updated
+manually — `VERSION=X.Y.Z scripts/render-formula.sh > .../homebrew-tap/Formula/vagus.rb` and commit it
+to `vasovagal/homebrew-tap`. CI never writes the tap.)
 
 ### From source
 
