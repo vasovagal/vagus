@@ -4436,7 +4436,7 @@ dependencies = [
 
 [[package]]
 name = "vagus"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "candle-core",
