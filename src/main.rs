@@ -18,6 +18,7 @@ mod scope;
 mod search;
 mod skills;
 mod util;
+mod vector;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -106,6 +107,10 @@ enum Command {
         /// total). Diagnostic for `--smart`/`--rerank`; stdout and the `--json` shape are unchanged.
         #[arg(long)]
         timings: bool,
+        /// Force exact (brute-force) semantic search instead of the approximate usearch HNSW index
+        /// (ADR 0019). Slower on large corpora but 100% recall — the ground-truth escape hatch.
+        #[arg(long)]
+        exact: bool,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -215,6 +220,7 @@ fn main() -> Result<()> {
             since,
             source,
             timings,
+            exact,
         } => search::run(
             &cfg,
             &query,
@@ -230,6 +236,7 @@ fn main() -> Result<()> {
             smart,
             since.as_deref(),
             source.as_deref(),
+            exact,
             timings,
         )?,
         Command::Rewrite { query } => {
@@ -371,6 +378,31 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         &format!("{files} files, {chunks} chunks, {embedded} embedded"),
     );
 
+    // Vector index (ADR 0019): the usearch HNSW sidecar. Healthy when present and its key count matches
+    // the embedded-chunk count (G5 cross-check); missing ⇒ it rebuilds from the f32 BLOBs on next index.
+    let vpath = cfg.vector_path();
+    let (vec_ok, vec_detail) = if vpath.exists() {
+        match vector::UsearchIndex::view(&vpath, config::EMBED_DIMS) {
+            Ok(vi) => {
+                let n = vector::VectorIndex::len(&vi);
+                (
+                    n as i64 == embedded,
+                    format!("{} ({n} vectors, {embedded} embedded)", vpath.display()),
+                )
+            }
+            Err(e) => (false, format!("{} (open failed: {e})", vpath.display())),
+        }
+    } else {
+        (
+            embedded == 0,
+            format!(
+                "{} (missing — rebuilds on next `vagus index`)",
+                vpath.display()
+            ),
+        )
+    };
+    line("vector index (usearch)", vec_ok, &vec_detail);
+
     // Guardrail G1: the index must not live inside the iCloud vault.
     let inside = cfg.data_dir.starts_with(&cfg.vault);
     line(
@@ -482,6 +514,11 @@ fn cmd_status(cfg: &Config) -> Result<()> {
     println!("  model cache : {}", cfg.cache_dir.display());
     println!("  db          : {}", cfg.db_path().display());
     println!("  tantivy     : {}", cfg.tantivy_dir().display());
+    let vpath = cfg.vector_path();
+    let vsize = std::fs::metadata(&vpath)
+        .map(|m| human_size(m.len()))
+        .unwrap_or_else(|_| "missing".into());
+    println!("  vectors     : {} [{}]", vpath.display(), vsize);
     println!(
         "  embed model : {} ({} dims)",
         config::EMBED_MODEL,

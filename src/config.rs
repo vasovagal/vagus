@@ -21,6 +21,12 @@ pub const EMBED_DIMS: usize = 768;
 /// onto every chunk for the `--since`/`--source` filters — [ADR 0017](../design/adr/0017-indexed-frontmatter-filters.md)).
 pub const CHUNK_VERSION: &str = "4";
 
+/// Identity of the usearch vector index (ADR 0019), pinned in the `meta` table alongside the embedding
+/// identity (G4). Bump this when the HNSW build parameters or the on-disk index format change so the
+/// `.usearch` sidecar is rebuilt from the existing f32 BLOBs (no re-embed). Independent of
+/// `CHUNK_VERSION`: the vectors themselves are unchanged, so bumping this must NOT force a re-embed.
+pub const VEC_INDEX_VERSION: &str = "1";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Markdown vault (in iCloud), default `~/brain`. Override: `VAGUS_VAULT`.
@@ -70,6 +76,12 @@ impl Config {
 
     pub fn tantivy_dir(&self) -> PathBuf {
         self.data_dir.join("tantivy")
+    }
+
+    /// The usearch HNSW vector index sidecar (ADR 0019). A derived cache (G2) OUTSIDE iCloud (G1),
+    /// rebuildable from the f32 BLOBs in `meta.db`; never point mmap at anything in the vault.
+    pub fn vector_path(&self) -> PathBuf {
+        self.data_dir.join("vectors.usearch")
     }
 
     /// Create the derived-state directories (NOT the vault — that is the user's iCloud folder).

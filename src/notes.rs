@@ -376,6 +376,7 @@ fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<(
         false,
         None,  // no --since for filing suggestions (ADR 0017)
         None,  // no --source for filing suggestions (ADR 0017)
+        false, // approximate (HNSW) is fine for filing suggestions (ADR 0019)
         false, // no --timings on the filing path
     )
     .unwrap_or_default();

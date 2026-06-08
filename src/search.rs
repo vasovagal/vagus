@@ -185,30 +185,38 @@ fn rel(score: f32, top: f32) -> i32 {
         .clamp(0.0, 100.0) as i32
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+/// Resolve a ranked `(vec_key, cosine)` list from a [`crate::vector::VectorIndex`] back to
+/// `(chunk_id, cosine)`, preserving rank order and dropping any key with no surviving chunk row
+/// (ADR 0019). usearch returns u64 keys; the reverse map lives in the indexed `chunks.vec_key` column.
+fn vec_topk(
+    vindex: &dyn crate::vector::VectorIndex,
+    db: &Db,
+    qv: &[f32],
+    limit: usize,
+) -> Result<Vec<(String, f32)>> {
+    let hits = vindex.search(qv, limit)?;
+    let keys: Vec<u64> = hits.iter().map(|(k, _)| *k).collect();
+    let map = db.chunk_ids_for_keys(&keys)?;
+    Ok(hits
+        .into_iter()
+        .filter_map(|(k, cos)| map.get(&k).map(|id| (id.clone(), cos)))
+        .collect())
 }
 
-/// Cosine top-k of a (normalized) query vector against the preloaded (normalized) matrix. Shared by
-/// the single-query path and the `--smart` multi-query path (which preloads the matrix once).
-fn cosine_topk(qv: &[f32], all: &[(String, Vec<f32>)], limit: usize) -> Vec<(String, f32)> {
-    let mut scored: Vec<(String, f32)> = all
-        .iter()
-        .map(|(id, v)| (id.clone(), dot(qv, v))) // both normalized -> cosine
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    scored.truncate(limit);
-    scored
-}
-
-/// Brute-force exact cosine over the in-RAM normalized matrix. Returns (chunk_id, cosine) top-k.
-fn vec_search(cfg: &Config, db: &Db, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
+/// Semantic top-k: embed the query, then rank via the vector index — usearch HNSW, or the exact
+/// brute-force backend when `exact`, on a small corpus, or before the sidecar exists (ADR 0019).
+/// Returns (chunk_id, cosine) in rank order.
+fn vec_search(
+    cfg: &Config,
+    db: &Db,
+    query: &str,
+    limit: usize,
+    exact: bool,
+) -> Result<Vec<(String, f32)>> {
     let mut emb = Embedder::new(&cfg.cache_dir)?;
     let qv = emb.embed_query(query)?; // normalized
-    Ok(cosine_topk(&qv, &db.all_embeddings()?, limit))
+    let vindex = crate::vector::open_for_search(cfg, db, exact)?;
+    vec_topk(vindex.as_ref(), db, &qv, limit)
 }
 
 /// Reciprocal Rank Fusion over several ranked id-lists (1-based rank). Returns (id, fused_score).
@@ -267,6 +275,7 @@ pub fn query(
     rerank: bool,
     since: Option<i64>,
     source: Option<&str>,
+    exact: bool,
     timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     let t_total = Instant::now();
@@ -295,7 +304,7 @@ pub fn query(
                 })
                 .collect()
         }
-        Mode::Vec => vec_search(cfg, &db, q, pool)?
+        Mode::Vec => vec_search(cfg, &db, q, pool, exact)?
             .into_iter()
             .map(|(id, cosine)| Scored {
                 id,
@@ -311,7 +320,7 @@ pub fn query(
             let cand = (pool * 3).max(30);
             let lex = Lex::open(&cfg.tantivy_dir())?;
             let bm = lex.search(q, cand)?; // (id, bm25), BM25 rank order
-            let ve = vec_search(cfg, &db, q, cand)?; // (id, cosine), cosine rank order
+            let ve = vec_search(cfg, &db, q, cand, exact)?; // (id, cosine), cosine rank order
             let bm25_of: HashMap<&str, f32> = bm.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
@@ -466,7 +475,7 @@ fn smart_query(
     };
 
     // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each
-    //    vec/hyde variant via vector. Load the embedder + the vector matrix once (lazily).
+    //    vec/hyde variant via vector. Load the embedder + open the vector index once (lazily).
     let mut plans: Vec<(bool, &str)> = vec![(false, q), (true, q)];
     for v in &variants {
         plans.push((!matches!(v.kind, Kind::Lex), v.text.as_str()));
@@ -474,7 +483,7 @@ fn smart_query(
 
     let lex = Lex::open(&cfg.tantivy_dir())?;
     let mut emb: Option<Embedder> = None;
-    let mut matrix: Vec<(String, Vec<f32>)> = Vec::new();
+    let mut vindex: Option<Box<dyn crate::vector::VectorIndex>> = None;
     let mut lists: Vec<Vec<String>> = Vec::new();
     for (is_vec, text) in plans {
         if is_vec {
@@ -490,13 +499,16 @@ fn smart_query(
                     None => Embedder::new(&cfg.cache_dir)?,
                 };
                 emb = Some(e);
-                matrix = db.all_embeddings()?;
+                // `--smart` is a tier-1 quality path; honor `--exact` only via the plain path. Here the
+                // approximate HNSW backend is fine (the rerank stage re-scores the fused pool anyway).
+                vindex = Some(crate::vector::open_for_search(cfg, &db, false)?);
                 t.embed_load_ms += ms_since(t0);
             }
             let t0 = Instant::now();
             let qv = emb.as_mut().unwrap().embed_query(text)?;
+            let vi = vindex.as_deref().expect("vector index opened above");
             lists.push(
-                cosine_topk(&qv, &matrix, pool)
+                vec_topk(vi, &db, &qv, pool)?
                     .into_iter()
                     .map(|(id, _)| id)
                     .collect(),
@@ -597,6 +609,7 @@ fn run_query(
     smart: bool,
     since: Option<i64>,
     source: Option<&str>,
+    exact: bool,
     timings: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     #[cfg(feature = "generate")]
@@ -624,6 +637,7 @@ fn run_query(
         rerank || smart,
         since,
         source,
+        exact,
         timings,
     )
 }
@@ -644,6 +658,7 @@ pub fn run(
     smart: bool,
     since: Option<&str>,
     source: Option<&str>,
+    exact: bool,
     timings: bool,
 ) -> Result<()> {
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
@@ -664,7 +679,7 @@ pub fn run(
         Scope::discover()?
     };
     let (mut hits, elided) = run_query(
-        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, timings,
+        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, exact, timings,
     )?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).

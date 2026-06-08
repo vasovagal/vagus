@@ -9,6 +9,18 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded vector index: usearch HNSW**, statically linked into the single binary (ADR 0019). Semantic
+  and hybrid search now rank via an approximate-nearest-neighbour index instead of a brute-force scan,
+  giving real headroom as the vault grows. The `.usearch` sidecar lives outside iCloud and is a
+  rebuildable cache of the authoritative f32 vectors — upgrading **backfills it from existing embeddings
+  with no re-embed and no reindex**.
+- `vagus search --exact`: force exact brute-force semantic search (100% recall) instead of the
+  approximate index — the ground-truth escape hatch.
+- `vagus doctor` reports the usearch index health (vector count vs embedded chunks, G5 cross-check), and
+  `vagus status` shows the sidecar path + size. `vagus file --stats` gains a `vector_ms` timing.
+
 ## [0.5.0] — 2026-05-31
 
 ### Added

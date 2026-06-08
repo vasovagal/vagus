@@ -45,6 +45,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
 tantivy = "0.26.1"
+# Embedded HNSW vector index (ADR 0019), statically linked via cxx-build — no cmake, no bindgen, no
+# prebuilt download; needs a C++17 toolchain (same class as `ort`). Default features keep the in-binary
+# SIMD (`numkong`, runtime CPU-feature dispatch — no dlopen, static-link-safe) and leave `openmp` OFF;
+# `openmp` would emit `rustc-link-lib=dylib=omp` and break the self-contained binary (G13). Pinned exact;
+# Cargo.lock also pins the transitive `numkong`. Re-verify the artifact with `otool -L`/`ldd` (G13).
+usearch = "=2.25.3"
 terminal_size = "0.4"
 walkdir = "2.5.0"
 # tier-1 local generative rewriter (ADR 0016), behind the `generate` feature. CPU by default (no
