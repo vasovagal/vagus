@@ -4,10 +4,12 @@ All notable, user-noticeable changes to `vagus` are recorded here. Internal refa
 changes are intentionally omitted (CLAUDE.md → Conventions).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.6.1`;
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.7.0`;
 entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
+
+## [0.7.0] — 2026-06-09
 
 ### Changed
 
