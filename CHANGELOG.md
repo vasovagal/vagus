@@ -9,6 +9,19 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **`vagus search --limit N` now returns N distinct notes** instead of N chunks (ADR 0020). Each
+  note appears once as its best-ranked chunk, with a `siblings` count of the other ranked chunks
+  folded into it (omitted when zero, so single-chunk hits are unchanged). Previously a long note
+  matching broadly could fill several of the top slots, so "10 hits" might span only 3–4 notes.
+  Ranking itself is untouched — dedup is a post-rank stage like the `--since`/`--source` filters.
+
+### Added
+
+- `vagus search --chunks`: raw chunk-level hits — `--limit` counts chunks, the pre-0.7 behavior.
+  Output (including `--json`) is byte-identical to v0.6.1.
+
 ## [0.6.1] — 2026-06-07
 
 ### Added

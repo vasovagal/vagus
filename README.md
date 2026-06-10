@@ -89,7 +89,7 @@ vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
-vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --rerank, --smart, --json)
+vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --rerank, --smart, --json, --chunks)
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
@@ -97,6 +97,9 @@ vagus doctor                # health check (symlink, model cache, dylib, dims, i
 vagus status                # counts, model/dims, index size
 vagus skills install        # install the Claude Code skills into ~/.claude/skills
 ```
+
+Search results are **one per note** by default — `--limit 10` means 10 distinct notes, each shown
+as its best-matching chunk. Pass `--chunks` to rank every matching chunk individually instead.
 
 The index/database live **outside** iCloud (`~/.local/share/vagus/`) and are fully
 rebuildable from the Markdown — only your notes live in iCloud.
