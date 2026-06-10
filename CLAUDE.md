@@ -88,10 +88,15 @@ canonical invariant list and is **binding** — the summary below must stay in s
 cargo build              # first build fetches prebuilt ONNX Runtime (network, one-time)
 cargo test
 cargo clippy --all-targets
-cargo install --path .   # installs `vagus` on PATH
+./target/debug/vagus …   # run dev builds from target/, never install them
 vagus doctor             # verify symlink, model cache, dylib, dims, index health
 vagus status
 ```
+
+The installed `vagus` on PATH comes from the **Homebrew tap** (`brew tap vasovagal/tap && brew
+install vagus`), upgraded once per release (see Releasing). Do **not** `cargo install --path .` —
+`~/.cargo/bin` precedes `/opt/homebrew/bin` on PATH, so a cargo-installed copy silently shadows the
+brew one and drifts. Dev builds run from `target/`.
 
 ## Releasing
 
@@ -100,10 +105,12 @@ Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeli
 native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
 
 **Every release propagates to the tap, same cycle.** A release is not done until
-`vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: after the GitHub release publishes,
-render and push the formula (`VERSION=X.Y.Z scripts/render-formula.sh`, commit "vagus X.Y.Z" to the
-tap). Manual by design — CI never writes the tap — so the tap bump is part of cutting the release,
-never a follow-up left for later.
+`vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: wait for `release.yml` to publish
+the GitHub release, then render and push the formula (`VERSION=X.Y.Z scripts/render-formula.sh`,
+commit "vagus X.Y.Z" to the tap). Manual by design — CI never writes the tap — so the tap bump is
+part of cutting the release, never a follow-up left for later. Finish by upgrading the local
+install from the tap: `brew update && brew upgrade vagus` (the machine's `vagus` is brew-installed,
+not cargo-installed — see Build / test / run).
 
 ## Conventions
 
