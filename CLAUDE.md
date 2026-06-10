@@ -97,9 +97,13 @@ vagus status
 
 Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeline follows the laws in
 `xrl/agents` `LAWS.md`: split-by-event (`ci.yml` on PR/main, `release.yml` on tags — no test re-run),
-native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release. After
-`vX.Y.Z`, update `vasovagal/homebrew-tap/Formula/vagus.rb` via `scripts/render-formula.sh` (manual; CI
-never writes the tap).
+native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
+
+**Every release propagates to the tap, same cycle.** A release is not done until
+`vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: after the GitHub release publishes,
+render and push the formula (`VERSION=X.Y.Z scripts/render-formula.sh`, commit "vagus X.Y.Z" to the
+tap). Manual by design — CI never writes the tap — so the tap bump is part of cutting the release,
+never a follow-up left for later.
 
 ## Conventions
 
