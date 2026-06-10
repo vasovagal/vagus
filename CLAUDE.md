@@ -33,9 +33,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
    always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or `FASTEMBED_CACHE_DIR`).
 7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`; no
    weighting/normalization. The cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
-   and must not touch `rrf()`. Apply the embedder's prompt template (EmbeddingGemma: query
-   `task: search result | query:`, document `title: none | text:` — documents *are* prefixed now) and
-   **don't double-prefix**.
+   and must not touch `rrf()` — as is note-level dedup, the default where `--limit` counts distinct
+   notes (`--chunks` opts out; ADR 0020/G9c). Apply the embedder's prompt template (EmbeddingGemma:
+   query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
+   now) and **don't double-prefix**.
 8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
    cosine component is an embedded **usearch HNSW** vector index, statically linked and pinned, with an
    exact brute-force fallback (`--exact`) — see `design/adr/0019-usearch-ann-backend.md`. `rrf()` and

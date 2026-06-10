@@ -50,3 +50,5 @@ silently breaking an invariant.
   worktree janitor, soft breadcrumb nudge; adds G21–G24.
 - `0019-usearch-ann-backend.md` — embedded usearch HNSW vector index (statically linked), exact
   brute-force fallback; supersedes 0003's vector component; updates G5/G11/G13.
+- `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
+  a post-rank dedup stage; `--chunks` opts out; adds G9c.

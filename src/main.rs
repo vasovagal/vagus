@@ -65,7 +65,7 @@ enum Command {
         /// Emit machine-readable JSON (stable shape for the Claude Code skill).
         #[arg(long)]
         json: bool,
-        /// Max results.
+        /// Max results: distinct notes by default; individual chunks with --chunks.
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Skip the automatic incremental index refresh before searching.
@@ -111,6 +111,10 @@ enum Command {
         /// (ADR 0019). Slower on large corpora but 100% recall — the ground-truth escape hatch.
         #[arg(long)]
         exact: bool,
+        /// Return individual chunk hits instead of one best-chunk hit per note; --limit then counts
+        /// chunks (the pre-0.7 behavior — ADR 0020).
+        #[arg(long)]
+        chunks: bool,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -221,6 +225,7 @@ fn main() -> Result<()> {
             source,
             timings,
             exact,
+            chunks,
         } => search::run(
             &cfg,
             &query,
@@ -238,6 +243,7 @@ fn main() -> Result<()> {
             source.as_deref(),
             exact,
             timings,
+            chunks,
         )?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]

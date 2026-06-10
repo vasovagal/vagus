@@ -156,6 +156,12 @@ pub struct Hit {
     /// absent (G9a/G13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Additional ranked chunks from the same note folded into this hit by note-level dedup —
+    /// the default mode, where `--limit` counts distinct notes (ADR 0020). Additive optional field:
+    /// never set under `--chunks` (and omitted when zero), so chunk-mode `--json` stays
+    /// byte-identical (G9a/G13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub siblings: Option<usize>,
 }
 
 /// Ranked id + component scores, before joining SQLite for the display fields.
@@ -256,6 +262,7 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
                 body: keep_body.then_some(body),
                 created,
                 source,
+                siblings: None,
             });
         }
     }
@@ -263,7 +270,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
 }
 
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`). `full` retains the chunk
-/// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1).
+/// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1);
+/// `chunks` skips note-level dedup, returning raw chunk hits (ADR 0020).
 #[allow(clippy::too_many_arguments)]
 pub fn query(
     cfg: &Config,
@@ -277,14 +285,16 @@ pub fn query(
     source: Option<&str>,
     exact: bool,
     timings: bool,
+    chunks: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
-    // Retrieve a deeper pool when reranking (the cross-encoder needs candidates) OR when filtering
+    // Retrieve a deeper pool when reranking (the cross-encoder needs candidates), when filtering
     // (the post-rank `--since`/`--source` stage may drop many top hits, so depth lets it still fill
-    // `limit`); otherwise retrieve exactly `limit` (today's behavior).
-    let pool = if rerank || since.is_some() || source.is_some() {
+    // `limit`), or in note mode (dedup compresses chunks → notes — ADR 0020); only `--chunks`
+    // without rerank/filters retrieves exactly `limit` (the pre-0.7 behavior).
+    let pool = if rerank || since.is_some() || source.is_some() || !chunks {
         (limit * 4).max(RERANK_POOL_MIN)
     } else {
         limit
@@ -372,6 +382,12 @@ pub fn query(
     // from the deeper pool pulled above.
     let mut hits = apply_filters(hits, since, source);
 
+    // Note-level dedup (ADR 0020): one best-chunk hit per note, so the truncation below makes
+    // `--limit` count distinct notes. `--chunks` keeps every ranked chunk.
+    if !chunks {
+        hits = dedupe_notes(hits);
+    }
+
     // Truncate to the requested limit, then drop any body we only kept transiently for reranking so
     // the default `--json` shape stays byte-identical (G9a).
     hits.truncate(limit);
@@ -409,6 +425,27 @@ fn apply_filters(hits: Vec<Hit>, since: Option<i64>, source: Option<&str>) -> Ve
         .collect()
 }
 
+/// Note-level dedup (ADR 0020): keep each note's best-ranked chunk, fold later same-note chunks
+/// into its `siblings` count. Mirrors `apply_filters`/`apply_scope`: a SEPARATE post-rank stage on
+/// the already-ranked hits — drop-only, order-preserving, `rrf()` pure (G7/G8). Runs after the
+/// frontmatter filters (so a note whose best chunk was filtered is represented by its next
+/// surviving chunk) and before truncation, where `--limit` then counts distinct notes. `--chunks`
+/// skips this stage entirely.
+fn dedupe_notes(hits: Vec<Hit>) -> Vec<Hit> {
+    let mut kept: Vec<Hit> = Vec::new();
+    let mut index_of: HashMap<String, usize> = HashMap::new();
+    for h in hits {
+        match index_of.get(&h.path) {
+            Some(&i) => kept[i].siblings = Some(kept[i].siblings.unwrap_or(0) + 1),
+            None => {
+                index_of.insert(h.path.clone(), kept.len());
+                kept.push(h);
+            }
+        }
+    }
+    kept
+}
+
 /// Tier-1 "smart" retrieval (ADR 0016, G19): a local model expands the query into typed lex/vec/hyde
 /// variants; each (plus the original, as both BM25 and vector) is retrieved, all lists are RRF-fused
 /// (k=60, unchanged — G8), and the fused pool is reranked against the *original* query on full bodies.
@@ -424,6 +461,7 @@ fn smart_query(
     since: Option<i64>,
     source: Option<&str>,
     timings: bool,
+    chunks: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
@@ -566,6 +604,10 @@ fn smart_query(
     // Post-rank `--since`/`--source` filter (ADR 0017) — the same separate stage as the plain path,
     // before truncation so the deeper smart pool can still fill `limit`. RRF/rerank order untouched.
     let mut hits = apply_filters(hits, since, source);
+    // Note-level dedup (ADR 0020), same stage order as the plain path (pool is already 4x here).
+    if !chunks {
+        hits = dedupe_notes(hits);
+    }
     hits.truncate(limit);
     if !full {
         for h in &mut hits {
@@ -611,10 +653,11 @@ fn run_query(
     source: Option<&str>,
     exact: bool,
     timings: bool,
+    chunks: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     #[cfg(feature = "generate")]
     if smart {
-        match smart_query(cfg, q, limit, scope, full, since, source, timings) {
+        match smart_query(cfg, q, limit, scope, full, since, source, timings, chunks) {
             Ok(r) => return Ok(r),
             Err(e) => {
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
@@ -639,6 +682,7 @@ fn run_query(
         source,
         exact,
         timings,
+        chunks,
     )
 }
 
@@ -660,6 +704,7 @@ pub fn run(
     source: Option<&str>,
     exact: bool,
     timings: bool,
+    chunks: bool,
 ) -> Result<()> {
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
     let since_cut = match since {
@@ -679,7 +724,7 @@ pub fn run(
         Scope::discover()?
     };
     let (mut hits, elided) = run_query(
-        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, exact, timings,
+        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, exact, timings, chunks,
     )?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
@@ -899,7 +944,10 @@ fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
             };
             println!("{}{}", st.dim(&prefix), body);
         }
-        let more = group.len().saturating_sub(PER_FILE_CAP);
+        // Overflow line, one expression for both modes: chunk mode counts hits beyond the display
+        // cap (`siblings` is never set there); note mode counts the chunks dedup folded (ADR 0020).
+        let more = group.len().saturating_sub(PER_FILE_CAP)
+            + group.iter().map(|h| h.siblings.unwrap_or(0)).sum::<usize>();
         if more > 0 {
             println!("{}", st.dim(&format!("    …   +{more} more in this note")));
         }
@@ -925,6 +973,7 @@ mod scope_filter_tests {
             body: None,
             created: None,
             source: None,
+            siblings: None,
         }
     }
 
@@ -933,6 +982,15 @@ mod scope_filter_tests {
         Hit {
             created,
             source: source.map(str::to_string),
+            ..hit(path)
+        }
+    }
+
+    /// `hit` with a per-chunk id, for the note-level dedup tests where one path yields several
+    /// ranked chunks (ADR 0020).
+    fn hit_chunk(path: &str, ord: usize) -> Hit {
+        Hit {
+            chunk_id: format!("id:{path}#{ord}"),
             ..hit(path)
         }
     }
@@ -974,13 +1032,21 @@ mod scope_filter_tests {
             !j.contains("\"body\""),
             "body leaked into default JSON: {j}"
         );
-        // …but they serialize when populated (the `--rerank` / `--full` paths).
+        // `siblings` is never set under `--chunks`, keeping that mode's JSON byte-identical to
+        // pre-0.7 output (ADR 0020/G9a).
+        assert!(
+            !j.contains("\"siblings\""),
+            "siblings leaked into default JSON: {j}"
+        );
+        // …but they serialize when populated (the `--rerank` / `--full` / note-mode paths).
         let mut h2 = hit("30-Resources/rust/d.md");
         h2.rerank = Some(1.5);
         h2.body = Some("full text".into());
+        h2.siblings = Some(2);
         let j2 = serde_json::to_string(&h2).unwrap();
         assert!(j2.contains("\"rerank\":1.5"));
         assert!(j2.contains("\"body\":\"full text\""));
+        assert!(j2.contains("\"siblings\":2"));
     }
 
     #[test]
@@ -1067,5 +1133,85 @@ mod scope_filter_tests {
         ];
         let kept = apply_filters(hits, None, None);
         assert_eq!(kept.len(), 2);
+    }
+
+    // --- note-level dedup (ADR 0020) ---------------------------------------------------------------
+
+    #[test]
+    fn note_dedup_keeps_best_chunk_per_note_in_rank_order() {
+        // RRF interleaves chunks from different notes; dedup keeps each note's first-seen
+        // (best-ranked) chunk and preserves the note order — no reordering (G7/G8).
+        let hits = vec![
+            hit_chunk("a.md", 1),
+            hit_chunk("b.md", 1),
+            hit_chunk("a.md", 2),
+            hit_chunk("c.md", 1),
+            hit_chunk("b.md", 2),
+        ];
+        let kept = dedupe_notes(hits);
+        let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["a.md", "b.md", "c.md"]);
+        let ids: Vec<&str> = kept.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(ids, ["id:a.md#1", "id:b.md#1", "id:c.md#1"]);
+    }
+
+    #[test]
+    fn note_dedup_counts_folded_siblings() {
+        let hits = vec![
+            hit_chunk("a.md", 1),
+            hit_chunk("b.md", 1),
+            hit_chunk("a.md", 2),
+            hit_chunk("c.md", 1),
+            hit_chunk("b.md", 2),
+        ];
+        let kept = dedupe_notes(hits);
+        let siblings: Vec<Option<usize>> = kept.iter().map(|h| h.siblings).collect();
+        // Folded chunks are counted on the keeper; a single-chunk note stays None so its JSON is
+        // indistinguishable from chunk-mode output (G9a).
+        assert_eq!(siblings, [Some(1), Some(1), None]);
+    }
+
+    #[test]
+    fn note_dedup_after_filters_promotes_surviving_chunk() {
+        // Stage order is load-bearing: filters run first, so a note whose best chunk was dropped by
+        // `--since` is represented by its next surviving chunk, not lost.
+        let hits = vec![
+            Hit {
+                created: Some(500),
+                ..hit_chunk("a.md", 1)
+            },
+            Hit {
+                created: Some(2000),
+                ..hit_chunk("a.md", 2)
+            },
+            Hit {
+                created: Some(2000),
+                ..hit_chunk("b.md", 1)
+            },
+        ];
+        let kept = dedupe_notes(apply_filters(hits, Some(1000), None));
+        let ids: Vec<&str> = kept.iter().map(|h| h.chunk_id.as_str()).collect();
+        assert_eq!(ids, ["id:a.md#2", "id:b.md#1"]);
+        assert_eq!(kept[0].siblings, None); // the filtered chunk was never folded, just dropped
+    }
+
+    #[test]
+    fn note_dedup_then_truncate_fills_limit() {
+        // 8 chunks over 5 notes: dedup first, then truncate — `--limit` counts distinct notes.
+        let hits = vec![
+            hit_chunk("a.md", 1),
+            hit_chunk("a.md", 2),
+            hit_chunk("b.md", 1),
+            hit_chunk("a.md", 3),
+            hit_chunk("c.md", 1),
+            hit_chunk("d.md", 1),
+            hit_chunk("b.md", 2),
+            hit_chunk("e.md", 1),
+        ];
+        let mut kept = dedupe_notes(hits);
+        kept.truncate(3);
+        let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["a.md", "b.md", "c.md"]);
+        assert_eq!(kept[0].siblings, Some(2));
     }
 }

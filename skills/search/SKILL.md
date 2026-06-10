@@ -15,7 +15,14 @@ retrieval + an in-core cross-encoder; YOU judge relevance on the full body text,
 drop false positives, and reorder. Never re-derive RRF or reimplement search —
 shell out to `vagus` and parse `--json` (G13).
 
-## 1. Retrieve 20 candidates
+**Hits are chunks; results are notes (ADR 0020).** vagus splits each note into
+heading-aware chunks for ranking, but by default every note appears **once** —
+as its best-ranked chunk — and `--limit N` means **N distinct notes** (paths are
+unique across hits). Pass `--chunks` only when the user wants the exact passage
+or every occurrence within notes; `--limit` then counts chunks and one note may
+fill several slots.
+
+## 1. Retrieve 20 candidates (= 20 distinct notes)
 
 ```bash
 vagus search "<query>" --json --full --rerank --limit 20
@@ -23,8 +30,10 @@ vagus search "<query>" --json --full --rerank --limit 20
 
 - `--full` adds `body` (full chunk text) to each hit.
 - `--rerank` adds the in-core cross-encoder `rerank` logit and reorders by it.
-- Each hit: `{chunk_id, path, heading, score, snippet, rrf?, cosine?, bm25?, rerank?, body?}`.
+- Each hit: `{chunk_id, path, heading, score, snippet, rrf?, cosine?, bm25?, rerank?, body?, siblings?}`.
   Optional fields appear only when their flag is set. Paths are relative to `~/brain`.
+- `siblings` = how many other ranked chunks of the same note were folded into this
+  hit. Present only when > 0; under `--chunks` it never appears.
 - Optional soft floor: add `--min-score 15` (drops hits below 15% of the top hit).
   Keep it low — a high floor starves the judge. Omit if unsure.
 - Note: `--full`/`--rerank` trigger a one-time ~150MB reranker model download on first use.
@@ -44,6 +53,9 @@ Rules:
 - Use retrieval rank + the `bm25`/`cosine` split + the in-core `rerank` score as a
   **weak prior** (position-aware blend): a chunk the corpus signal ranked #1 starts
   with mild benefit of the doubt, but body judgment overrides it.
+- `siblings >= 2` means the note matched broadly, not just in this one chunk —
+  another weak positive signal. If the best chunk alone is ambiguous, Read the
+  whole note at `~/brain/<path>` **once** (never re-read a note per chunk).
 - Do **not** just re-sort by `score`/`rrf`/`rerank` — that's a no-op. Do **not**
   ignore those signals entirely either.
 - Reorder surviving chunks by your judged grade (break ties with the weak prior).
@@ -59,7 +71,7 @@ For each survivor, in judged order:
 ## 4. Drill in on request
 
 If the user wants more from a hit, Read the full note at `~/brain/<path>` and answer
-from it, citing the path.
+from it, citing the path — once per note, even when it matched multiple chunks.
 
 ## 5. No results
 

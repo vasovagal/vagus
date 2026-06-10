@@ -32,6 +32,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 | Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
+| Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Opus expansion + HyDE + full-body judge (tier 2) | `/search` skill | Opus | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
@@ -61,7 +62,9 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 ## Deferred / not building
 
 - RRF weighting / top-rank bonus / position-blend (breach G8 — revisit only with an ADR + G8 edit).
-- True cosine-MMR / ranked per-note cap (`PER_FILE_CAP=3` already curbs display dominance).
+- True cosine-MMR (still deferred). The **ranked per-note cap shipped** as the note-level default —
+  a post-rank dedup stage, [ADR 0020](./adr/0020-note-level-results.md); `PER_FILE_CAP=3` remains
+  for `--chunks` display.
 - A real tokenizer in the chunk hot path (the `chars/3.5` heuristic suffices — G11).
 - llama-cpp-2 engine (adds cmake) — fallback only if candle's Qwen3 support regresses.
 - Quantized-Gemma via custom-ONNX (a footprint lever for later).
