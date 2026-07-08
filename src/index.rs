@@ -373,4 +373,32 @@ mod tests {
     fn elapsed_ms_is_nonnegative() {
         assert!(elapsed_ms(Instant::now()) >= 0.0);
     }
+
+    // `vagus reindex` runs the REAL wipe path (clear_all + tantivy/usearch removal) and must
+    // preserve ticks — user data, not a derived cache (ADR 0021/G25). An empty vault keeps the
+    // embedder unloaded (it is lazy), so this stays a cheap unit test. The CHUNK_VERSION-mismatch
+    // auto-reindex calls the same clear_all, covered by db's `ticks_survive_clear_all`.
+    #[test]
+    fn reindex_preserves_ticks() {
+        let dir = crate::util::testdir::TempDir::new("reindex-ticks");
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        fs::create_dir_all(&cfg.vault).unwrap();
+        {
+            let db = Db::open(&cfg.db_path()).unwrap();
+            db.tick("20-Areas/foo.md").unwrap();
+            db.tick("20-Areas/foo.md").unwrap();
+        }
+
+        run(&cfg, true).unwrap();
+
+        let db = Db::open(&cfg.db_path()).unwrap();
+        let rows = db.fame(10, true).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "20-Areas/foo.md");
+        assert_eq!(rows[0].1, 2, "fame unchanged across reindex");
+    }
 }

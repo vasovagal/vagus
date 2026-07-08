@@ -10,13 +10,20 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   live **outside** iCloud (`~/.local/share/vagus/`, `~/Library/Caches/vagus/`). Never place a SQLite
   DB or search index inside the iCloud vault — async multi-file sync of `.db`/`-wal`/`-shm` corrupts
   it. ([ADR 0004](./adr/0004-icloud-markdown-only.md))
-- **G2 — The index is a derived cache.** It must be 100% rebuildable from the Markdown via
-  `vagus reindex`. Markdown files are the source of truth; the DB never is.
+- **G2 — The index is a derived cache.** The index and derived tables (`files`/`chunks`/`meta`/
+  `expansion_cache`, the tantivy dir, the usearch sidecar) must be 100% rebuildable from the Markdown
+  via `vagus reindex`. Markdown files are the source of truth; the DB never is. **Sole exception:**
+  the `ticks` table is local user data, not a derived cache — see G25
+  ([ADR 0021](./adr/0021-usage-ticks.md)).
 - **G3 — Never auto-edit the user's note.** Frontmatter is optional; a frontmatter-free note must index
   correctly (title ← first `# heading` or filename). Frontmatter is written/enriched only during an
   explicit, user-approved filing step. ([ADR 0005](./adr/0005-assisted-filing.md)) A bare note must
   also stay **filterable by `search --since`**: when `created` frontmatter is absent/unparseable, the
   filter falls back to the file's **filesystem mtime**. ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
+- **G25 — Ticks are local user data in meta.db.** Never in the vault or frontmatter, never touched by
+  `clear_all`/`reindex`/`delete_file`, no FK onto `files`, re-keyed by `vagus file` on move
+  ([ADR 0021](./adr/0021-usage-ticks.md)). Any future non-rebuildable table must be named in
+  `clear_all`'s keep-list comment and covered by an ADR.
 
 ## Index correctness
 
@@ -30,6 +37,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
   usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
   rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
+  The `ticks` table is intentionally **outside** this three-store hash-diff (user data, not derived —
+  ADR 0021/G25); `doctor` cross-checks orphaned tick paths informationally.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
   the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
   many adds + one commit.

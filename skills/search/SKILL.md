@@ -68,12 +68,30 @@ For each survivor, in judged order:
 - The most relevant lines from the body (quote, don't dump the whole chunk).
 - A one-line **why this matches**.
 
-## 4. Drill in on request
+## 4. Record usage (tick)
+
+After presenting, record a usage tick for **exactly the notes you presented** — one
+Bash call, all paths at once:
+
+```bash
+vagus tick "<path1>" "<path2>" ...
+```
+
+- Tick only survivors you actually showed in step 3 — never the full 20-candidate
+  list, never dropped (grade-0) chunks, never on the no-results path (step 6).
+- Paths are the `path` values from the hits, deduped (under `--chunks` one note may
+  appear in several hits — tick it once).
+- Run it once, after presenting. Its output is bookkeeping — don't relay it. If it
+  fails, say nothing and move on; never retry or block the answer on it.
+- Ticks are local usage stats (`vagus fame`); they never touch the note files.
+
+## 5. Drill in on request
 
 If the user wants more from a hit, Read the full note at `~/brain/<path>` and answer
 from it, citing the path — once per note, even when it matched multiple chunks.
+Drilling in needs no extra tick — presentation already recorded it.
 
-## 5. No results
+## 6. No results
 
 If nothing survives the floor: say so, offer to broaden the query, or retry with
 `--mode bm25` (exact keywords) or `--mode vec` (semantic).
