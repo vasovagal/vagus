@@ -9,6 +9,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- `vagus tick` and `vagus fame`: local usage counts for notes, recorded by the `/search` skill when
+  it presents results; survive reindex, follow `vagus file` moves, never touch the vault (ADR 0021).
+  Builtin `tick`/`fame` shadow any same-named plugins. Re-run `vagus skills install` to pick up the
+  skill change.
+
 ## [0.7.0] — 2026-06-09
 
 ### Changed

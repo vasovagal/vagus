@@ -145,5 +145,12 @@ mod tests {
                 s.name
             );
         }
+        // The search skill must record usage ticks (ADR 0021) — a `tick` command rename without a
+        // SKILL.md update fails here at build time.
+        let search = BUNDLED.iter().find(|s| s.name == "search").unwrap();
+        assert!(
+            search.body.contains("vagus tick "),
+            "search skill no longer invokes `vagus tick`"
+        );
     }
 }

@@ -15,7 +15,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
    `~/Library/Caches/vagus/`. Never write a database or index into the iCloud vault: iCloud syncs
    `.db`/`-wal`/`-shm` independently and will corrupt it (`database disk image is malformed`).
 2. **The index is a derived cache, never the source of truth.** It must be fully rebuildable from the
-   Markdown via `vagus reindex`. The Markdown files are authoritative.
+   Markdown via `vagus reindex`. The Markdown files are authoritative. Sole exception: the `ticks`
+   usage counters (ADR 0021/G25) are local user data in `meta.db` — reindex preserves them and they
+   never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
    or filename). Frontmatter is only added/enriched during an explicit, approved filing step.

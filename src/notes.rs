@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 
 use crate::config::Config;
+use crate::db::Db;
 use crate::index;
 use crate::scope::Scope;
 use crate::search::{self, Mode};
@@ -66,11 +67,24 @@ fn resolve(cfg: &Config, path: &str) -> PathBuf {
     }
 }
 
-fn vault_rel(cfg: &Config, p: &Path) -> String {
-    p.strip_prefix(&cfg.vault)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .to_string()
+/// Vault-relative form of `p` — the canonical tick/index key. A lexical strip first (the common
+/// spelling), then a canonicalized retry so alias spellings of absolute paths (the vault symlink's
+/// real iCloud target, `/tmp` -> `/private/tmp`) key identically instead of stranding ticks
+/// (ADR 0021/G25). Canonicalizes the parent + re-attaches the filename because the file itself may
+/// already be gone (re-keying runs after the move).
+pub(crate) fn vault_rel(cfg: &Config, p: &Path) -> String {
+    if let Ok(rel) = p.strip_prefix(&cfg.vault) {
+        return rel.to_string_lossy().to_string();
+    }
+    if p.is_absolute()
+        && let Ok(vault) = fs::canonicalize(&cfg.vault)
+        && let (Some(parent), Some(name)) = (p.parent(), p.file_name())
+        && let Ok(cparent) = fs::canonicalize(parent)
+        && let Ok(rel) = cparent.join(name).strip_prefix(&vault).map(Path::to_owned)
+    {
+        return rel.to_string_lossy().to_string();
+    }
+    p.to_string_lossy().to_string()
 }
 
 /// First `# heading` or, failing that, the filename stem.
@@ -287,6 +301,8 @@ pub fn file(
     fs::rename(&src, &dest).with_context(|| format!("moving to {}", dest.display()))?;
     let move_ms = elapsed_ms(t0);
 
+    rekey_ticks(cfg, &src, &dest);
+
     // reconcile: old path removed, new path indexed. Capture per-step index timings only when asked.
     let mut idx = stats.then(index::IndexTimings::default);
     index::run_timed(cfg, false, idx.as_mut())?;
@@ -342,6 +358,18 @@ pub fn file(
 /// Milliseconds since `start`, as `f64`.
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Re-key usage ticks to the new path (ADR 0021/G25) — user data follows the note. Fail-soft: the
+/// file has already moved, so a re-key failure warns on stderr and never fails the filing (`doctor`
+/// surfaces any resulting orphans).
+fn rekey_ticks(cfg: &Config, src: &Path, dest: &Path) {
+    let src_rel = vault_rel(cfg, src);
+    let dest_rel = vault_rel(cfg, dest);
+    if let Err(e) = Db::open(&cfg.db_path()).and_then(|mut db| db.tick_rename(&src_rel, &dest_rel))
+    {
+        eprintln!("warning: could not move usage ticks {src_rel} -> {dest_rel}: {e}");
+    }
 }
 
 /// Set/insert `status: active`, `para: <bucket>`, `modified: <now>` while preserving other fields.
@@ -569,4 +597,84 @@ fn existing_para_folders(cfg: &Config) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::testdir::TempDir;
+
+    // Alias spellings of absolute paths (vault symlink's real target, /tmp -> /private/tmp) must
+    // key identically to the plain spelling — both when cfg.vault is the symlink (the ~/brain
+    // layout) and when the input path goes through one.
+    #[cfg(unix)]
+    #[test]
+    fn vault_rel_resolves_alias_spellings() {
+        let dir = TempDir::new("vault-alias");
+        let vault = dir.path().join("vault");
+        fs::create_dir_all(vault.join("20-Areas")).unwrap();
+        fs::write(vault.join("20-Areas/foo.md"), "# foo\n").unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&vault, &alias).unwrap();
+        let mk = |vault: &Path| Config {
+            vault: vault.to_path_buf(),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+
+        // Path spelled through the alias; vault configured as the real dir.
+        let cfg = mk(&vault);
+        assert_eq!(
+            vault_rel(&cfg, &alias.join("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+        // Vault configured as the symlink (~/brain), path spelled via the real target.
+        let cfg = mk(&alias);
+        assert_eq!(
+            vault_rel(&cfg, &vault.join("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+        // The file itself may already be gone (re-key runs after the move) — parent still resolves.
+        assert_eq!(
+            vault_rel(&cfg, &vault.join("20-Areas/gone.md")),
+            "20-Areas/gone.md"
+        );
+        // Relative inputs are untouched.
+        assert_eq!(
+            vault_rel(&cfg, Path::new("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+    }
+
+    // `vagus file` move re-keys ticks to the destination path (ADR 0021/G25). Exercises
+    // `rekey_ticks` directly — the full `file()` path needs the embedder, which the merge-logic
+    // db tests (`tick_rename_merges_counts`) plus this cover without it.
+    #[test]
+    fn file_move_rekeys_ticks() {
+        let dir = TempDir::new("rekey");
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        {
+            let db = Db::open(&cfg.db_path()).unwrap();
+            db.upsert_file("30-Resources/a.md", 1.0, "sha", 1).unwrap();
+            db.tick("00-Inbox/a.md").unwrap();
+            db.tick("00-Inbox/a.md").unwrap();
+        }
+
+        rekey_ticks(
+            &cfg,
+            &cfg.vault.join("00-Inbox/a.md"),
+            &cfg.vault.join("30-Resources/a.md"),
+        );
+
+        let db = Db::open(&cfg.db_path()).unwrap();
+        let rows = db.fame(10, false).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "30-Resources/a.md", "ticks follow the note");
+        assert_eq!(rows[0].1, 2, "count carried over");
+        assert_eq!(db.orphan_tick_count().unwrap(), 0, "no orphan left behind");
+    }
 }

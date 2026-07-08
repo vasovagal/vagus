@@ -101,8 +101,9 @@ vagus skills install        # install the Claude Code skills into ~/.claude/skil
 Search results are **one per note** by default — `--limit 10` means 10 distinct notes, each shown
 as its best-matching chunk. Pass `--chunks` to rank every matching chunk individually instead.
 
-The index/database live **outside** iCloud (`~/.local/share/vagus/`) and are fully
-rebuildable from the Markdown — only your notes live in iCloud.
+The index/database live **outside** iCloud (`~/.local/share/vagus/`) — only your notes live in
+iCloud. The search index is fully rebuildable from the Markdown (`vagus reindex`), but the database
+also holds your usage ticks (`vagus fame`), which are not — don't delete `meta.db` as a "reset".
 
 ## More
 

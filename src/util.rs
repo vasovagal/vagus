@@ -39,3 +39,35 @@ pub fn key_for(chunk_id: &str) -> u64 {
     let prefix = chunk_id.get(..16).unwrap_or(chunk_id);
     u64::from_str_radix(prefix, 16).unwrap_or(0)
 }
+
+/// Unique per-test scratch dir under the OS temp dir, removed on drop (no `tempfile` dep).
+#[cfg(test)]
+pub mod testdir {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    pub struct TempDir(PathBuf);
+
+    impl TempDir {
+        pub fn new(tag: &str) -> Self {
+            static N: AtomicU32 = AtomicU32::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "vagus-test-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

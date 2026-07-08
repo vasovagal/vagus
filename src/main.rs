@@ -1,7 +1,8 @@
 //! vagus — local-first PARA second brain: a hybrid-search CLI over a plain-Markdown vault.
 //!
 //! See `design/` and `CLAUDE.md` for the hard invariants. In particular: only Markdown lives in the
-//! iCloud vault; the index/DB/model-cache are a rebuildable cache outside iCloud.
+//! iCloud vault; the index/DB/model-cache live outside iCloud and are a rebuildable cache — except
+//! the `ticks` usage counters in meta.db, which are local user data (ADR 0021/G25).
 
 mod chunk;
 mod config;
@@ -17,6 +18,7 @@ mod rewrite;
 mod scope;
 mod search;
 mod skills;
+mod ticks;
 mod util;
 mod vector;
 
@@ -180,6 +182,27 @@ enum Command {
     },
     /// List discovered `vagus-<name>` plugins on your PATH.
     Plugins,
+    /// Record a usage tick for one or more notes (used by the /search skill after presenting results).
+    Tick {
+        /// Vault-relative note paths (as printed in search hits); absolute paths under the vault are accepted.
+        #[arg(num_args(1..), required = true)]
+        paths: Vec<String>,
+        /// Emit the new totals as stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hall of fame: the most-used notes by usage ticks.
+    Fame {
+        /// Max notes to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Include ticked notes no longer in the index (deleted or renamed outside vagus).
+        #[arg(long)]
+        all: bool,
+        /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run an external `vagus-<name>` plugin (any subcommand that isn't builtin).
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -304,6 +327,8 @@ fn main() -> Result<()> {
                 .collect();
             plugin::list(&builtins)?;
         }
+        Command::Tick { paths, json } => ticks::tick(&cfg, &paths, json)?,
+        Command::Fame { limit, all, json } => ticks::fame(&cfg, limit, all, json)?,
         Command::External(argv) => plugin::dispatch(&cfg, &argv)?,
     }
     Ok(())
@@ -382,6 +407,17 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         "index counts",
         embedded == chunks,
         &format!("{files} files, {chunks} chunks, {embedded} embedded"),
+    );
+
+    // Ticks are user data (ADR 0021/G25), intentionally outside the G5 hash-diff; orphans are
+    // informational, never an error — and meta.db is no longer safe to delete as a "reset".
+    line(
+        "ticks",
+        true,
+        &format!(
+            "{} orphaned path(s) (notes moved/deleted outside vagus)",
+            db.orphan_tick_count()?
+        ),
     );
 
     // Vector index (ADR 0019): the usearch HNSW sidecar. Healthy when present and its key count matches
@@ -532,6 +568,9 @@ fn cmd_status(cfg: &Config) -> Result<()> {
     );
     println!("  files       : {files}");
     println!("  chunks      : {chunks} ({embedded} embedded)");
+    let tick_notes = db.count("SELECT count(*) FROM ticks")?;
+    let tick_total = db.count("SELECT COALESCE(SUM(count),0) FROM ticks")?;
+    println!("  ticks       : {tick_notes} notes / {tick_total} total");
     println!();
     println!("New here? `vagus tutorial` walks through capture → search → file.");
     Ok(())

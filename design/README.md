@@ -52,3 +52,5 @@ silently breaking an invariant.
   brute-force fallback; supersedes 0003's vector component; updates G5/G11/G13.
 - `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
   a post-rank dedup stage; `--chunks` opts out; adds G9c.
+- `0021-usage-ticks.md` — usage ticks (`vagus tick`/`fame`): local user data in meta.db, survives
+  reindex, re-keyed on `vagus file` moves; adds G25, amends G2/G5.
