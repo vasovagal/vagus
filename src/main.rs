@@ -1,7 +1,8 @@
 //! vagus — local-first PARA second brain: a hybrid-search CLI over a plain-Markdown vault.
 //!
 //! See `design/` and `CLAUDE.md` for the hard invariants. In particular: only Markdown lives in the
-//! iCloud vault; the index/DB/model-cache are a rebuildable cache outside iCloud.
+//! iCloud vault; the index/DB/model-cache live outside iCloud and are a rebuildable cache — except
+//! the `ticks` usage counters in meta.db, which are local user data (ADR 0021/G25).
 
 mod chunk;
 mod config;

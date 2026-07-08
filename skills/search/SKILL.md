@@ -74,9 +74,12 @@ After presenting, record a usage tick for **exactly the notes you presented** â€
 Bash call, all paths at once:
 
 ```bash
-vagus tick "<path1>" "<path2>" ...
+vagus tick '<path1>' '<path2>' ...
 ```
 
+- **Single-quote every path.** Filenames can contain `$` or backticks, which double
+  quotes would expand/execute, silently ticking a mangled path. If a path itself
+  contains a single quote, escape it as `'\''`.
 - Tick only survivors you actually showed in step 3 â€” never the full 20-candidate
   list, never dropped (grade-0) chunks, never on the no-results path (step 6).
 - Paths are the `path` values from the hits, deduped (under `--chunks` one note may

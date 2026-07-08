@@ -67,11 +67,24 @@ fn resolve(cfg: &Config, path: &str) -> PathBuf {
     }
 }
 
+/// Vault-relative form of `p` — the canonical tick/index key. A lexical strip first (the common
+/// spelling), then a canonicalized retry so alias spellings of absolute paths (the vault symlink's
+/// real iCloud target, `/tmp` -> `/private/tmp`) key identically instead of stranding ticks
+/// (ADR 0021/G25). Canonicalizes the parent + re-attaches the filename because the file itself may
+/// already be gone (re-keying runs after the move).
 pub(crate) fn vault_rel(cfg: &Config, p: &Path) -> String {
-    p.strip_prefix(&cfg.vault)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .to_string()
+    if let Ok(rel) = p.strip_prefix(&cfg.vault) {
+        return rel.to_string_lossy().to_string();
+    }
+    if p.is_absolute()
+        && let Ok(vault) = fs::canonicalize(&cfg.vault)
+        && let (Some(parent), Some(name)) = (p.parent(), p.file_name())
+        && let Ok(cparent) = fs::canonicalize(parent)
+        && let Ok(rel) = cparent.join(name).strip_prefix(&vault).map(Path::to_owned)
+    {
+        return rel.to_string_lossy().to_string();
+    }
+    p.to_string_lossy().to_string()
 }
 
 /// First `# heading` or, failing that, the filename stem.
@@ -590,6 +603,48 @@ fn existing_para_folders(cfg: &Config) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::util::testdir::TempDir;
+
+    // Alias spellings of absolute paths (vault symlink's real target, /tmp -> /private/tmp) must
+    // key identically to the plain spelling — both when cfg.vault is the symlink (the ~/brain
+    // layout) and when the input path goes through one.
+    #[cfg(unix)]
+    #[test]
+    fn vault_rel_resolves_alias_spellings() {
+        let dir = TempDir::new("vault-alias");
+        let vault = dir.path().join("vault");
+        fs::create_dir_all(vault.join("20-Areas")).unwrap();
+        fs::write(vault.join("20-Areas/foo.md"), "# foo\n").unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&vault, &alias).unwrap();
+        let mk = |vault: &Path| Config {
+            vault: vault.to_path_buf(),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+
+        // Path spelled through the alias; vault configured as the real dir.
+        let cfg = mk(&vault);
+        assert_eq!(
+            vault_rel(&cfg, &alias.join("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+        // Vault configured as the symlink (~/brain), path spelled via the real target.
+        let cfg = mk(&alias);
+        assert_eq!(
+            vault_rel(&cfg, &vault.join("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+        // The file itself may already be gone (re-key runs after the move) — parent still resolves.
+        assert_eq!(
+            vault_rel(&cfg, &vault.join("20-Areas/gone.md")),
+            "20-Areas/gone.md"
+        );
+        // Relative inputs are untouched.
+        assert_eq!(
+            vault_rel(&cfg, Path::new("20-Areas/foo.md")),
+            "20-Areas/foo.md"
+        );
+    }
 
     // `vagus file` move re-keys ticks to the destination path (ADR 0021/G25). Exercises
     // `rekey_ticks` directly — the full `file()` path needs the embedder, which the merge-logic

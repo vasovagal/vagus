@@ -382,8 +382,13 @@ impl Db {
     }
 
     /// Re-key ticks from `old` to `new` (`vagus file` moves — user data follows the note),
-    /// merging counts when `new` already has a row. No-op when `old` has no row.
+    /// merging counts when `new` already has a row. No-op when `old` has no row, and when
+    /// `old == new` (re-filing to the current folder): the upsert below would conflict with the
+    /// source row itself and the DELETE would then erase it.
     pub fn tick_rename(&mut self, old: &str, new: &str) -> Result<()> {
+        if old == new {
+            return Ok(());
+        }
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO ticks(path,count,first_used,last_used)
@@ -552,6 +557,22 @@ mod tests {
         let rows = db.fame(10, true).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, 4);
+    }
+
+    #[test]
+    fn tick_rename_same_path_keeps_ticks() {
+        // `vagus file <note> --to <its current folder>` re-keys old==new; without the guard the
+        // upsert conflicts with the source row and the DELETE erases it.
+        let (_d, mut db) = temp_db("tick-rename-same");
+        for _ in 0..3 {
+            db.tick("20-Areas/a.md").unwrap();
+        }
+        db.tick_rename("20-Areas/a.md", "20-Areas/a.md").unwrap();
+
+        let rows = db.fame(10, true).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "20-Areas/a.md");
+        assert_eq!(rows[0].1, 3, "count neither doubled nor deleted");
     }
 
     #[test]

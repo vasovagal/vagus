@@ -98,7 +98,16 @@ pub fn fame(cfg: &Config, limit: usize, all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     if rows.is_empty() {
-        println!("no ticks yet — the /search skill records usage as it presents notes");
+        // Ticks may exist but all be orphaned (vault reorganized outside vagus): don't claim
+        // "no ticks yet" when `--all` would show them.
+        let orphans = if all { 0 } else { db.orphan_tick_count()? };
+        if orphans > 0 {
+            println!(
+                "no ticks on indexed notes — {orphans} orphaned (moved/deleted outside vagus); try --all"
+            );
+        } else {
+            println!("no ticks yet — the /search skill records usage as it presents notes");
+        }
         return Ok(());
     }
     let width = rows.iter().map(|r| r.path.len()).max().unwrap_or(0);

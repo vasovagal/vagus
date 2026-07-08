@@ -36,7 +36,10 @@ path).
 - **`clear_all` never touches `ticks`** — ticks survive `vagus reindex` and the automatic
   CHUNK_VERSION-mismatch reindex (same wipe path).
 - Keyed by **vault-relative path**; `vagus file` re-keys with a merge-on-conflict in the same
-  operation, **fail-soft** (a re-key failure warns and never fails the filing).
+  operation, **fail-soft** (a re-key failure warns and never fails the filing). Re-keying to the
+  same path is a guarded no-op (re-filing a note into its current folder must not touch its ticks),
+  and alias spellings of absolute paths (the vault symlink's real target, `/tmp` -> `/private/tmp`)
+  are canonicalized before keying so they hit the same row as the plain spelling.
 - Deletes and external renames (Finder/Obsidian = delete+add to the indexer) **orphan** rows:
   kept, hidden by fame's default JOIN, shown by `--all`, counted by `doctor`. No rename-detection
   heuristics — accepted limitation.
