@@ -20,6 +20,18 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   relative-to-top floor stays meaningful. The default (no `--rerank`) `--json` shape is byte-identical;
   under `--rerank` the un-scored tail hits omit the optional `rerank` field (G9a). (ADR 0015)
 
+### Fixed
+
+- Empty-bodied chunks no longer waste index space with a garbage embedding. A section with no prose
+  (an H1 title lead whose content lives under H2s, or an ancestor heading) produced an empty-bodied
+  chunk; where the heading's tokens already survive in a descendant chunk's breadcrumb, that empty
+  chunk is now dropped. A **bodyless leaf heading** (a placeholder section like `## Open Questions`
+  with nothing under it, and a bare `# Foo` stub) is instead kept as a heading-only chunk — its
+  heading becomes the body — so the heading text stays searchable (previously it rode along only as
+  an empty-bodied chunk's `heading` field; dropping such chunks outright would have removed those
+  tokens from full-text search). A truly contentless note (no heading, no prose) now indexes nothing
+  instead of injecting an empty vector. A one-time auto-reindex applies this on upgrade.
+
 ## [0.8.0] — 2026-07-08
 
 ### Added
