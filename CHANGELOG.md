@@ -9,6 +9,17 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **`vagus search --rerank` is substantially faster** — the cross-encoder now scores only the top
+  `(limit*2).max(16)` fused candidates instead of the whole retrieval pool (~60 → ~30 at `--limit
+  15`), roughly halving its forward-pass work. Retrieval, `--since`/`--source` filtering, and
+  note-dedup still run at full pool depth, so note fill is unchanged; lower-ranked hits keep their
+  RRF order after the reranked prefix. Only the top candidates are now eligible to be reranked to the
+  front — a deliberate recall-vs-latency tradeoff. `--min-score` still reranks the whole pool, so its
+  relative-to-top floor stays meaningful. The default (no `--rerank`) `--json` shape is byte-identical;
+  under `--rerank` the un-scored tail hits omit the optional `rerank` field (G9a). (ADR 0015)
+
 ## [0.8.0] — 2026-07-08
 
 ### Added

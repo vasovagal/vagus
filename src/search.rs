@@ -32,6 +32,26 @@ const RRF_K: f32 = 60.0;
 /// requested `limit`). Scales with `limit` but never drops below this.
 const RERANK_POOL_MIN: usize = 30;
 
+/// Cap on how many top RRF-ordered candidates the cross-encoder actually *scores*, as a multiple of
+/// `limit` (floored at 16). The forward pass dominates `--rerank` wall time, and note-dedup/truncate
+/// keep only `limit` notes, so scoring the whole `pool` is wasteful. Retrieval/filter/dedup still run
+/// at full `pool` depth; only the reranked prefix is capped — lower-ranked hits keep their RRF order
+/// after it (ADR 0015).
+const RERANK_CAP_PER_LIMIT: usize = 2;
+
+/// How many top RRF candidates the cross-encoder actually scores, clamped to the pool. Normally
+/// `(limit*RERANK_CAP_PER_LIMIT).max(16)`; when a `--min-score` floor is active it lifts to the whole
+/// pool. The floor is relative-to-top and the reranked head carries sigmoid scores (~0–1) while an
+/// un-scored tail keeps raw RRF scores (~0.01) — comparing the two would floor the whole tail out and
+/// silently drop tail-filled slots the full-pool rerank would have kept, so a floor disables the cap.
+fn rerank_cap(limit: usize, pool_len: usize, score_floor: bool) -> usize {
+    if score_floor {
+        pool_len
+    } else {
+        (limit * RERANK_CAP_PER_LIMIT).max(16).min(pool_len)
+    }
+}
+
 /// Per-stage wall-clock timings (ms) for an advanced retrieval run, printed to stderr by `--timings`.
 /// A diagnostic + regression guard (mirrors `IndexTimings`); it never touches stdout or the `--json`
 /// Hit shape (G9a). A field stays 0.0 for any stage the chosen mode/path didn't run, and `print`
@@ -286,6 +306,7 @@ pub fn query(
     exact: bool,
     timings: bool,
     chunks: bool,
+    score_floor: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
@@ -359,20 +380,14 @@ pub fn query(
         let t0 = Instant::now();
         let mut rr = Reranker::new(&cfg.cache_dir)?;
         t.rerank_load_ms = ms_since(t0);
-        let docs: Vec<String> = hits
+        let cap = rerank_cap(limit, hits.len(), score_floor);
+        let docs: Vec<String> = hits[..cap]
             .iter()
             .map(|h| h.body.clone().unwrap_or_default())
             .collect();
         let t0 = Instant::now();
-        let order = rr.rerank(q, &docs)?; // (index, raw_logit), best-first
-        let mut reordered = Vec::with_capacity(order.len());
-        for (idx, score) in order {
-            let mut h = hits[idx].clone();
-            h.rerank = Some(score);
-            h.score = sigmoid(score); // display-/floor-friendly primary score for the rerank mode
-            reordered.push(h);
-        }
-        hits = reordered;
+        let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
+        hits = apply_rerank_prefix(hits, cap, order);
         t.rerank_ms = ms_since(t0);
     }
 
@@ -446,6 +461,35 @@ fn dedupe_notes(hits: Vec<Hit>) -> Vec<Hit> {
     kept
 }
 
+/// Apply a cross-encoder ordering to the top `cap` hits, leaving the rest in RRF order *after* the
+/// reranked prefix. Caps the reranker's forward-pass workload (~pool → cap) without changing
+/// retrieval/filter/dedup depth: the tail still carries its `pool` candidates for dedup to fill
+/// `limit` from (ADR 0015). `order` is `(prefix_index, raw_logit)` best-first, as `Reranker::rerank`
+/// returns over the passed `hits[..cap]` docs. Split out so the cap invariant is unit-testable
+/// without loading the model. `rrf()` untouched (G8).
+fn apply_rerank_prefix(hits: Vec<Hit>, cap: usize, order: Vec<(usize, f32)>) -> Vec<Hit> {
+    let cap = cap.min(hits.len());
+    // `order` must be a permutation of `hits[..cap]` (one entry per doc); a short return would drop
+    // those prefix hits silently (they are neither re-emitted nor recovered from the `hits[cap..]`
+    // tail). Fail loudly in debug if a future reranker backend ever drops docs.
+    debug_assert_eq!(
+        order.len(),
+        cap,
+        "reranker returned {} of {cap} docs",
+        order.len()
+    );
+    let mut reordered = Vec::with_capacity(hits.len());
+    for (idx, score) in order {
+        let mut h = hits[idx].clone();
+        h.rerank = Some(score);
+        h.score = sigmoid(score); // display-/floor-friendly primary score for the rerank mode
+        reordered.push(h);
+    }
+    // The un-reranked tail keeps its existing RRF order and scores.
+    reordered.extend_from_slice(&hits[cap..]);
+    reordered
+}
+
 /// Tier-1 "smart" retrieval (ADR 0016, G19): a local model expands the query into typed lex/vec/hyde
 /// variants; each (plus the original, as both BM25 and vector) is retrieved, all lists are RRF-fused
 /// (k=60, unchanged — G8), and the fused pool is reranked against the *original* query on full bodies.
@@ -462,6 +506,7 @@ fn smart_query(
     source: Option<&str>,
     timings: bool,
     chunks: bool,
+    score_floor: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
@@ -588,16 +633,14 @@ fn smart_query(
             Err(_) => Reranker::new(&cfg.cache_dir)?,
         };
         t.rerank_load_ms = ms_since(t0);
-        let docs: Vec<String> = hits
+        let cap = rerank_cap(limit, hits.len(), score_floor);
+        let docs: Vec<String> = hits[..cap]
             .iter()
             .map(|h| h.body.clone().unwrap_or_default())
             .collect();
         let t0 = Instant::now();
-        for (idx, score) in rr.rerank(q, &docs)? {
-            hits[idx].rerank = Some(score);
-            hits[idx].score = sigmoid(score);
-        }
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
+        hits = apply_rerank_prefix(hits, cap, order);
         t.rerank_ms = ms_since(t0);
     }
 
@@ -654,10 +697,22 @@ fn run_query(
     exact: bool,
     timings: bool,
     chunks: bool,
+    score_floor: bool,
 ) -> Result<(Vec<Hit>, usize)> {
     #[cfg(feature = "generate")]
     if smart {
-        match smart_query(cfg, q, limit, scope, full, since, source, timings, chunks) {
+        match smart_query(
+            cfg,
+            q,
+            limit,
+            scope,
+            full,
+            since,
+            source,
+            timings,
+            chunks,
+            score_floor,
+        ) {
             Ok(r) => return Ok(r),
             Err(e) => {
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
@@ -683,6 +738,7 @@ fn run_query(
         exact,
         timings,
         chunks,
+        score_floor,
     )
 }
 
@@ -723,8 +779,26 @@ pub fn run(
     } else {
         Scope::discover()?
     };
+    // A `--min-score` floor that can actually drop hits lifts the rerank cap (rerank the whole pool)
+    // so the tail shares the head's sigmoid scale — otherwise the relative-to-top floor would drop
+    // every tail-filled slot (raw RRF score vs sigmoid top). A zero/absent floor drops nothing, so it
+    // keeps the fast capped path.
+    let score_floor = min_score.is_some_and(|f| f > 0.0);
     let (mut hits, elided) = run_query(
-        cfg, q, mode, limit, &scope, full, rerank, smart, since_cut, source, exact, timings, chunks,
+        cfg,
+        q,
+        mode,
+        limit,
+        &scope,
+        full,
+        rerank,
+        smart,
+        since_cut,
+        source,
+        exact,
+        timings,
+        chunks,
+        score_floor,
     )?;
     // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
     // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
@@ -1213,5 +1287,83 @@ mod scope_filter_tests {
         let paths: Vec<&str> = kept.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths, ["a.md", "b.md", "c.md"]);
         assert_eq!(kept[0].siblings, Some(2));
+    }
+
+    // --- rerank compute cap (ADR 0015) -------------------------------------------------------------
+
+    #[test]
+    fn rerank_cap_formula_and_floor() {
+        // Pins the ~60→~30 shrink so a silent revert of the cap is caught: (limit*2).max(16), clamped
+        // to the pool.
+        assert_eq!(rerank_cap(15, 60, false), 30);
+        assert_eq!(rerank_cap(8, 60, false), 16); // .max(16) floor
+        assert_eq!(rerank_cap(4, 60, false), 16);
+        assert_eq!(rerank_cap(15, 10, false), 10); // clamped to a shallow pool
+        // A `--min-score` floor lifts the cap to the whole pool so the un-scored tail can't be floored
+        // out against the sigmoid-scaled head (the recall-fill regression this guards).
+        assert_eq!(rerank_cap(15, 60, true), 60);
+        assert_eq!(rerank_cap(15, 10, true), 10);
+    }
+
+    #[test]
+    fn rerank_cap_scores_prefix_only_tail_keeps_rrf() {
+        // Only the top `cap` candidates are scored/reordered by the cross-encoder; the tail keeps its
+        // RRF order and score untouched. This is the compute cap that halves the forward passes.
+        let mk = |path: &str, rrf: f32| Hit {
+            score: rrf,
+            rrf: Some(rrf),
+            ..hit(path)
+        };
+        let hits = vec![
+            mk("a.md", 0.05),
+            mk("b.md", 0.04),
+            mk("c.md", 0.03),
+            mk("d.md", 0.02),
+            mk("e.md", 0.01),
+        ];
+        // Reranker scores the top 2 and flips them (b above a); indices are into the prefix.
+        let order = vec![(1, 3.0), (0, -1.0)];
+        let out = apply_rerank_prefix(hits, 2, order);
+        let paths: Vec<&str> = out.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["b.md", "a.md", "c.md", "d.md", "e.md"]);
+        // Prefix carries a rerank logit (+ sigmoid score); the tail has neither.
+        assert_eq!(out[0].rerank, Some(3.0));
+        assert_eq!(out[1].rerank, Some(-1.0));
+        assert!(out[2..].iter().all(|h| h.rerank.is_none()));
+        assert_eq!(out[2].score, 0.03); // tail RRF score untouched
+        assert_eq!(out[4].score, 0.01);
+    }
+
+    #[test]
+    fn rerank_cap_beyond_len_reranks_all() {
+        // With fewer hits than the cap, everything is reranked and there is no tail.
+        let hits = vec![hit("a.md"), hit("b.md")];
+        let order = vec![(1, 2.0), (0, 1.0)];
+        let out = apply_rerank_prefix(hits, 16, order); // cap floored to len
+        let paths: Vec<&str> = out.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, ["b.md", "a.md"]);
+        assert!(out.iter().all(|h| h.rerank.is_some()));
+    }
+
+    #[test]
+    fn rerank_cap_then_dedup_fills_limit_from_tail() {
+        // Capping the reranked prefix must not starve note-dedup: the un-reranked tail still carries
+        // enough distinct notes to fill `limit` after dedup — only the compute is capped, not depth.
+        let hits = vec![
+            hit_chunk("a.md", 1),
+            hit_chunk("a.md", 2), // same note as the top hit — dedup folds it
+            hit_chunk("b.md", 1),
+            // tail, beyond cap=3:
+            hit_chunk("c.md", 1),
+            hit_chunk("d.md", 1),
+        ];
+        let order = vec![(0, 2.0), (1, 1.0), (2, 0.5)]; // rerank the top 3, keep their order
+        let reranked = apply_rerank_prefix(hits, 3, order);
+        let mut deduped = dedupe_notes(reranked);
+        deduped.truncate(3);
+        let paths: Vec<&str> = deduped.iter().map(|h| h.path.as_str()).collect();
+        // Prefix had only 2 distinct notes (a, b); c from the tail fills the 3rd slot.
+        assert_eq!(paths, ["a.md", "b.md", "c.md"]);
+        assert_eq!(deduped[0].siblings, Some(1)); // a#2 folded into a
     }
 }

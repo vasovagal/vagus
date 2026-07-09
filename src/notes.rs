@@ -407,6 +407,7 @@ fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<(
         false, // approximate (HNSW) is fine for filing suggestions (ADR 0019)
         false, // no --timings on the filing path
         true,  // chunk-level: filing folds folders itself, unchanged by note dedup (ADR 0020)
+        false, // no --min-score floor on the filing path
     )
     .unwrap_or_default();
 
