@@ -18,8 +18,9 @@ pub const EMBED_DIMS: usize = 768;
 /// mismatch in the `meta` table forces a one-time reindex and existing vaults self-heal on upgrade
 /// (v2 = stop indexing YAML frontmatter; v3 = token-budgeted sub-splitting of oversize sections, sized
 /// to the embedder context window — G20; v4 = persist per-note `created_at`/`source` from frontmatter
-/// onto every chunk for the `--since`/`--source` filters — [ADR 0017](../design/adr/0017-indexed-frontmatter-filters.md)).
-pub const CHUNK_VERSION: &str = "4";
+/// onto every chunk for the `--since`/`--source` filters — [ADR 0017](../design/adr/0017-indexed-frontmatter-filters.md);
+/// v5 = drop empty heading-only chunks, with a title fallback so a stub note stays indexed).
+pub const CHUNK_VERSION: &str = "5";
 
 /// Identity of the usearch vector index (ADR 0019), pinned in the `meta` table alongside the embedding
 /// identity (G4). Bump this when the HNSW build parameters or the on-disk index format change so the

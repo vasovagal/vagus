@@ -224,27 +224,55 @@ pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
     sections.push((heading_path(&stack), segs));
 
     let mut chunks = Vec::new();
-    for (heading_path, segs) in sections {
-        for body in pack_section(&segs) {
+    for (heading_path, segs) in &sections {
+        let before = chunks.len();
+        for body in pack_section(segs) {
             let body = body.trim().to_string();
-            if body.is_empty() && heading_path.is_empty() {
-                continue; // skip empty preamble (a heading-only section keeps its empty chunk)
+            if body.is_empty() {
+                continue;
             }
-            let ord = chunks.len();
-            chunks.push(Chunk {
-                id: sha256_hex(format!("{path}#{ord}").as_bytes()),
-                ord,
-                heading_path: heading_path.clone(),
-                body,
-            });
+            push_chunk(&mut chunks, path, heading_path.clone(), body);
+        }
+        if chunks.len() > before {
+            continue; // section carried real body text
+        }
+        // Empty-bodied section. tantivy indexes the `heading` field for BM25 (lex.rs), so this
+        // section's heading tokens are only searchable via its own heading_path. Drop it only when a
+        // descendant section carries the same breadcrumb (the ancestor tokens survive there anyway);
+        // a bodyless *leaf* heading (e.g. an "Open Questions" placeholder) would otherwise vanish from
+        // the index, so keep it as a heading-only chunk. A truly contentless note indexes nothing.
+        let covered_by_descendant = sections.iter().any(|(hp, _)| {
+            hp.len() > heading_path.len()
+                && hp.starts_with(heading_path.as_str())
+                && (heading_path.is_empty() || hp[heading_path.len()..].starts_with(" > "))
+        });
+        if covered_by_descendant {
+            continue;
+        }
+        let leaf = heading_path.rsplit(" > ").next().unwrap_or_default();
+        if !leaf.is_empty() {
+            push_chunk(&mut chunks, path, heading_path.clone(), leaf.to_string());
         }
     }
     chunks
 }
 
+/// Append a chunk, assigning its `ord` (and thus `chunk_id = sha256(path#ord)`) from the current
+/// output position — so dropping an empty section renumbers everything after it.
+fn push_chunk(chunks: &mut Vec<Chunk>, path: &str, heading_path: String, body: String) {
+    let ord = chunks.len();
+    chunks.push(Chunk {
+        id: sha256_hex(format!("{path}#{ord}").as_bytes()),
+        ord,
+        heading_path,
+        body,
+    });
+}
+
 /// Pack a section's segments into chunk bodies, each ≈ ≤ `CHUNK_BUDGET_TOKENS` (an oversize fenced
-/// code block is the one allowed exception — kept atomic). Returns at least one (possibly empty) body
-/// so a heading-only section still yields a chunk.
+/// code block is the one allowed exception — kept atomic). May return a single empty body for a
+/// heading-only section; the caller keeps a bodyless *leaf* heading as a heading-only chunk (so its
+/// heading text stays searchable) and drops an empty section whose breadcrumb a descendant carries.
 fn pack_section(segs: &[Seg]) -> Vec<String> {
     let budget = CHUNK_BUDGET_TOKENS;
     let pieces = to_pieces(segs, budget);
@@ -430,6 +458,98 @@ mod tests {
         let again = chunk_markdown("long.md", &md);
         assert_eq!(c.len(), again.len());
         assert_eq!(c[0].id, again[0].id);
+    }
+
+    #[test]
+    fn empty_leaf_section_keeps_its_heading_for_search() {
+        // Middle H2 has no body but is a leaf (no descendant). Its heading tokens are only indexed
+        // via its own heading_path, so it survives as a heading-only chunk between its neighbours.
+        let md = "# T\n## A\nalpha\n## Empty\n## B\nbeta\n";
+        let c = chunk_markdown("m.md", md);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0].heading_path, "T > A");
+        assert_eq!(c[1].heading_path, "T > Empty");
+        assert_eq!(
+            c[1].body, "Empty",
+            "bodyless leaf keeps its heading as body"
+        );
+        assert_eq!(c[2].heading_path, "T > B");
+        // ord/chunk_id pin: the empty preamble ("") and bare "T" ancestor were dropped, so "T > A"
+        // is renumbered to ord 0 (not its raw section index). This is the shift the reindex exists for.
+        assert_eq!(c[0].id, sha256_hex(b"m.md#0"));
+        assert_eq!(c[1].id, sha256_hex(b"m.md#1"));
+        assert_eq!(c[2].id, sha256_hex(b"m.md#2"));
+    }
+
+    #[test]
+    fn outline_stub_keeps_every_leaf_heading_findable() {
+        // A skeleton note (all sections empty): each leaf heading stays findable; the shared "Meeting"
+        // ancestor survives in every leaf's breadcrumb, so no separate ancestor chunk is emitted.
+        let md = "# Meeting\n## Agenda\n## Notes\n## Actions\n";
+        let c = chunk_markdown("o.md", md);
+        assert_eq!(
+            c.iter()
+                .map(|c| c.heading_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Meeting > Agenda", "Meeting > Notes", "Meeting > Actions"]
+        );
+        assert_eq!(
+            c.iter().map(|c| c.body.as_str()).collect::<Vec<_>>(),
+            vec!["Agenda", "Notes", "Actions"]
+        );
+    }
+
+    #[test]
+    fn h1_title_with_prose_only_under_h2_has_no_empty_preamble() {
+        let md = "# Title\n## Section\nthe actual prose\n";
+        let c = chunk_markdown("t.md", md);
+        assert_eq!(c.len(), 1, "the ord-0 title preamble must not be emitted");
+        assert_eq!(c[0].heading_path, "Title > Section");
+        assert!(c[0].body.contains("actual prose"));
+        // The empty "" and "Title" ancestors were dropped (their tokens live in the breadcrumb), so
+        // the surviving chunk is ord 0, not ord 2.
+        assert_eq!(c[0].id, sha256_hex(b"t.md#0"));
+    }
+
+    #[test]
+    fn bare_title_only_note_stays_findable_with_one_chunk() {
+        let c = chunk_markdown("foo.md", "# Foo\n");
+        assert_eq!(c.len(), 1, "a title-only stub must keep exactly one chunk");
+        assert_eq!(c[0].heading_path, "Foo");
+        // Fallback body is the leaf heading, not empty — a meaningful embedding, findable by title.
+        assert_eq!(c[0].body, "Foo");
+    }
+
+    #[test]
+    fn whitespace_only_body_is_treated_as_empty() {
+        // The section under ## S is only whitespace; it is treated exactly like an empty leaf — kept
+        // as a heading-only chunk whose body is the heading "S", never the whitespace.
+        let md = "# T\n## S\n   \n## Real\ncontent\n";
+        let c = chunk_markdown("w.md", md);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].heading_path, "T > S");
+        assert_eq!(c[0].body, "S");
+        assert_eq!(c[1].heading_path, "T > Real");
+        assert!(c[1].body.contains("content"));
+    }
+
+    #[test]
+    fn truly_empty_note_yields_no_chunks() {
+        // No heading, no prose: nothing is searchable, so nothing is indexed (no garbage empty-body
+        // vector). index.rs tolerates a zero-chunk note.
+        assert!(chunk_markdown("e.md", "").is_empty());
+        assert!(chunk_markdown("e.md", "   \n\n \t\n").is_empty());
+    }
+
+    #[test]
+    fn no_emitted_chunk_has_empty_body_the_bodyless_leaf_keeps_its_heading() {
+        // A skeleton with empty sections plus real ones: no chunk has an empty body, ords are dense,
+        // and the bodyless leaf "## Two" survives with its heading as body.
+        let md = "# Root\n## One\nfirst\n## Two\n## Three\nthird\n#### inline\n";
+        let c = chunk_markdown("s.md", md);
+        assert!(c.iter().all(|c| !c.body.trim().is_empty()));
+        let two = c.iter().find(|c| c.heading_path == "Root > Two").unwrap();
+        assert_eq!(two.body, "Two");
     }
 
     #[test]
