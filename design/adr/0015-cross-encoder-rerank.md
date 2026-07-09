@@ -29,6 +29,18 @@ Add an **in-core** reranker (`src/rerank.rs`, mirroring `src/embed.rs`):
   (a deeper set, `(limit*4).max(30)`) against **full chunk bodies**, reorders, then truncates to
   `--limit`. The raw cross-encoder logit is carried as `Hit.rerank`; the displayed/`score` value is its
   sigmoid (ordering signal → 0–1).
+  - **Amended 2026-07-08:** the reranker scores only the top `(limit*2).max(16)` of that pool (the
+    forward pass is ~75% of `--rerank` wall time, and dedup/truncate keep only `limit` notes anyway).
+    Retrieval/filter/dedup still run at full pool depth; the un-scored tail keeps its RRF order (and
+    its raw RRF `score`) after the reranked prefix, so note fill is unchanged. Two cap consequences are
+    deliberate: (a) only the top `cap` RRF candidates are eligible to be reranked into the results — a
+    recall-vs-latency tradeoff (a strong cross-encoder can no longer lift a note from beyond `cap`);
+    (b) head and tail live on different score scales (sigmoid vs raw RRF), so a `--rerank` hit's
+    `score` is **not** comparable across the head/tail boundary (a `--json` consumer must not re-sort
+    by `score`). Because `--min-score` is a *relative-to-top* floor, comparing a raw-RRF tail against
+    the sigmoid head top would floor the whole tail out and drop tail-filled slots the full-pool rerank
+    would have kept; so when a `--min-score` floor is active the cap is lifted (the whole pool is
+    reranked), restoring the pre-cap fill exactly for that combination.
 - **RRF is untouched (G8).** Reranking is a separate post-fusion stage; the default (no `--rerank`)
   path and its `--json` shape stay byte-identical (the `rerank`/`body` fields are `skip_serializing_if`
   omitted when unset — G9a).
