@@ -193,6 +193,152 @@ struct Scored {
     bm25: Option<f32>,
 }
 
+/// One `vagus chunk` output element. A stable `--json` contract, additive-only: found elements
+/// serialize exactly `chunk_id`/`path`/`heading`/`body` (the `chunk_id` is always the full 64-hex
+/// id, even for prefix input); an unresolved arg yields a positional `missing: true` element, so a
+/// caller detects staleness deterministically without parsing stderr.
+#[derive(Serialize)]
+struct ChunkOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    /// The " > "-joined heading_path breadcrumb.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heading: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// Serialized only when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    missing: bool,
+}
+
+impl ChunkOut {
+    fn found(chunk_id: String, path: String, heading: String, body: String) -> Self {
+        Self {
+            chunk_id: Some(chunk_id),
+            path: Some(path),
+            heading: Some(heading),
+            body: Some(body),
+            missing: false,
+        }
+    }
+
+    fn missing_id(arg: &str) -> Self {
+        Self {
+            chunk_id: Some(arg.to_string()),
+            path: None,
+            heading: None,
+            body: None,
+            missing: true,
+        }
+    }
+
+    fn missing_path(arg: &str) -> Self {
+        Self {
+            chunk_id: None,
+            path: Some(arg.to_string()),
+            heading: None,
+            body: None,
+            missing: true,
+        }
+    }
+}
+
+/// Minimum hex-prefix length `vagus chunk` accepts for an id lookup.
+const CHUNK_PREFIX_MIN: usize = 8;
+
+/// Resolve `vagus chunk` args against the chunks table, in request order — every arg yields ≥1
+/// element. An all-hex arg is an id (full 64-hex exact, or a ≥8-char unique prefix); anything else
+/// is a vault-relative note path (every chunk of the note, in `ord` order). Ambiguous/short/unknown
+/// args become `missing: true` elements with one stderr line each.
+fn resolve_chunk_args(db: &Db, args: &[String]) -> Result<Vec<ChunkOut>> {
+    let mut out = Vec::new();
+    for arg in args {
+        let is_hex = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_hexdigit());
+        if is_hex && arg.len() == 64 {
+            match db.chunk_row(arg)? {
+                Some((path, heading, body)) => {
+                    out.push(ChunkOut::found(arg.clone(), path, heading, body))
+                }
+                None => {
+                    eprintln!(
+                        "vagus chunk: no chunk matching {arg} (note edited/renamed? re-run search or Read the note)"
+                    );
+                    out.push(ChunkOut::missing_id(arg));
+                }
+            }
+        } else if is_hex && arg.len() >= CHUNK_PREFIX_MIN {
+            let mut rows = db.chunk_rows_by_prefix(arg)?;
+            match rows.len() {
+                1 => {
+                    let (id, path, heading, body) = rows.remove(0);
+                    out.push(ChunkOut::found(id, path, heading, body));
+                }
+                0 => {
+                    eprintln!(
+                        "vagus chunk: no chunk matching {arg} (note edited/renamed? re-run search or Read the note)"
+                    );
+                    out.push(ChunkOut::missing_id(arg));
+                }
+                _ => {
+                    eprintln!("vagus chunk: ambiguous prefix {arg}");
+                    out.push(ChunkOut::missing_id(arg));
+                }
+            }
+        } else if is_hex {
+            eprintln!("vagus chunk: prefix too short (min {CHUNK_PREFIX_MIN} hex chars): {arg}");
+            out.push(ChunkOut::missing_id(arg));
+        } else {
+            let rows = db.chunks_for_path(arg)?;
+            if rows.is_empty() {
+                eprintln!(
+                    "vagus chunk: no chunk matching {arg} (note edited/renamed? re-run search or Read the note)"
+                );
+                out.push(ChunkOut::missing_path(arg));
+            } else {
+                for (id, heading, body) in rows {
+                    out.push(ChunkOut::found(id, arg.clone(), heading, body));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `vagus chunk`: print full chunk bodies by id or note path — the /search skill's second pass.
+/// Pure derived-cache read (G2); no index refresh by design (keeps the search→fetch id-drift window
+/// milliseconds wide); never ticks (retrieval is not usage — ADR 0021).
+pub fn chunk_bodies(cfg: &Config, args: &[String], json: bool) -> Result<()> {
+    let db = Db::open(&cfg.db_path())?;
+    let out = resolve_chunk_args(&db, args)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "[]".into())
+        );
+        return Ok(());
+    }
+    // Human output: `path › heading` header + raw body per resolved chunk, blank-line separated;
+    // missing args already reported on stderr above.
+    let mut first = true;
+    for c in out.iter().filter(|c| !c.missing) {
+        if !first {
+            println!();
+        }
+        first = false;
+        let path = c.path.as_deref().unwrap_or_default();
+        let heading = c.heading.as_deref().unwrap_or_default();
+        if heading.is_empty() {
+            println!("{path}");
+        } else {
+            println!("{path} › {heading}");
+        }
+        println!("{}", c.body.as_deref().unwrap_or_default());
+    }
+    Ok(())
+}
+
 fn snippet(body: &str, n: usize) -> String {
     let one_line = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() > n {
@@ -1365,5 +1511,155 @@ mod scope_filter_tests {
         // Prefix had only 2 distinct notes (a, b); c from the tail fills the 3rd slot.
         assert_eq!(paths, ["a.md", "b.md", "c.md"]);
         assert_eq!(deduped[0].siblings, Some(1)); // a#2 folded into a
+    }
+}
+
+#[cfg(test)]
+mod chunk_bodies_tests {
+    use super::*;
+    use crate::chunk::Chunk;
+    use crate::util::testdir::TempDir;
+
+    fn temp_db(tag: &str) -> (TempDir, Db) {
+        let dir = TempDir::new(tag);
+        let db = Db::open(&dir.path().join("meta.db")).unwrap();
+        (dir, db)
+    }
+
+    /// A synthetic 64-hex id: `lead` right-padded with '0'. Lets tests craft colliding prefixes.
+    fn hexid(lead: &str) -> String {
+        format!("{lead:0<64}")
+    }
+
+    /// Seed a note with chunks as (id, ord, heading_path, body).
+    fn seed(db: &Db, path: &str, chunks: &[(String, usize, &str, &str)]) {
+        db.upsert_file(path, 1.0, "sha", 1).unwrap();
+        let cs: Vec<Chunk> = chunks
+            .iter()
+            .map(|(id, ord, heading, body)| Chunk {
+                id: id.clone(),
+                ord: *ord,
+                heading_path: heading.to_string(),
+                body: body.to_string(),
+            })
+            .collect();
+        db.replace_chunks(path, &cs, None, None).unwrap();
+    }
+
+    #[test]
+    fn exact_id_resolves_in_request_order() {
+        let (_d, db) = temp_db("chunk-exact");
+        let (a, b) = (hexid("aa11"), hexid("bb22"));
+        seed(
+            &db,
+            "10-Projects/a.md",
+            &[(a.clone(), 0, "A > H", "body a")],
+        );
+        seed(&db, "30-Resources/b.md", &[(b.clone(), 0, "", "body b")]);
+        // Request order (b first) is preserved, not DB order.
+        let out = resolve_chunk_args(&db, &[b.clone(), a.clone()]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].chunk_id.as_deref(), Some(b.as_str()));
+        assert_eq!(out[0].path.as_deref(), Some("30-Resources/b.md"));
+        assert_eq!(out[0].body.as_deref(), Some("body b"));
+        assert_eq!(out[1].chunk_id.as_deref(), Some(a.as_str()));
+        assert_eq!(out[1].heading.as_deref(), Some("A > H"));
+        assert!(out.iter().all(|c| !c.missing));
+    }
+
+    #[test]
+    fn unknown_id_yields_positional_missing() {
+        let (_d, db) = temp_db("chunk-missing");
+        let a = hexid("aa11");
+        seed(&db, "a.md", &[(a.clone(), 0, "", "body a")]);
+        let ghost = hexid("dddd");
+        let out = resolve_chunk_args(&db, &[a.clone(), ghost.clone()]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(!out[0].missing);
+        assert!(out[1].missing);
+        assert_eq!(out[1].chunk_id.as_deref(), Some(ghost.as_str()));
+        assert!(out[1].path.is_none() && out[1].body.is_none());
+    }
+
+    #[test]
+    fn prefix_resolves_to_full_id_ambiguous_is_missing() {
+        let (_d, db) = temp_db("chunk-prefix");
+        // Two ids sharing their first 8 hex chars, one unique.
+        let (amb1, amb2, uniq) = (hexid("deadbeefaa"), hexid("deadbeefbb"), hexid("cafe1234"));
+        seed(
+            &db,
+            "a.md",
+            &[
+                (amb1, 0, "", "x"),
+                (amb2, 1, "", "y"),
+                (uniq.clone(), 2, "H", "body u"),
+            ],
+        );
+        let out = resolve_chunk_args(
+            &db,
+            &[
+                "cafe1234".to_string(),
+                "deadbeef".to_string(),
+                "cafe".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(out.len(), 3);
+        // Unique prefix: found, and the emitted chunk_id is the FULL 64-hex id.
+        assert!(!out[0].missing);
+        assert_eq!(out[0].chunk_id.as_deref(), Some(uniq.as_str()));
+        assert_eq!(out[0].body.as_deref(), Some("body u"));
+        // Ambiguous prefix: treated as missing.
+        assert!(out[1].missing);
+        assert_eq!(out[1].chunk_id.as_deref(), Some("deadbeef"));
+        // Below the 8-char minimum: missing.
+        assert!(out[2].missing);
+        assert_eq!(out[2].chunk_id.as_deref(), Some("cafe"));
+    }
+
+    #[test]
+    fn path_emits_all_chunks_in_ord_order() {
+        let (_d, db) = temp_db("chunk-path");
+        let (c0, c1) = (hexid("aa"), hexid("bb"));
+        // Insert out of ord order; output must be ord order.
+        seed(
+            &db,
+            "20-Areas/note.md",
+            &[
+                (c1.clone(), 1, "H1 > H2", "second"),
+                (c0.clone(), 0, "H1", "first"),
+            ],
+        );
+        let out = resolve_chunk_args(&db, &["20-Areas/note.md".to_string()]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].chunk_id.as_deref(), Some(c0.as_str()));
+        assert_eq!(out[0].body.as_deref(), Some("first"));
+        assert_eq!(out[1].body.as_deref(), Some("second"));
+        assert!(
+            out.iter()
+                .all(|c| c.path.as_deref() == Some("20-Areas/note.md"))
+        );
+
+        let out = resolve_chunk_args(&db, &["40-Archive/gone.md".to_string()]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].missing);
+        assert_eq!(out[0].path.as_deref(), Some("40-Archive/gone.md"));
+        assert!(out[0].chunk_id.is_none());
+    }
+
+    #[test]
+    fn json_shape_exact_keys() {
+        // The `vagus chunk --json` contract is additive-only from day one: found elements carry
+        // exactly {chunk_id, path, heading, body}; missing elements exactly {chunk_id|path, missing}.
+        let keys = |c: &ChunkOut| -> Vec<String> {
+            let v = serde_json::to_value(c).unwrap();
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        let found = ChunkOut::found(hexid("aa"), "a.md".into(), "H".into(), "b".into());
+        assert_eq!(keys(&found), ["body", "chunk_id", "heading", "path"]);
+        assert_eq!(keys(&ChunkOut::missing_id("dead")), ["chunk_id", "missing"]);
+        assert_eq!(keys(&ChunkOut::missing_path("x.md")), ["missing", "path"]);
     }
 }

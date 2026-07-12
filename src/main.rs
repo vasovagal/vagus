@@ -118,6 +118,17 @@ enum Command {
         #[arg(long)]
         chunks: bool,
     },
+    /// Print full chunk bodies by chunk id or note path (the /search skill's second pass).
+    Chunk {
+        /// Chunk ids (full 64-hex sha256 as printed in search hits, or a unique hex prefix of at
+        /// least 8 chars) and/or vault-relative note paths (prints every chunk of the note in order).
+        #[arg(num_args(1..), required = true)]
+        args: Vec<String>,
+        /// Emit stable JSON: one element per resolved chunk in request order; an unresolved arg
+        /// yields a `"missing": true` element.
+        #[arg(long)]
+        json: bool,
+    },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
         /// The query to expand.
@@ -268,6 +279,7 @@ fn main() -> Result<()> {
             timings,
             chunks,
         )?,
+        Command::Chunk { args, json } => search::chunk_bodies(&cfg, &args, json)?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]
             {

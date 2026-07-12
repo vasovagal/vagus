@@ -244,6 +244,31 @@ impl Db {
         Ok(row)
     }
 
+    /// Chunk rows whose id starts with `prefix`: (id, path, heading_path, body). LIMIT 2 — the
+    /// caller only needs to distinguish unique from ambiguous. Callers validate `prefix` is hex
+    /// first (no LIKE metacharacters).
+    pub fn chunk_rows_by_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, heading_path, body FROM chunks WHERE id LIKE ?1 || '%' LIMIT 2",
+        )?;
+        let rows = stmt.query_map(params![prefix], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// All chunks of a note in document order: (id, heading_path, body).
+    pub fn chunks_for_path(&self, path: &str) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, heading_path, body FROM chunks WHERE path=?1 ORDER BY ord")?;
+        let rows = stmt.query_map(params![path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Note-level filter fields (`created_at`, `source`) for a chunk id, if present. Read separately
     /// from `chunk_row` so the hot display join (path/heading/body) stays unchanged; the `--since` /
     /// `--source` post-rank filter (ADR 0017) only needs these for the candidate survivors.

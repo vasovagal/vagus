@@ -9,6 +9,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- `vagus chunk <id|path>...`: print full chunk bodies by chunk id (full 64-hex or a unique >=8-char
+  hex prefix) or every chunk of a note by vault-relative path. A pure index read — no model load,
+  no index refresh, no usage tick. Stable `--json` shape (one element per resolved chunk in request
+  order; unresolved args yield `"missing": true`). Builtin `chunk` shadows any same-named plugin.
+
 ### Changed
 
 - **`vagus search --rerank` is substantially faster** — the cross-encoder now scores only the top
