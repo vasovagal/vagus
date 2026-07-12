@@ -24,7 +24,7 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60** | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank** | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | the `/search` skill | Opus expansion + HyDE + full-body judge **on top of** `vagus search --json --full --rerank` | Opus |
+| **2 — skill + Opus** | the `/search` skill | Opus expansion + HyDE + snippet triage over compact `vagus search --json --rerank` hits, then full-body judge over `vagus chunk` fetches | Opus |
 
 - **Tiers 1 and 2 are parallel.** They reuse the **same** retrieval + rerank core and the **same**
   typed `lex:/vec:/hyde:` discipline; they differ only in *who generates the rewrite* (a local model
@@ -49,3 +49,14 @@ escalation prompts.
   ([ADR 0011](./0011-plugin-protocol.md)) doesn't fit a search-time transform, and the reranker/rewriter
   are neither networked nor foreign-runtime, so they belong in core (see ADR 0015/0016 for the
   rejected-plugin rationale).
+
+## Amendment (2026-07-12) — progressive disclosure in tier 2
+
+The skill's single `--json --full --rerank --limit 20` call put up to 20 full chunk bodies
+(~900 tokens each) into the session at once. Tier 2 is now two-phase: (1) the same retrieval +
+rerank core emits compact hits (no `--full`); (2) Opus triages on snippet/heading/scores and
+fetches full bodies only for the 5–8 shortlisted hits via the new `vagus chunk` subcommand — a
+pure read of the derived cache (G2): no index refresh, no models, and no usage tick (retrieval
+is not usage — [ADR 0021](./0021-usage-ticks.md)). Tiers 1 and 2 still reuse the same
+retrieval + rerank core; only how much leaves the CLI per call changed. `--full` is unchanged
+for human and other consumers; the default `--json` shape is untouched (G9a).

@@ -152,5 +152,9 @@ mod tests {
             search.body.contains("vagus tick "),
             "search skill no longer invokes `vagus tick`"
         );
+        assert!(
+            search.body.contains("vagus chunk "),
+            "search skill no longer fetches bodies via `vagus chunk`"
+        );
     }
 }
