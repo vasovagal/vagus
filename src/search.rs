@@ -256,6 +256,12 @@ fn resolve_chunk_args(db: &Db, args: &[String]) -> Result<Vec<ChunkOut>> {
     let mut out = Vec::new();
     for arg in args {
         let is_hex = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_hexdigit());
+        // Ids are stored lowercase; normalize so the exact (`=`) and prefix (LIKE) branches agree.
+        let arg = &if is_hex {
+            arg.to_ascii_lowercase()
+        } else {
+            arg.clone()
+        };
         if is_hex && arg.len() == 64 {
             match db.chunk_row(arg)? {
                 Some((path, heading, body)) => {
@@ -1615,6 +1621,21 @@ mod chunk_bodies_tests {
         // Below the 8-char minimum: missing.
         assert!(out[2].missing);
         assert_eq!(out[2].chunk_id.as_deref(), Some("cafe"));
+    }
+
+    #[test]
+    fn uppercase_hex_args_resolve() {
+        let (_d, db) = temp_db("chunk-case");
+        let a = hexid("abc1234def");
+        seed(&db, "a.md", &[(a.clone(), 0, "", "body a")]);
+        let out = resolve_chunk_args(&db, &[a.to_ascii_uppercase(), a[..12].to_ascii_uppercase()])
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|c| !c.missing));
+        assert!(
+            out.iter()
+                .all(|c| c.chunk_id.as_deref() == Some(a.as_str()))
+        );
     }
 
     #[test]

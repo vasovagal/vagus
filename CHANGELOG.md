@@ -20,7 +20,7 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 - **The `/search` skill is now two-phase** (progressive disclosure): a compact
   `--json --rerank --limit 20` pass with no bodies, Opus snippet-triage to a 5–8 shortlist, then
-  `vagus chunk` fetches only the shortlist's full bodies for judging — cutting worst-case session
+  `vagus chunk` fetches only the shortlist's full bodies for judging — cutting typical session
   tokens per search by more than half. `vagus search` flags and output are unchanged (`--full`
   behaves exactly as before). Re-run `vagus skills install` after upgrading.
 - **`vagus search --rerank` is substantially faster** — the cross-encoder now scores only the top

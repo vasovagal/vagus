@@ -14,7 +14,7 @@ where justified) are in-character. Retrieval comes in **three tiers**, selected 
 ```
 tier 0  (floor)        vagus search "q"            BM25 + cosine + RRF(k=60)            — deterministic, <1s
 tier 1  (shell+local)  vagus search "q" --smart    + local rewrite/HyDE + rerank       — offline, no Claude
-tier 2  (skill+Opus)   /search                     Opus expansion+HyDE+full-body judge  — SOTA, on top of the CLI
+tier 2  (skill+Opus)   /search                     Opus triage → vagus chunk body judge — SOTA, on top of the CLI
 ```
 
 Tiers 1 and 2 are **parallel**: same retrieval + rerank core, same typed `lex:/vec:/hyde:` discipline —
@@ -34,7 +34,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
-| Opus expansion + HyDE + full-body judge (tier 2) | `/search` skill | Opus | **shipped (milestone 3)** |
+| Opus expansion + HyDE + snippet triage + full-body judge via `vagus chunk` (tier 2) | `/search` skill | Opus | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
 
 **Why advanced search is *not* a plugin:** the plugin protocol is capture-shaped (one-way
@@ -54,10 +54,12 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — tier-2 SOTA skill** *(shipped)*: `skills/search/SKILL.md` rewritten as the Opus pipeline over
-  `vagus search --json --full --rerank --limit 20` — 20-candidate full-body 0–3 judge + drop false
-  positives + reorder (corpus signal as a weak prior) + cite `path › heading`. Judging stays in the
-  skill (G17); RRF is never re-derived (G8); the skill shells out and parses `--json` (G13).
+- **M3 — tier-2 SOTA skill** *(shipped)*: `skills/search/SKILL.md` is a **two-phase** Opus pipeline
+  ([ADR 0012](./adr/0012-three-tier-retrieval.md) amendment): compact `vagus search --json --rerank
+  --limit 20` (no bodies) → snippet triage to a 5–8 shortlist → `vagus chunk` fetches only the
+  shortlist's full bodies for the 0–3 judge + drop false positives + reorder (corpus signal as a
+  weak prior) + cite `path › heading`. Judging stays in the skill (G17); RRF is never re-derived
+  (G8); the skill shells out and parses `--json` (G13).
 
 ## Deferred / not building
 
