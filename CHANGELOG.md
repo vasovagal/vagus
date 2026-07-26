@@ -9,6 +9,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **pi Agent Skills support.** `vagus skills install --agent pi` installs the bundled create-note,
+  search, and process-inbox skills into `~/.pi/agent/skills` (or `$PI_CODING_AGENT_DIR/skills`), and
+  `vagus skills list --agent pi` reports their status. The existing no-flag commands still target
+  Claude Code, and both agents share the same embedded, idempotently installed skill files.
+
 ### Changed
 
 - **`vagus search --rerank` is substantially faster** — the cross-encoder now scores only the top

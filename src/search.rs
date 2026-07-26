@@ -2,7 +2,7 @@
 //!
 //! Human output shows a 0–100 relevance **relative to the top hit** — the raw RRF scalar is
 //! rank-based and tiny (≤ 2/(k+1) ≈ 0.033), so printing it directly is misleading. `--json` keeps a
-//! stable shape for the Claude Code skill and carries the raw fused `score` plus the per-retriever
+//! stable shape for the bundled agent skill and carries the raw fused `score` plus the per-retriever
 //! `cosine` and `bm25` components.
 
 use std::collections::HashMap;
@@ -493,7 +493,7 @@ fn apply_rerank_prefix(hits: Vec<Hit>, cap: usize, order: Vec<(usize, f32)>) -> 
 /// Tier-1 "smart" retrieval (ADR 0016, G19): a local model expands the query into typed lex/vec/hyde
 /// variants; each (plus the original, as both BM25 and vector) is retrieved, all lists are RRF-fused
 /// (k=60, unchanged — G8), and the fused pool is reranked against the *original* query on full bodies.
-/// Offline, no Claude — the local sibling of the Opus `/search` skill.
+/// Offline, no coding agent — the local sibling of the Opus search skill.
 #[cfg(feature = "generate")]
 #[allow(clippy::too_many_arguments)]
 fn smart_query(

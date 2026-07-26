@@ -44,7 +44,7 @@ CI/release pipeline follows the laws in the `xrl/agents` `LAWS.md`: split-by-eve
 
 - Match the surrounding Rust style; keep modules small and single-purpose (`index`, `chunk`,
   `embed`, `search`, `notes`, `db`, `config`, `cli`).
-- All data-producing commands support a stable `--json` shape so the Claude Code skills
+- All data-producing commands support a stable `--json` shape so the bundled agent skills
   parse rather than scrape — preserve it.
 - Commit `Cargo.lock` (this is a binary crate).
 - **Run `cargo fmt` before pushing** — never burn a CI cycle on formatting.

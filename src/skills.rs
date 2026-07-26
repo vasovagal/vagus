@@ -1,16 +1,41 @@
-//! Bundled Claude Code skills, embedded at compile time and installable on demand.
+//! Bundled agent skills, embedded at compile time and installable for Claude Code or pi.
 //!
 //! Each `SKILL.md` is pulled in with `include_str!` (relative to this file), so the skills version
 //! WITH the binary — `brew install vagus && vagus skills install` is the whole setup, no clone, no
 //! symlink. Editing `skills/<name>/SKILL.md` and rebuilding updates the embedded copy.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 
 pub struct Skill {
     pub name: &'static str,
     pub body: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum Agent {
+    #[value(alias = "claude-code")]
+    Claude,
+    Pi,
+}
+
+impl Agent {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Pi => "pi",
+        }
+    }
+
+    fn activation_hint(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code discovers newly installed skills automatically.",
+            Self::Pi => "pi discovers skills on startup; run `/reload` in an existing session.",
+        }
+    }
 }
 
 pub const BUNDLED: &[Skill] = &[
@@ -28,16 +53,31 @@ pub const BUNDLED: &[Skill] = &[
     },
 ];
 
-/// Resolve the skills dir: `--dir` override, else `$CLAUDE_CONFIG_DIR/skills`, else `~/.claude/skills`.
-pub fn skills_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
+/// Resolve the skills dir: `--dir` override, then the selected agent's config env/default.
+pub fn skills_dir(agent: Agent, override_dir: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(d) = override_dir {
         return Ok(d);
     }
-    if let Some(c) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-        return Ok(PathBuf::from(c).join("skills"));
-    }
     let home = dirs::home_dir().context("cannot resolve home directory")?;
-    Ok(home.join(".claude/skills"))
+    let get_env = |key: &str| std::env::var_os(key);
+    Ok(default_skills_dir(agent, &home, get_env))
+}
+
+fn default_skills_dir(
+    agent: Agent,
+    home: &Path,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> PathBuf {
+    match agent {
+        Agent::Claude => get_env("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude"))
+            .join("skills"),
+        Agent::Pi => get_env("PI_CODING_AGENT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".pi/agent"))
+            .join("skills"),
+    }
 }
 
 fn is_symlink(p: &Path) -> bool {
@@ -57,11 +97,12 @@ fn description(body: &str) -> Option<&str> {
 /// Per skill (safe + idempotent): a symlinked target is skipped (protects the repo dev symlinks)
 /// unless `--force`; an identical file is left alone; a divergent file is backed up to `SKILL.md.bak`
 /// (unless `--force`) then overwritten; a missing file is created.
-pub fn install(override_dir: Option<PathBuf>, force: bool) -> Result<()> {
-    let root = skills_dir(override_dir)?;
+pub fn install(agent: Agent, override_dir: Option<PathBuf>, force: bool) -> Result<()> {
+    let root = skills_dir(agent, override_dir)?;
     println!(
-        "installing {} skills into {}",
+        "installing {} skills for {} into {}",
         BUNDLED.len(),
+        agent.display_name(),
         root.display()
     );
 
@@ -100,14 +141,18 @@ pub fn install(override_dir: Option<PathBuf>, force: bool) -> Result<()> {
         println!("  {action}  {}", path.display());
     }
 
-    println!("(Claude Code loads ~/.claude/skills automatically — no restart needed.)");
+    println!("({})", agent.activation_hint());
     Ok(())
 }
 
-/// List the bundled skills + their install status in the default skills dir.
-pub fn list() -> Result<()> {
-    let root = skills_dir(None)?;
-    println!("bundled skills (install dir: {}):", root.display());
+/// List the bundled skills + their install status in the selected agent's default skills dir.
+pub fn list(agent: Agent) -> Result<()> {
+    let root = skills_dir(agent, None)?;
+    println!(
+        "bundled skills for {} (install dir: {}):",
+        agent.display_name(),
+        root.display()
+    );
     for s in BUNDLED {
         let sdir = root.join(s.name);
         let status = if is_symlink(&sdir) {
@@ -128,6 +173,36 @@ pub fn list() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_dirs_are_agent_specific() {
+        let home = Path::new("/home/test");
+        assert_eq!(
+            default_skills_dir(Agent::Claude, home, |_| None),
+            PathBuf::from("/home/test/.claude/skills")
+        );
+        assert_eq!(
+            default_skills_dir(Agent::Pi, home, |_| None),
+            PathBuf::from("/home/test/.pi/agent/skills")
+        );
+    }
+
+    #[test]
+    fn default_dirs_honor_agent_config_env() {
+        let home = Path::new("/home/test");
+        assert_eq!(
+            default_skills_dir(Agent::Claude, home, |key| {
+                (key == "CLAUDE_CONFIG_DIR").then(|| OsString::from("/tmp/claude"))
+            }),
+            PathBuf::from("/tmp/claude/skills")
+        );
+        assert_eq!(
+            default_skills_dir(Agent::Pi, home, |key| {
+                (key == "PI_CODING_AGENT_DIR").then(|| OsString::from("/tmp/pi"))
+            }),
+            PathBuf::from("/tmp/pi/skills")
+        );
+    }
 
     #[test]
     fn bundled_skills_are_embedded() {

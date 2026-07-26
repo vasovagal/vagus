@@ -64,7 +64,7 @@ enum Command {
         /// Which retriever(s) to use.
         #[arg(long, value_enum, default_value_t = Mode::Hybrid)]
         mode: Mode,
-        /// Emit machine-readable JSON (stable shape for the Claude Code skill).
+        /// Emit machine-readable JSON (stable shape for the bundled agent skill).
         #[arg(long)]
         json: bool,
         /// Max results: distinct notes by default; individual chunks with --chunks.
@@ -92,7 +92,7 @@ enum Command {
         #[arg(long)]
         min_score: Option<f32>,
         /// Tier-1 "smart" search: a local model expands the query (lex/vec/HyDE variants), each is
-        /// retrieved and fused, then reranked. Offline, no Claude. Implies --rerank. Requires the
+        /// retrieved and fused, then reranked. Offline, no coding agent. Implies --rerank. Requires the
         /// `generate` build feature (falls back to --rerank if absent).
         #[arg(long)]
         smart: bool,
@@ -175,7 +175,7 @@ enum Command {
     Doctor,
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
-    /// Manage the bundled Claude Code skills (create-note / search / process-inbox).
+    /// Manage the bundled Claude Code / pi skills (create-note / search / process-inbox).
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
@@ -210,17 +210,24 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SkillsAction {
-    /// Write the bundled skills into ~/.claude/skills (or $CLAUDE_CONFIG_DIR, or --dir).
+    /// Write the bundled skills into the selected agent's global skills directory.
     Install {
-        /// Install into this directory instead of ~/.claude/skills.
+        /// Agent to install for (claude: ~/.claude/skills; pi: ~/.pi/agent/skills).
+        #[arg(long, value_enum, default_value = "claude")]
+        agent: skills::Agent,
+        /// Install into this directory instead of the selected agent's default.
         #[arg(long)]
         dir: Option<PathBuf>,
         /// Replace symlinks / divergent files without backing up.
         #[arg(long)]
         force: bool,
     },
-    /// List the bundled skills and whether they're installed.
-    List,
+    /// List the bundled skills and whether they're installed for the selected agent.
+    List {
+        /// Agent whose global skills directory to inspect.
+        #[arg(long, value_enum, default_value = "claude")]
+        agent: skills::Agent,
+    },
 }
 
 fn main() -> Result<()> {
@@ -317,8 +324,8 @@ fn main() -> Result<()> {
         Command::Tutorial => cmd_tutorial(&cfg),
         Command::Doctor => cmd_doctor(&cfg)?,
         Command::Skills { action } => match action {
-            SkillsAction::Install { dir, force } => skills::install(dir, force)?,
-            SkillsAction::List => skills::list()?,
+            SkillsAction::Install { agent, dir, force } => skills::install(agent, dir, force)?,
+            SkillsAction::List { agent } => skills::list(agent)?,
         },
         Command::Plugins => {
             let builtins: Vec<String> = Cli::command()
@@ -590,13 +597,13 @@ FIND:
   vagus search "that thing about X"   hybrid: keywords + meaning
   vagus search "..." --mode bm25      keyword-only   (--mode vec = semantic-only)
   vagus search "..." --rerank         sharper ordering via a local cross-encoder (no cloud)
-  vagus search "..." --smart          local query expansion + HyDE + rerank (offline, no Claude)
+  vagus search "..." --smart          local query expansion + HyDE + rerank (offline, no agent)
 
 FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox
   vagus file 00-Inbox/<note>.md --suggest             where might it go? (--thought-process = why)
   vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
-  (in Claude Code:  /process-inbox    proposes a home for each note)
+  (agent skill: /process-inbox in Claude Code; /skill:process-inbox in pi)
 
 PARA — file by how ACTIONABLE it is (first match wins):
   10-Projects   a goal with an end + deadline       ("Launch v2")
@@ -607,6 +614,6 @@ PARA — file by how ACTIONABLE it is (first match wins):
 
 Notes are searchable the moment they're indexed, even before you file them.
 
-Claude Code skills (/create-note · /search · /process-inbox):  vagus skills install"#
+Agent skills (Claude Code / pi):  vagus skills install [--agent claude|pi]"#
     );
 }

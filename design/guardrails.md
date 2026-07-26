@@ -79,10 +79,11 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   hits, pre-0.7 output byte-identical); filing `--suggest` stays chunk-level.
   ([ADR 0020](./adr/0020-note-level-results.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
-  (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no Claude);
-  (2) the `/search` skill = **Opus** expansion/HyDE/judge over the CLI. The *channel* picks the tier —
-  no smartness flags beyond these, no escalation prompts. Tiers 1 and 2 reuse the same retrieval +
-  rerank core and the same typed `lex:/vec:/hyde:` discipline; they differ only in *who generates*.
+  (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
+  (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus**
+  expansion/HyDE/judge over the CLI. The *channel* picks the tier — no smartness flags beyond these,
+  no escalation prompts. Tiers 1 and 2 reuse the same retrieval + rerank core and the same typed
+  `lex:/vec:/hyde:` discipline; they differ only in *who generates*.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 
 ## Build & dependencies
@@ -119,8 +120,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   reranker — ride the in-binary `ort` stack and are fine in core (they are not generative). **Generative**
   rewriting/HyDE is tiered: **tier-0** has none; **tier-1** may compile a local generative model into
   `vagus` but only **feature-gated + lazily-downloaded + opt-in** (`--smart`/`--rewrite`), never in the
-  default path ([ADR 0016](./adr/0016-local-generative-rewriter.md)); **tier-2** runs in the Opus
-  `/search` skill. **No cloud calls and no daemon in any tier** (G14). ([ADR 0012](./adr/0012-three-tier-retrieval.md),
+  default path ([ADR 0016](./adr/0016-local-generative-rewriter.md)); **tier-2** runs in the bundled
+  Opus search skill (Claude Code or pi). **No cloud calls and no daemon in any tier** (G14).
+  ([ADR 0012](./adr/0012-three-tier-retrieval.md),
   [ADR 0015](./adr/0015-cross-encoder-rerank.md))
 - **G18 — Networked features ship as plugins, not in core.** Anything that makes cloud/network calls
   or pulls third-party dependencies (Slack, GitHub, etc.) is an external `vagus-<name>` plugin
