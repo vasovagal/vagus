@@ -39,7 +39,8 @@ silently breaking an invariant.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
 - `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
-- `0012-three-tier-retrieval.md` — floor / shell+local / Opus-skill tiers, channel-selected.
+- `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
+  channel-selected.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); amends 0003 + G17.

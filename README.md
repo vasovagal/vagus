@@ -5,7 +5,7 @@
 **Your second brain, as a single fast binary.** vagus gives you **hybrid full-text +
 semantic search** over a folder of plain-Markdown notes — local-first, offline after first
 run, no daemon, no cloud. Capture with one line in your editor; recall with one command (or
-straight from a Claude Code session).
+straight from a Claude Code or pi session).
 
 ## Features
 
@@ -15,18 +15,19 @@ straight from a Claude Code session).
   one query, no tuning.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
-  local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The
-  `/search` Claude Code skill adds an Opus judging pass on top. Every tier runs **offline**.
+  local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
+  search agent skill adds an Opus judging pass on top. Every tier runs **offline**.
 - **Plain Markdown in iCloud.** [PARA](https://fortelabs.com/blog/para/) layout
   (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`), Obsidian-compatible,
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the index is
   a throwaway cache.
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  `/create-note` from Claude Code.
-- **Assisted, never automatic filing.** `/process-inbox` proposes a PARA home per note; you
+  the create-note skill from Claude Code or pi.
+- **Assisted, never automatic filing.** The process-inbox skill proposes a PARA home per note; you
   approve.
-- **Claude Code skills built in.** `/create-note`, `/search`, and `/process-inbox` ship
-  inside the binary — `vagus skills install` writes them to `~/.claude/skills/`.
+- **Claude Code and pi skills built in.** Create-note, search, and process-inbox skills ship
+  inside the binary — `vagus skills install --agent <claude|pi>` writes them to the selected
+  agent's global skills directory.
 - **Self-contained.** One ~40 MB static binary (ONNX Runtime linked in — `otool -L` shows
   only system dylibs). No Python, no Node, no background process.
 
@@ -57,15 +58,17 @@ search vagus downloads the embedding model (**EmbeddingGemma-300M, ~1.23 GB**) t
 the first time you use them — `--rerank` ~150 MB, `--smart` ~1.2 GB — so a plain install only
 pays for the embedder.
 
-### Claude Code skills
+### Claude Code and pi skills
 
 ```sh
-vagus skills install        # write the bundled skills (idempotent; safe to re-run)
-vagus skills list           # show the bundled skills + install status
+vagus skills install                 # Claude Code (default): ~/.claude/skills
+vagus skills install --agent pi      # pi: ~/.pi/agent/skills
+vagus skills list --agent pi         # show pi install status
 ```
 
-`brew upgrade vagus && vagus skills install` keeps them current; re-running leaves identical
-files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks.
+The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
+leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an
+upgrade, install again for each agent you use; in an existing pi session, run `/reload`.
 
 ## Speed
 
@@ -95,7 +98,7 @@ vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # health check (symlink, model cache, dylib, dims, index)
 vagus status                # counts, model/dims, index size
-vagus skills install        # install the Claude Code skills into ~/.claude/skills
+vagus skills install        # install agent skills (--agent claude|pi; default: claude)
 ```
 
 Search results are **one per note** by default — `--limit 10` means 10 distinct notes, each shown

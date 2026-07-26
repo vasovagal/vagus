@@ -4,21 +4,23 @@
 
 A personal "second brain": capture thoughts and references with near-zero friction, organize them with
 the [PARA](./methodology-para.md) method, and **find them again** later by keyword *or* by meaning —
-all local, private, and durable as plain text. Driven from the terminal and from Claude Code.
+all local, private, and durable as plain text. Driven from the terminal or an Agent Skills-compatible
+coding harness (Claude Code and pi).
 
 ## Functional requirements
 
 - **F1 — PARA vault of plain Markdown.** Folders `00-Inbox / 10-Projects / 20-Areas / 30-Resources /
   40-Archive` (+ optional `50-Meta`). One `.md` file per note; whole-folder `mv` for lifecycle moves.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
-  Also `/create-note` to capture from a Claude Code session.
+  Also the create-note skill to capture from a Claude Code or pi session.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
-  fused into one ranked result list, exposed both as a CLI (`--json`) and to Claude.
+  fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents.
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch.
-- **F5 — Assisted filing.** `/process-inbox`: for each inbox note, Claude proposes a PARA destination +
-  title + tags; on user approval, the note is moved and its frontmatter enriched.
-- **F6 — Claude Code skills.** `/create-note`, `/search`, `/process-inbox` shelling out to the `vagus` CLI.
+- **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
+  tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
+- **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
+  `vagus` CLI and install into Claude Code or pi's global skills directory.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 
@@ -55,5 +57,5 @@ Indexing + hybrid search + capture + assisted filing + the three skills, on one 
 - **No** automatic filing/moving of notes without explicit user approval.
 - **No** cloud LLM calls and **no daemon**, in any tier. Generation is *tiered*, not banned: a
   cross-encoder reranker (a scoring model) is in core; generative rewriting/HyDE is an opt-in,
-  feature-gated local model (tier-1) or Opus in the `/search` skill (tier-2) — never a cloud call, never
-  a background service ([ADR 0012](./adr/0012-three-tier-retrieval.md), G17/G19).
+  feature-gated local model (tier-1) or Opus in the bundled search skill (tier-2) — never a cloud call,
+  never a background service ([ADR 0012](./adr/0012-three-tier-retrieval.md), G17/G19).

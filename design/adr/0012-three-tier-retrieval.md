@@ -1,7 +1,8 @@
 # ADR 0012 — Three-tier retrieval (floor / shell-local / Opus-skill)
 
-- **Status:** Accepted (2026-05-30). Supersedes the planned (never-written) "two-tier" ADR; the
-  earlier two-tier framing lives in [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
+- **Status:** Accepted (2026-05-30); **amended 2026-07-25** — the tier-2 Agent Skill supports both
+  Claude Code and pi. Supersedes the planned (never-written) "two-tier" ADR; the earlier two-tier
+  framing lives in [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
 ## Context
 
@@ -24,7 +25,13 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60** | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank** | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | the `/search` skill | Opus expansion + HyDE + full-body judge **on top of** `vagus search --json --full --rerank` | Opus |
+| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | Opus expansion + HyDE + full-body judge **on top of** `vagus search --json --full --rerank` | Opus |
+
+The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
+standards-compatible `SKILL.md` is embedded once and installed by
+`vagus skills install --agent <claude|pi>` into the harness's global discovery directory. Claude Code
+remains the backward-compatible default target; pi honors `PI_CODING_AGENT_DIR` and loads the skill
+under its `/skill:search` command. Opus remains the intended tier-2 model regardless of harness.
 
 - **Tiers 1 and 2 are parallel.** They reuse the **same** retrieval + rerank core and the **same**
   typed `lex:/vec:/hyde:` discipline; they differ only in *who generates the rewrite* (a local model
@@ -45,6 +52,8 @@ escalation prompts.
 - `vagus search` gains `--rerank`, `--full`, `--min-score` (shipped) and later `--rewrite`/`--smart`
   (tier-1 generation, [ADR 0016](./0016-local-generative-rewriter.md)).
 - The default bare `vagus search` (tier 0) stays byte-identical and < 1s — the fast path is unchanged.
+- Skill installation is harness-selectable without duplicating skill bodies; the existing no-flag
+  command continues to target Claude Code, while `--agent pi` targets pi.
 - Advanced search is **not** a plugin: the capture-shaped NDJSON plugin protocol
   ([ADR 0011](./0011-plugin-protocol.md)) doesn't fit a search-time transform, and the reranker/rewriter
   are neither networked nor foreign-runtime, so they belong in core (see ADR 0015/0016 for the

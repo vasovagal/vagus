@@ -1,7 +1,7 @@
 # CLAUDE.md — vagus
 
 `vagus` is a local-first **PARA second brain**: a Rust CLI providing hybrid full-text + semantic
-search over a plain-Markdown vault in iCloud, plus Claude Code skills for capture and retrieval.
+search over a plain-Markdown vault in iCloud, plus Agent Skills for Claude Code and pi.
 
 **Before any architectural change, read [`design/`](./design/).** It holds the requirements, the ADRs
 (what we considered and why), the tradeoff study, and the prior-art survey. When you change a decision,
@@ -58,7 +58,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
 12. **Three tiers, "no versioned runtime" identity.** vagus is a self-contained Rust *universe* (no
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
-    = shell + local models, offline; (2) the `/search` skill = Opus. Advanced search is **in core**,
+    = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
+    `/skill:search` in pi) = Opus. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the
@@ -81,7 +82,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
 ~/brain -> ~/Library/Mobile Documents/com~apple~CloudDocs/Brain   # the vault (markdown only, in iCloud)
 ~/.local/share/vagus/       # index: tantivy/ + meta.db + config.toml   (OUTSIDE iCloud)
 ~/Library/Caches/vagus/models/   # cached ONNX models: embedder + optional reranker  (OUTSIDE iCloud)
-~/.claude/skills/{create-note,search,process-inbox}/   # the three skills (shell out to `vagus`)
+~/.claude/skills/{create-note,search,process-inbox}/   # Claude Code skill installs
+~/.pi/agent/skills/{create-note,search,process-inbox}/  # pi skill installs (both shell out to `vagus`)
 ```
 
 ## Build / test / run
