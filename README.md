@@ -91,6 +91,7 @@ path.
 vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
+vagus reindex --since 10d   # force-refresh recent filesystem mtimes; preserve older embeddings
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search (--mode hybrid|bm25|vec, --rerank, --smart, --json, --chunks)
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
@@ -103,6 +104,13 @@ vagus skills install        # install agent skills (--agent claude|pi; default: 
 
 Search results are **one per note** by default — `--limit 10` means 10 distinct notes, each shown
 as its best-matching chunk. Pass `--chunks` to rank every matching chunk individually instead.
+
+For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault
+and force-reindexes notes whose **filesystem mtime** is within the window, even if local cached
+metadata says they are unchanged. Older indexed notes and usage ticks are preserved; new/deleted files
+are still reconciled globally. Use plain `vagus reindex` when the suspect period is unknown or the
+embedding/chunk identity changed. (`search --since` is different: it filters results by note creation
+time.)
 
 The index/database live **outside** iCloud (`~/.local/share/vagus/`) — only your notes live in
 iCloud. The search index is fully rebuildable from the Markdown (`vagus reindex`), but the database

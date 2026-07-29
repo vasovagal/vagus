@@ -16,7 +16,8 @@ coding harness (Claude Code and pi).
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents.
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
-  `reindex` rebuilds from scratch.
+  `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
+  force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.
 - **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the

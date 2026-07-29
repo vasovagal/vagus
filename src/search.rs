@@ -24,6 +24,9 @@ use crate::index;
 use crate::lex::Lex;
 use crate::rerank::{Reranker, sigmoid};
 use crate::scope::Scope;
+#[cfg(test)]
+use crate::util::parse_duration;
+use crate::util::since_cutoff;
 
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
@@ -93,43 +96,6 @@ impl SmartTimings {
 /// Milliseconds elapsed since `t`, as `f64` (mirrors `index::elapsed_ms`).
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Parse a `--since` duration into seconds (dependency-free, ADR 0017). Accepts a single
-/// number+unit token — `30s`, `90m`, `6h`, `10d`, `2w` — or a bare integer interpreted as **days**
-/// (`7` == `7d`). Whitespace is trimmed; the unit is case-insensitive. The caller derives the cutoff
-/// as `now - parse_duration(..)`. Returns a clear error on anything else (empty, negative, unknown
-/// unit, non-numeric, overflow).
-pub fn parse_duration(input: &str) -> Result<i64> {
-    let s = input.trim();
-    if s.is_empty() {
-        anyhow::bail!("empty duration (use e.g. 10d, 2w, 6h, 30m, 90s, or a bare number of days)");
-    }
-    let (num_str, unit_secs): (&str, i64) = match s.chars().last().unwrap() {
-        c if c.is_ascii_digit() => (s, 86_400), // bare number -> days
-        's' | 'S' => (&s[..s.len() - 1], 1),
-        'm' | 'M' => (&s[..s.len() - 1], 60),
-        'h' | 'H' => (&s[..s.len() - 1], 3_600),
-        'd' | 'D' => (&s[..s.len() - 1], 86_400),
-        'w' | 'W' => (&s[..s.len() - 1], 604_800),
-        other => anyhow::bail!(
-            "invalid duration unit {other:?} in {s:?} (use s, m, h, d, w, or a bare number of days)"
-        ),
-    };
-    // Parse the numeric part as-is (no inner trim) so embedded whitespace like "10 d" is rejected.
-    let n: i64 = num_str.parse().map_err(|_| {
-        anyhow::anyhow!("invalid duration {s:?} (expected e.g. 10d, 2w, 6h, 30m, 90s, or a number)")
-    })?;
-    if n < 0 {
-        anyhow::bail!("duration must not be negative: {s:?}");
-    }
-    n.checked_mul(unit_secs)
-        .ok_or_else(|| anyhow::anyhow!("duration too large: {s:?}"))
-}
-
-/// Compute the `--since` cutoff in unix seconds: `now - parse_duration(spec)`.
-pub fn since_cutoff(spec: &str) -> Result<i64> {
-    Ok(crate::util::now_unix() - parse_duration(spec)?)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -770,7 +736,7 @@ pub fn run(
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
     // actually changed). `--no-index` skips it.
-    if !no_index && let Err(e) = index::run(cfg, false) {
+    if !no_index && let Err(e) = index::run(cfg, index::IndexMode::Incremental) {
         eprintln!("vagus: index refresh skipped ({e})");
     }
     // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses scoping.

@@ -53,8 +53,14 @@ struct Cli {
 enum Command {
     /// Incremental index: sync changed/new/removed vault notes into the index.
     Index,
-    /// Wipe the derived index and rebuild it from the vault.
-    Reindex,
+    /// Rebuild the whole derived index, or force-refresh a recent mtime window.
+    Reindex {
+        /// Force-reindex notes whose filesystem mtime is within this window (e.g. `10d`, `2w`,
+        /// `6h`). The whole vault is snapshotted for new/deleted files, but older indexed notes are
+        /// preserved instead of being re-embedded (ADR 0022).
+        #[arg(long, value_name = "DURATION")]
+        since: Option<String>,
+    },
     /// Compact the tantivy index (force-merge segments, drop tombstones) without re-embedding.
     Compact,
     /// Search the vault (hybrid by default).
@@ -236,8 +242,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Status => cmd_status(&cfg)?,
-        Command::Index => cmd_index(&cfg, false)?,
-        Command::Reindex => cmd_index(&cfg, true)?,
+        Command::Index => cmd_index(&cfg)?,
+        Command::Reindex { since } => cmd_reindex(&cfg, since.as_deref())?,
         Command::Compact => cmd_compact(&cfg)?,
         Command::Search {
             query,
@@ -526,16 +532,46 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-fn cmd_index(cfg: &Config, reindex: bool) -> Result<()> {
-    let stats = index::run(cfg, reindex)?;
+fn cmd_index(cfg: &Config) -> Result<()> {
+    let stats = index::run(cfg, index::IndexMode::Incremental)?;
     println!(
-        "{}: {} new, {} changed, {} unchanged, {} removed",
-        if reindex { "reindex" } else { "index" },
-        stats.new,
-        stats.changed,
-        stats.unchanged,
-        stats.removed
+        "index: {} new, {} changed, {} unchanged, {} removed",
+        stats.new, stats.changed, stats.unchanged, stats.removed
     );
+    Ok(())
+}
+
+fn cmd_reindex(cfg: &Config, since: Option<&str>) -> Result<()> {
+    let Some(spec) = since else {
+        let stats = index::run(cfg, index::IndexMode::Full)?;
+        println!(
+            "reindex: {} new, {} changed, {} unchanged, {} removed",
+            stats.new, stats.changed, stats.unchanged, stats.removed
+        );
+        return Ok(());
+    };
+
+    let cutoff = util::since_cutoff(spec)?;
+    let stats = index::run(cfg, index::IndexMode::Since { cutoff })?;
+    if stats.full_reindex {
+        // A chunk-format mismatch cannot be repaired partially (G4), so the existing auto-reindex
+        // upgrades the requested window to the mandatory full rebuild and says so on stderr.
+        println!(
+            "reindex (full): {} new, {} changed, {} unchanged, {} removed",
+            stats.new, stats.changed, stats.unchanged, stats.removed
+        );
+    } else {
+        println!(
+            "reindex --since {spec}: {} selected of {}, {} refreshed, {} new, {} changed, {} unchanged, {} removed",
+            stats.selected,
+            stats.scanned,
+            stats.refreshed,
+            stats.new,
+            stats.changed,
+            stats.unchanged,
+            stats.removed
+        );
+    }
     Ok(())
 }
 

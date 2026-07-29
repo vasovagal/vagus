@@ -23,12 +23,39 @@ use crate::lex::Lex;
 use crate::util::{key_for, now_unix, sha256_hex};
 use crate::vector::{UsearchIndex, VectorIndex};
 
+/// How an index run treats the existing derived stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexMode {
+    /// Normal mtime+hash incremental reconciliation.
+    Incremental,
+    /// Wipe every derived row/store and rebuild the whole vault.
+    Full,
+    /// Run normal reconciliation, but force-refresh every existing note whose filesystem mtime is at
+    /// or after `cutoff` even when its cached mtime/hash already match (ADR 0022).
+    Since { cutoff: i64 },
+}
+
+impl IndexMode {
+    fn is_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn force_refresh(self, mtime: f64) -> bool {
+        matches!(self, Self::Since { cutoff } if mtime >= cutoff as f64)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct IndexStats {
+    pub scanned: usize,
+    pub selected: usize,
+    pub refreshed: usize,
     pub new: usize,
     pub changed: usize,
     pub unchanged: usize,
     pub removed: usize,
+    /// True for an explicit full rebuild or an identity/chunk-version auto-rebuild.
+    pub full_reindex: bool,
 }
 
 /// Per-step wall-clock timings (milliseconds) for the index sub-steps, accumulated across every
@@ -67,13 +94,45 @@ fn is_markdown(p: &Path) -> bool {
 }
 
 /// Every `*.md` under the vault, skipping hidden dirs (`.obsidian`, `.git`, `.trash`, …).
-pub fn walk_vault(vault: &Path) -> Vec<PathBuf> {
-    WalkDir::new(vault)
+/// Returns a complete, sorted snapshot; a walk error is fatal rather than silently making an indexed
+/// note look deleted.
+pub fn walk_vault(vault: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(vault)
         .into_iter()
         .filter_entry(|e| !is_hidden(e))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file() && is_markdown(e.path()))
-        .map(|e| e.into_path())
+    {
+        let entry = entry.with_context(|| format!("walking vault {}", vault.display()))?;
+        if entry.file_type().is_file() && is_markdown(entry.path()) {
+            paths.push(entry.into_path());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+#[derive(Debug)]
+struct VaultFile {
+    abs: PathBuf,
+    rel: String,
+    mtime: f64,
+}
+
+/// Build the complete path+mtime list before mutating any derived store (ADR 0022). Besides giving
+/// `--since` one stable selection snapshot, this prevents a late walk/stat failure from being
+/// mistaken for deletions after an index run has already begun writing.
+fn snapshot_vault(vault: &Path) -> Result<Vec<VaultFile>> {
+    walk_vault(vault)?
+        .into_iter()
+        .map(|abs| {
+            let rel = abs
+                .strip_prefix(vault)
+                .unwrap_or(&abs)
+                .to_string_lossy()
+                .to_string();
+            let mtime = mtime_secs(&abs).with_context(|| format!("stat {}", abs.display()))?;
+            Ok(VaultFile { abs, rel, mtime })
+        })
         .collect()
 }
 
@@ -99,18 +158,18 @@ fn created_at_secs(created: Option<&str>, mtime: f64) -> i64 {
     mtime as i64 // G3 mtime fallback
 }
 
-/// Run an incremental index (or full rebuild when `reindex`).
+/// Reconcile the vault according to `mode`.
 ///
 /// Thin wrapper over [`run_timed`] for callers that don't want the per-step timing breakdown.
-pub fn run(cfg: &Config, reindex: bool) -> Result<IndexStats> {
-    run_timed(cfg, reindex, None)
+pub fn run(cfg: &Config, mode: IndexMode) -> Result<IndexStats> {
+    run_timed(cfg, mode, None)
 }
 
 /// Like [`run`], but when `timings` is `Some`, accumulates per-step wall-clock durations
 /// (milliseconds) into it. Passing `None` skips the (negligible) bookkeeping entirely.
 pub fn run_timed(
     cfg: &Config,
-    reindex: bool,
+    mode: IndexMode,
     mut timings: Option<&mut IndexTimings>,
 ) -> Result<IndexStats> {
     if !cfg.vault.exists() {
@@ -122,22 +181,30 @@ pub fn run_timed(
     cfg.ensure_dirs()?;
     let db = Db::open(&cfg.db_path())?;
 
+    // Snapshot every vault path + mtime before any derived-store mutation. `--since` selects from
+    // this list; all modes use it for complete deletion detection (ADR 0022/G26).
+    let vault_files = snapshot_vault(&cfg.vault)?;
+
     // A chunker change reshapes every chunk; force a one-time rebuild so old indexes self-heal.
-    let mut reindex = reindex;
+    let mut mode = mode;
     let mut auto_reindex = false;
-    if !reindex {
-        reindex = match db.meta_get("chunk_version")? {
+    if !mode.is_full() {
+        let needs_full = match db.meta_get("chunk_version")? {
             Some(v) => v != CHUNK_VERSION,
             None => db.count("SELECT count(*) FROM chunks")? > 0, // pre-versioning index
         };
-        auto_reindex = reindex;
+        if needs_full {
+            mode = IndexMode::Full;
+            auto_reindex = true;
+        }
     }
     if auto_reindex {
         // The first run after an upgrade re-embeds the whole vault — say so, so a `vagus search`
         // (which calls this incrementally) isn't silently slow on its first post-upgrade invocation.
         eprintln!("vagus: embedding/chunk format changed — reindexing the whole vault (one-time)…");
     }
-    if reindex {
+    let full_reindex = mode.is_full();
+    if full_reindex {
         db.clear_all()?;
         let _ = std::fs::remove_dir_all(cfg.tantivy_dir());
         // The usearch sidecar is a derived cache; `clear_all` doesn't touch it, so drop it explicitly
@@ -149,7 +216,7 @@ pub fn run_timed(
 
     // Guardrail G4: pin / validate the embedding identity.
     let dims = EMBED_DIMS.to_string();
-    if !reindex
+    if !full_reindex
         && let (Some(m), Some(d)) = (db.meta_get("embed_model")?, db.meta_get("embed_dims")?)
         && (m != EMBED_MODEL || d != dims)
     {
@@ -167,7 +234,7 @@ pub fn run_timed(
     // rebuild repacks the authoritative f32 BLOBs with NO re-embed (the embedding identity is
     // unchanged, so CHUNK_VERSION/G4 are untouched).
     let sidecar = cfg.vector_path();
-    let vec_meta_ok = !reindex
+    let vec_meta_ok = !full_reindex
         && db.meta_get("vec_backend")?.as_deref() == Some("usearch")
         && db.meta_get("vec_index_version")?.as_deref() == Some(VEC_INDEX_VERSION)
         && db.meta_get("vec_dims")?.as_deref() == Some(dims.as_str())
@@ -191,31 +258,39 @@ pub fn run_timed(
 
     let existing = db.existing_files()?;
     let mut seen: HashSet<String> = HashSet::new();
-    let mut stats = IndexStats::default();
+    let mut stats = IndexStats {
+        scanned: vault_files.len(),
+        full_reindex,
+        ..IndexStats::default()
+    };
 
-    for abs in walk_vault(&cfg.vault) {
-        let rel = abs
-            .strip_prefix(&cfg.vault)
-            .unwrap_or(&abs)
-            .to_string_lossy()
-            .to_string();
+    for file in vault_files {
+        let VaultFile { abs, rel, mtime } = file;
         seen.insert(rel.clone());
 
-        let mtime = mtime_secs(&abs).with_context(|| format!("stat {}", abs.display()))?;
-        if let Some((old_mtime, _)) = existing.get(&rel)
+        // `reindex --since` is normal incremental reconciliation plus a forced refresh set. The
+        // mtime is filesystem metadata from the complete pre-write snapshot — never frontmatter.
+        let force_refresh = mode.force_refresh(mtime);
+        if force_refresh {
+            stats.selected += 1;
+        }
+        if !force_refresh
+            && let Some((old_mtime, _)) = existing.get(&rel)
             && (*old_mtime - mtime).abs() < f64::EPSILON
         {
             stats.unchanged += 1;
-            continue; // fast path: mtime unchanged
+            continue; // fast path: mtime unchanged and not explicitly selected
         }
 
         let bytes = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
         let sha = sha256_hex(&bytes);
         let prior = existing.get(&rel);
-        if let Some((_, old_sha)) = prior
+        if !force_refresh
+            && let Some((_, old_sha)) = prior
             && *old_sha == sha
         {
-            // content identical (touch / checkout): just refresh mtime.
+            // Content identical (touch / checkout): just refresh mtime. A selected file deliberately
+            // bypasses this shortcut so all three stores are repaired even when hash metadata agrees.
             db.upsert_file(&rel, mtime, &sha, now_unix())?;
             stats.unchanged += 1;
             continue;
@@ -281,7 +356,11 @@ pub fn run_timed(
             }
         }
         if prior.is_some() {
-            stats.changed += 1;
+            if force_refresh {
+                stats.refreshed += 1;
+            } else {
+                stats.changed += 1;
+            }
         } else {
             stats.new += 1;
         }
@@ -374,6 +453,88 @@ mod tests {
         assert!(elapsed_ms(Instant::now()) >= 0.0);
     }
 
+    fn empty_note_cfg(tag: &str) -> (crate::util::testdir::TempDir, Config) {
+        let dir = crate::util::testdir::TempDir::new(tag);
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        fs::create_dir_all(&cfg.vault).unwrap();
+        (dir, cfg)
+    }
+
+    #[test]
+    fn since_reindex_force_refreshes_a_matching_file_even_when_mtime_agrees() {
+        // Empty Markdown yields no chunks, so this exercises the real three-store index path without
+        // loading/downloading the embedding model.
+        let (_dir, cfg) = empty_note_cfg("reindex-since-force");
+        fs::write(cfg.vault.join("recent.md"), "").unwrap();
+        run(&cfg, IndexMode::Full).unwrap();
+        {
+            let db = Db::open(&cfg.db_path()).unwrap();
+            // Simulate stale derived content while the file's cached mtime/hash remain perfectly
+            // current. The forced window must bypass both shortcuts and remove this bogus row.
+            let bogus = sha256_hex(b"bogus chunk");
+            db.conn
+                .execute(
+                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
+                     VALUES(?1,'recent.md',0,'','stale',NULL,NULL,NULL,?2)",
+                    rusqlite::params![bogus, key_for(&bogus) as i64],
+                )
+                .unwrap();
+            db.tick("recent.md").unwrap();
+        }
+
+        let stats = run(
+            &cfg,
+            IndexMode::Since {
+                cutoff: now_unix() - 60,
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.scanned, 1);
+        assert_eq!(stats.selected, 1);
+        assert_eq!(stats.refreshed, 1);
+        assert_eq!(stats.unchanged, 0);
+        assert!(!stats.full_reindex);
+
+        let db = Db::open(&cfg.db_path()).unwrap();
+        assert_eq!(db.existing_files().unwrap()["recent.md"].1, sha256_hex(b""));
+        assert_eq!(
+            db.count("SELECT count(*) FROM chunks").unwrap(),
+            0,
+            "selected file was really rebuilt rather than mtime/hash-skipped"
+        );
+        assert_eq!(db.fame(10, true).unwrap()[0].1, 1, "ticks are preserved");
+    }
+
+    #[test]
+    fn since_reindex_still_reconciles_new_and_deleted_files_outside_window() {
+        let (_dir, cfg) = empty_note_cfg("reindex-since-reconcile");
+        fs::write(cfg.vault.join("gone.md"), "").unwrap();
+        run(&cfg, IndexMode::Full).unwrap();
+
+        fs::remove_file(cfg.vault.join("gone.md")).unwrap();
+        fs::write(cfg.vault.join("new.md"), "").unwrap();
+        // A future cutoff selects no file. `new.md` must still be indexed because --since augments
+        // normal reconciliation rather than creating an intentionally incomplete local index.
+        let stats = run(
+            &cfg,
+            IndexMode::Since {
+                cutoff: now_unix() + 60,
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.scanned, 1);
+        assert_eq!(stats.selected, 0);
+        assert_eq!(stats.new, 1);
+        assert_eq!(stats.removed, 1);
+        let files = Db::open(&cfg.db_path()).unwrap().existing_files().unwrap();
+        assert!(files.contains_key("new.md"));
+        assert!(!files.contains_key("gone.md"));
+    }
+
     // `vagus reindex` runs the REAL wipe path (clear_all + tantivy/usearch removal) and must
     // preserve ticks — user data, not a derived cache (ADR 0021/G25). An empty vault keeps the
     // embedder unloaded (it is lazy), so this stays a cheap unit test. The CHUNK_VERSION-mismatch
@@ -393,7 +554,7 @@ mod tests {
             db.tick("20-Areas/foo.md").unwrap();
         }
 
-        run(&cfg, true).unwrap();
+        run(&cfg, IndexMode::Full).unwrap();
 
         let db = Db::open(&cfg.db_path()).unwrap();
         let rows = db.fame(10, true).unwrap();
