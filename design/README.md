@@ -57,3 +57,6 @@ silently breaking an invariant.
   reindex, re-keyed on `vagus file` moves; adds G25, amends G2/G5.
 - `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault and
   force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.
+- `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,
+  dropping only a statistically distinct low-signal RRF suffix; `--exhaustive` restores legacy fill;
+  adds G9d and amends 0012/0020.
