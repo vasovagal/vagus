@@ -23,7 +23,8 @@ coding harness (Claude Code and pi).
 - **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
-  `vagus` CLI and install into Claude Code or pi's global skills directory.
+  `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
+  10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), and never pads.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 
@@ -60,5 +61,6 @@ Indexing + hybrid search + capture + assisted filing + the three skills, on one 
 - **No** automatic filing/moving of notes without explicit user approval.
 - **No** cloud LLM calls and **no daemon**, in any tier. Generation is *tiered*, not banned: a
   cross-encoder reranker (a scoring model) is in core; generative rewriting/HyDE is an opt-in,
-  feature-gated local model (tier-1) or Opus in the bundled search skill (tier-2) — never a cloud call,
-  never a background service ([ADR 0012](./adr/0012-three-tier-retrieval.md), G17/G19).
+  feature-gated local model (tier-1). Tier-2 uses its host agent for bounded body judgment and allows
+  one reformulation fallback only after no useful first-pass hit — never a vagus cloud call or
+  background service ([ADR 0012](./adr/0012-three-tier-retrieval.md), G17/G19).

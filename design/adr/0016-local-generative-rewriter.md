@@ -1,7 +1,8 @@
 # ADR 0016 — Local generative query rewriter (tier-1, in-core via candle)
 
 - **Status:** Accepted + **implemented (2026-05-30)** — `src/rewrite.rs` behind the default-on
-  `generate` feature; `vagus rewrite` + `vagus search --smart`. Amends G17.
+  `generate` feature; `vagus rewrite` + `vagus search --smart`. **Amended 2026-07-29:** tier-2 no
+  longer performs routine expansion/HyDE fan-out; ADR 0012 gives it one bounded fallback. Amends G17.
 
 ## Context
 
@@ -12,7 +13,8 @@ recall. HyDE *fundamentally* needs generation; expansion benefits from it. That 
 generative LLM running locally — "better than nothing" when Opus isn't in the loop.
 
 This is the one piece that is a generative LLM. The earlier (two-tier) plan parked it entirely on Opus.
-The author's decision: **support both** — a local rewriter for the shell *and* Opus in the skill. Under
+The author's decision: keep a local rewriter for the shell, while the stronger host agent focuses on
+full-body judgment and may reformulate only one failed-search fallback. Under
 the reframed identity ([ADR 0014](./0014-self-contained-universe.md)), a self-contained local generative
 model is in-character, because "no versioned runtime" forbids Python/Node — not a static native lib.
 
@@ -38,8 +40,11 @@ binary), behind a **cargo feature** (default-on in releases; a lean build can ex
 - **Surface:** `vagus rewrite "q"` prints the typed lines; `vagus search "q" --smart` runs the rewrite
   in-process, issues one retrieval per typed variant, fuses (RRF), and reranks (`--rerank`). Offline,
   **no daemon** (G14) — one-shot per search.
-- The skill (tier-2) emits the **same** typed-line discipline with Opus instead of the local model —
-  the pipelines are parallel.
+- **Amendment (ADR 0012):** the skill (tier-2) does not routinely emit the typed variants. It retrieves
+  one bounded exact+reranked set and judges bodies; only if zero candidates are useful may the host
+  agent choose one BM25 or exact-vector retry. Routine expansion/HyDE was removed from tier 2 because
+  each fan-out pulls another full-body candidate set into agent context. Tier 1 retains the full typed
+  rewrite pipeline for explicit `--smart` use.
 
 ## Alternatives considered
 
@@ -58,8 +63,9 @@ binary), behind a **cargo feature** (default-on in releases; a lean build can ex
 ## Consequences
 
 - **G17 is superseded** by the tiered statement (see guardrails): the core binary *may* contain a
-  feature-gated, lazily-downloaded local generative rewriter (tier-1); generative work otherwise runs
-  in the Opus skill (tier-2); tier-0 has none. No cloud, no daemon in any tier (G14).
+  feature-gated, lazily-downloaded local generative rewriter (tier-1); tier-2 may use host-model
+  generation for one query reformulation only after its first judge finds nothing; tier-0 has none.
+  No cloud, no daemon in any tier (G14).
 - candle is a new heavyweight dependency → this ADR is its gate (G11). Re-verify the binary stays
   self-contained with `otool -L` (G13). It adds ~17 MB to the binary; the `generate` feature is
   default-on, with `--no-default-features` for a lean candle-free build (CI guards that lane). The

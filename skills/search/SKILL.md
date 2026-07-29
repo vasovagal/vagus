@@ -8,103 +8,78 @@ disable-model-invocation: false
 user-invocable: true
 ---
 
-# Search the vault (tier-2 Opus reranking)
+# Search the vault (tier-2 agent judge)
 
-You are the tier-2 generative reranker (G17/G19). The binary does deterministic
-retrieval + an in-core cross-encoder; YOU judge relevance on the full body text,
-drop false positives, and reorder. Never re-derive RRF or reimplement search —
-shell out to `vagus` and parse `--json` (G13).
+The binary retrieves and cross-encodes; **you** make the final relevance decision from full chunk
+text. Never recreate RRF or rank from numbers alone. Shell out to `vagus`, parse JSON, answer from the
+best evidence, and keep weak candidates out of the user's context.
 
-**Hits are chunks; results are notes (ADR 0020).** vagus splits each note into
-heading-aware chunks for ranking, but by default every note appears **once** —
-as its best-ranked chunk — and `--limit N` means **N distinct notes** (paths are
-unique across hits). Pass `--chunks` only when the user wants the exact passage
-or every occurrence within notes; `--limit` then counts chunks and one note may
-fill several slots.
-
-## 1. Retrieve 20 candidates (= 20 distinct notes)
+## 1. Retrieve a bounded candidate set
 
 ```bash
-vagus search "<query>" --json --full --rerank --limit 20
+vagus search '<query>' --json --full --rerank --exact --limit 10
 ```
 
-- `--full` adds `body` (full chunk text) to each hit.
-- `--rerank` adds the in-core cross-encoder `rerank` logit and reorders by it.
-- Each hit: `{chunk_id, path, heading, score, snippet, rrf?, cosine?, bm25?, rerank?, body?, siblings?}`.
-  Optional fields appear only when their flag is set. Paths are relative to `~/brain`.
-- `siblings` = how many other ranked chunks of the same note were folded into this
-  hit. Present only when > 0; under `--chunks` it never appears.
-- Optional soft floor: add `--min-score 15` (drops hits below 15% of the top hit).
-  Keep it low — a high floor starves the judge. Omit if unsure.
-- Note: `--full`/`--rerank` trigger a one-time ~150MB reranker model download on first use.
+Shell-quote the query as one literal. `--exact` makes semantic candidates reproducible even on a
+large vault; `--rerank` is only a prior, not the final verdict. `--full` supplies the matching chunk
+body. Results are distinct notes by default (`path` is unique); use `--chunks` only when the user asks
+for exact passages or every occurrence.
 
-## 2. Judge each (query, chunk) pair — the actual reranking
+Each Hit may contain `{chunk_id, path, heading, score, snippet, rrf, cosine, bm25, rerank, body,
+siblings}`. Optional fields can be absent. `siblings > 0` means other chunks in that note also matched.
+Do not add `--min-score`: your judgment is the quality floor, and that flag makes the local reranker
+score a much deeper pool.
 
-For every candidate, read its **full `body`** and assign a 0–3 relevance grade:
+## 2. Grade every candidate
 
-- **3** — directly answers / strongly on-topic.
-- **2** — relevant, partial or supporting.
-- **1** — tangential; keep only if little else.
-- **0** — false positive. **DROP it** (quality floor).
+Read each `body` and assign:
 
-Rules:
+- **3 — direct:** answers the question or is strongly on-topic.
+- **2 — useful:** partial answer, corroboration, or necessary context.
+- **1 — tangential:** related vocabulary/entity but not useful evidence.
+- **0 — false positive.**
 
-- Lean primarily on the **body text** — this is the whole point of pulling `--full`.
-- Use retrieval rank + the `bm25`/`cosine` split + the in-core `rerank` score as a
-  **weak prior** (position-aware blend): a chunk the corpus signal ranked #1 starts
-  with mild benefit of the doubt, but body judgment overrides it.
-- `siblings >= 2` means the note matched broadly, not just in this one chunk —
-  another weak positive signal. If the best chunk alone is ambiguous, Read the
-  whole note at `~/brain/<path>` **once** (never re-read a note per chunk).
-- Do **not** just re-sort by `score`/`rrf`/`rerank` — that's a no-op. Do **not**
-  ignore those signals entirely either.
-- Reorder surviving chunks by your judged grade (break ties with the weak prior).
+Only grades **2–3 survive**. Never pad with grade 1 just to hit a count.
 
-## 3. Present top 5–10
+Use retrieval order, `bm25`/`cosine`/`rerank`, and `siblings` only as weak priors. Body evidence wins.
+If one promising chunk is ambiguous, Read `~/brain/<path>` once; do not reread a note per chunk.
+Prefer the smallest nonredundant set: several notes repeating one fact are not several useful results.
 
-For each survivor, in judged order:
+## 3. Answer concisely; show at most 6 notes
 
-- Header: `path › heading`
-- The most relevant lines from the body (quote, don't dump the whole chunk).
-- A one-line **why this matches**.
+Start with a direct synthesis when the evidence supports one. Then give **1–6** evidence bullets,
+ordered by your grades (retrieval order breaks ties):
 
-## 4. Record usage (tick)
+- `path › heading`
+- quote only the 1–3 most relevant lines
+- one short sentence explaining the match
 
-After presenting, record a usage tick for **exactly the notes you presented** — one
-Bash call, all paths at once:
+One excellent note is a complete result. Never dump full bodies, expose numeric grading, or announce
+that you omitted quota-filling candidates.
+
+## 4. One fallback only when nothing scores 2+
+
+Choose exactly one retry based on the query; do not fan out routinely:
+
+- rare literal, identifier, error text, filename, or proper noun → `--mode bm25`
+- conceptual paraphrase with few shared words → `--mode vec --exact`
+
+Keep `--json --full --rerank --limit 10`, grade again, and stop. If nothing reaches 2, say no confident
+match was found and offer to broaden or ask for another clue. Do not tick on this path.
+
+## 5. Record only presented notes
+
+After answering, tick exactly the unique paths you actually cited, once:
 
 ```bash
-vagus tick '<path1>' '<path2>' ...
+vagus tick '<path1>' '<path2>'
 ```
 
-- **Single-quote every path.** Filenames can contain `$` or backticks, which double
-  quotes would expand/execute, silently ticking a mangled path. If a path itself
-  contains a single quote, escape it as `'\''`.
-- Tick only survivors you actually showed in step 3 — never the full 20-candidate
-  list, never dropped (grade-0) chunks, never on the no-results path (step 6).
-- Paths are the `path` values from the hits, deduped (under `--chunks` one note may
-  appear in several hits — tick it once).
-- Run it once, after presenting. Its output is bookkeeping — don't relay it. If it
-  fails, say nothing and move on; never retry or block the answer on it.
-- Ticks are local usage stats (`vagus fame`); they never touch the note files.
+Single-quote every path; escape an embedded single quote as `'\''`. Never tick retrieved-but-dropped
+notes. Tick output is bookkeeping: do not relay it, retry it, or let failure block the answer.
 
-## 5. Drill in on request
+## Scope
 
-If the user wants more from a hit, Read the full note at `~/brain/<path>` and answer
-from it, citing the path — once per note, even when it matched multiple chunks.
-Drilling in needs no extra tick — presentation already recorded it.
-
-## 6. No results
-
-If nothing survives the floor: say so, offer to broaden the query, or retry with
-`--mode bm25` (exact keywords) or `--mode vec` (semantic).
-
-## Directory scoping
-
-Searches are silently scoped to the current working directory: `vagus` walks up from the CWD for
-`.vagus/config.json` files (an "inherited config") and elides hits whose vault path contains an
-excluded word (case-insensitive substring; e.g. `"scientist"` hides everything under
-`.../scientist/...`). When some are hidden, a `— N hit(s) elided by inherited config (--all to show)`
-line is printed — to stderr under `--json`, so the JSON array shape is unchanged. Pass `--all` to
-ignore scoping and show every result. These config files live in the user's code dirs, never the
-vault.
+Search inherits `.vagus/config.json` exclusions from the current code directory. JSON stays on stdout;
+an elision notice goes to stderr. Use `--all` only when the user asks for the whole vault or the likely
+answer is hidden by that scope. Paths are relative to `~/brain`.

@@ -19,7 +19,8 @@ straight from a Claude Code or pi session).
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
   local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
-  search agent skill adds an Opus judging pass on top. Every tier runs **offline**.
+  search skill gives the host agent 10 exact+reranked full-body candidates, then presents only useful
+  (grade ≥2), nonredundant evidence — at most 6 notes, never quota padding. Every tier runs **offline**.
 - **Plain Markdown in iCloud.** [PARA](https://fortelabs.com/blog/para/) layout
   (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`), Obsidian-compatible,
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the index is

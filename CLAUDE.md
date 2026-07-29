@@ -47,7 +47,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    search-engine dependency without an ADR.
 9. **Local-first, offline by default.** No cloud calls and no background daemon in **any** tier.
    Generation is *tiered*, not banned (see invariant 12): the reranker is a scoring model in core;
-   generative rewriting/HyDE is opt-in local (tier-1, feature-gated) or Opus in the skill (tier-2).
+   generative rewriting/HyDE is opt-in local (tier-1, feature-gated); tier-2 uses its host agent as a
+   bounded body judge, with one reformulation retry only when the first pass has no useful evidence.
 10. **PARA layout is fixed** (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`).
     Filing inbox → PARA is **assisted and user-approved, never automatic.**
 11. **Stay Obsidian-compatible** (plain `.md`, optional `[[wikilinks]]`/frontmatter). Artifact note
@@ -59,7 +60,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
-    `/skill:search` in pi) = Opus. Advanced search is **in core**,
+    `/skill:search` in pi) = Opus over 10 exact+reranked bodies, grade≥2 only, max 6 presented, one
+    fallback only if none survive. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the
