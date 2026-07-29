@@ -1,6 +1,7 @@
 # ADR 0020 — Note-level results by default: `--limit` counts distinct notes
 
-- **Status:** Accepted (2026-06-09)
+- **Status:** Accepted (2026-06-09); **amended 2026-07-29** — `--limit` remains note-counted but is
+  now an adaptive ceiling for plain hybrid results (ADR 0023).
 
 ## Context
 
@@ -30,7 +31,9 @@ nothing may perturb the deterministic RRF floor (G7/G8).
 - **Note-level is the default.** After rerank and after `apply_filters`, `dedupe_notes` keeps each
   note's best-ranked chunk and drops its later chunks; truncation to `--limit` then counts
   **distinct notes**. Stage order is load-bearing: filters run first, so a note whose best chunk
-  was dropped by `--since`/`--source` is represented by its next surviving chunk.
+  was dropped by `--since`/`--source` is represented by its next surviving chunk. **Amendment
+  (ADR 0023):** for plain hybrid note results, a later drop-only context gate may shorten that final
+  list, so `--limit` is a maximum; `--exhaustive` restores the legacy fill behavior.
 - **`--chunks` opts out**, restoring raw chunk-level hits (`--limit` counts chunks) —
   byte-identical to pre-0.7 output, since `siblings` is never set on that path.
 - **`siblings` is an additive optional Hit field** (`skip_serializing_if`, like
@@ -49,7 +52,8 @@ nothing may perturb the deterministic RRF floor (G7/G8).
   G9a (field set + one additive optional field). The only known `--json` consumer is the in-repo
   `/search` skill, updated in the same change; `--chunks` is the compatibility escape hatch.
 - `rrf()` and rerank are untouched (G8); dedup is structurally identical to scope/frontmatter
-  filtering — adds **G9c**.
+  filtering — adds **G9c**. ADR 0023's later suffix-only gate is likewise outside dedup/fusion and
+  adds G9d.
 - A note dominating the deep pool can under-fill `limit` — best-effort, same documented stance as
   ADR 0017's filter under-fill. Acceptable at personal scale.
 - `PER_FILE_CAP=3` remains, now relevant only to `--chunks` human display; in note mode each group

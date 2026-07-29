@@ -1,8 +1,10 @@
 # ADR 0012 — Three-tier retrieval (floor / shell-local / Opus-skill)
 
 - **Status:** Accepted (2026-05-30); **amended 2026-07-25** — the tier-2 Agent Skill supports both
-  Claude Code and pi. Supersedes the planned (never-written) "two-tier" ADR; the earlier two-tier
-  framing lives in [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
+  Claude Code and pi; **amended 2026-07-29** — tier-0 `--limit` is an adaptive context ceiling via
+  [ADR 0023](./0023-adaptive-context-tidy-results.md). Supersedes the planned (never-written)
+  "two-tier" ADR; the earlier framing lives in
+  [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
 ## Context
 
@@ -23,7 +25,7 @@ escalation prompts.
 
 | Tier | Channel | Pipeline | Generation |
 |---|---|---|---|
-| **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60** | none (deterministic) |
+| **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank** | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
 | **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | Opus expansion + HyDE + full-body judge **on top of** `vagus search --json --full --rerank` | Opus |
 
@@ -42,7 +44,8 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   opt-in and offline ([ADR 0016](./0016-local-generative-rewriter.md)).
 - **RRF is untouched** (G8): `Σ 1/(k+rank)`, k=60, no normalization. Reranking is a *separate
   post-fusion stage*, not an edit to fusion. qmd's weighted-RRF / top-rank bonus / position-blend are
-  **rejected** (they would breach G8).
+  **rejected** (they would breach G8). Likewise, ADR 0023's tier-0 context gate is a separate
+  order-preserving suffix drop over the finished RRF list; it never edits fusion.
 
 ## Consequences
 
@@ -51,7 +54,9 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   (feature-gated, lazily downloaded); tier-2 uses Opus. No cloud, no daemon in any tier (G14).
 - `vagus search` gains `--rerank`, `--full`, `--min-score` (shipped) and later `--rewrite`/`--smart`
   (tier-1 generation, [ADR 0016](./0016-local-generative-rewriter.md)).
-- The default bare `vagus search` (tier 0) stays byte-identical and < 1s — the fast path is unchanged.
+- The default bare `vagus search` (tier 0) keeps the same retrieval/ranking and <1s model path, but
+  its result **count** may now be lower than `--limit` when ADR 0023 finds a guarded RRF knee.
+  `--exhaustive` restores the legacy fill/count/content; the Hit JSON schema remains unchanged.
 - Skill installation is harness-selectable without duplicating skill bodies; the existing no-flag
   command continues to target Claude Code, while `--agent pi` targets pi.
 - Advanced search is **not** a plugin: the capture-shaped NDJSON plugin protocol

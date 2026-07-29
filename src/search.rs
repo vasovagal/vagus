@@ -31,6 +31,69 @@ use crate::util::since_cutoff;
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
 
+// Adaptive context-tidiness gate (ADR 0023/G9d). The cutoff is deliberately conservative: a score
+// cliff must leave a real head and tail, exceed a fixed 10% prominence floor, and be a 3-sigma robust
+// outlier relative to this result list's other adjacent log gaps. It only drops a suffix; RRF itself
+// and every survivor's order/score remain untouched.
+const TIDY_MIN_SIDE: usize = 3;
+const TIDY_MIN_LOG_DROP: f64 = 0.105_360_515_657_826_3; // ln(10/9): at least a 10% score ratio gap
+const TIDY_MAD_SCALE: f64 = 1.4826; // normal-consistent median absolute deviation
+const TIDY_OUTLIER_SIGMA: f64 = 3.0;
+
+fn median(values: &mut [f64]) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
+/// Length of the high-signal RRF prefix to retain. Invalid/short/smooth inputs fail open by returning
+/// `scores.len()`. Scale-invariant because it compares adjacent log ratios, not raw magnitudes.
+fn tidy_rrf_prefix_len(scores: &[f32]) -> usize {
+    let n = scores.len();
+    if n < TIDY_MIN_SIDE * 2 {
+        return n;
+    }
+
+    let mut gaps = Vec::with_capacity(n - 1);
+    for pair in scores.windows(2) {
+        let (a, b) = (pair[0] as f64, pair[1] as f64);
+        if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 || b > a {
+            return n;
+        }
+        let gap = (a / b).ln();
+        if !gap.is_finite() {
+            return n;
+        }
+        gaps.push(gap);
+    }
+
+    let mut ordered = gaps.clone();
+    let center = median(&mut ordered);
+    let mut deviations: Vec<f64> = gaps.iter().map(|g| (g - center).abs()).collect();
+    let mad = median(&mut deviations);
+    let threshold = TIDY_MIN_LOG_DROP.max(center + TIDY_OUTLIER_SIGMA * TIDY_MAD_SCALE * mad);
+
+    // Largest eligible cliff wins; latest wins an exact tie, preserving more recall.
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &gap) in gaps.iter().enumerate() {
+        let keep = i + 1;
+        if keep < TIDY_MIN_SIDE || n - keep < TIDY_MIN_SIDE {
+            continue;
+        }
+        if best.is_none_or(|(_, best_gap)| gap >= best_gap) {
+            best = Some((keep, gap));
+        }
+    }
+    match best {
+        Some((keep, gap)) if gap > threshold => keep,
+        _ => n,
+    }
+}
+
 /// Minimum candidate pool the cross-encoder reranks (the deeper fused set, before truncating to the
 /// requested `limit`). Scales with `limit` but never drops below this.
 const RERANK_POOL_MIN: usize = 30;
@@ -727,6 +790,7 @@ pub fn run(
     exact: bool,
     timings: bool,
     chunks: bool,
+    exhaustive: bool,
 ) -> Result<()> {
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
     let since_cut = match since {
@@ -766,13 +830,49 @@ pub fn run(
         chunks,
         score_floor,
     )?;
-    // Quality floor: drop hits below `min_score`% of the top hit (relative-to-top, so its feel is
-    // mode-dependent). Default `None` keeps every ranked hit (today's behavior).
+    // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
+    // below stays out of the way.
     if let Some(floor) = min_score {
         let top = hits.first().map(|h| h.score).unwrap_or(1.0);
         hits.retain(|h| rel(h.score, top) as f32 >= floor);
     }
+
+    // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a ceiling,
+    // not a quota. If a robust RRF score knee separates a high-signal prefix from a real tail, drop
+    // only that suffix. Unsupported/mixed-score modes fail open; --exhaustive restores the old fill.
+    let tidy_omitted = if !exhaustive
+        && min_score.is_none()
+        && matches!(mode, Mode::Hybrid)
+        && !rerank
+        && !smart
+        && !chunks
+        && hits.len() == limit
+    {
+        let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
+        let keep = if scores.len() == hits.len() {
+            tidy_rrf_prefix_len(&scores)
+        } else {
+            hits.len()
+        };
+        let omitted = hits.len() - keep;
+        hits.truncate(keep);
+        omitted
+    } else {
+        0
+    };
+
     emit(&hits, json, verbose, full);
+    if tidy_omitted > 0 {
+        let msg = format!(
+            "{tidy_omitted} low-signal tail hit(s) omitted by adaptive cutoff (--exhaustive to show)"
+        );
+        if json {
+            // Preserve stdout as a pure Hit array for skills and scripts (G9a).
+            eprintln!("vagus: {msg}");
+        } else {
+            println!("{}", Style::detect().dim(&format!("— {msg}")));
+        }
+    }
     if elided > 0 {
         let msg = format!("{elided} hit(s) elided by inherited config (--all to show)");
         if json {
@@ -1102,6 +1202,80 @@ mod scope_filter_tests {
         assert!(sigmoid(0.0) > 0.49 && sigmoid(0.0) < 0.51);
         assert!(sigmoid(5.0) > sigmoid(-5.0));
         assert!((0.0..=1.0).contains(&sigmoid(10.0)));
+    }
+
+    // --- adaptive context tidiness (ADR 0023) -----------------------------------------------------
+
+    #[test]
+    fn tidy_hunter_fixture_keeps_signal_prefix_and_cuts_context() {
+        // Frozen v0.9 exhaustive result scores/body sizes for:
+        //   Hunter was downtrodden at the end
+        // Four independent judges agreed rank 1 alone answers; the conservative cutoff keeps through
+        // rank 7 (including every disputed/supporting hit) and drops only the unanimous trash tail.
+        let scores = [
+            0.032786883,
+            0.03175403,
+            0.030309988,
+            0.027912386,
+            0.025816994,
+            0.02444842,
+            0.022785103,
+            0.019655071,
+            0.018332252,
+            0.017220989,
+        ];
+        assert_eq!(tidy_rrf_prefix_len(&scores), 7);
+        assert_eq!(tidy_rrf_prefix_len(&scores[..7]), 7, "cutoff is idempotent");
+
+        let body_chars = [125, 272, 264, 2842, 944, 3124, 2905, 1027, 2814, 2786];
+        let body_words = [22, 42, 35, 564, 182, 581, 577, 150, 416, 550];
+        let old_chars: usize = body_chars.iter().sum();
+        let new_chars: usize = body_chars[..7].iter().sum();
+        assert_eq!((old_chars, new_chars), (17_103, 10_476));
+        assert_eq!(
+            (old_chars.div_ceil(4), new_chars.div_ceil(4)),
+            (4_276, 2_619)
+        );
+        assert_eq!(
+            (
+                body_words.iter().sum::<usize>(),
+                body_words[..7].iter().sum::<usize>()
+            ),
+            (3_119, 2_003)
+        );
+    }
+
+    #[test]
+    fn tidy_detects_only_a_guarded_internal_cliff() {
+        let clear_head = [1.0, 0.99, 0.98, 0.50, 0.49, 0.48, 0.47, 0.46];
+        assert_eq!(tidy_rrf_prefix_len(&clear_head), 3);
+
+        // A smooth geometric decay has no outlier relative to its own adjacent gaps.
+        let smooth = [1.0, 0.9, 0.81, 0.729, 0.6561, 0.59049, 0.531441, 0.4782969];
+        assert_eq!(tidy_rrf_prefix_len(&smooth), smooth.len());
+
+        // Dramatic endpoint cliffs are not enough: both retained head and omitted tail need 3 hits.
+        let endpoint_only = [1.0, 0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.01];
+        assert_eq!(tidy_rrf_prefix_len(&endpoint_only), endpoint_only.len());
+    }
+
+    #[test]
+    fn tidy_fails_open_on_invalid_short_or_unordered_scores() {
+        assert_eq!(tidy_rrf_prefix_len(&[1.0, 0.5, 0.25]), 3);
+        for invalid in [
+            vec![1.0, 0.9, f32::NAN, 0.7, 0.6, 0.5],
+            vec![1.0, 0.9, 0.0, 0.7, 0.6, 0.5],
+            vec![1.0, 0.9, 0.8, 0.85, 0.7, 0.6],
+        ] {
+            assert_eq!(tidy_rrf_prefix_len(&invalid), invalid.len());
+        }
+    }
+
+    #[test]
+    fn tidy_cutoff_is_scale_invariant() {
+        let scores = [1.0, 0.99, 0.98, 0.50, 0.49, 0.48, 0.47, 0.46];
+        let scaled: Vec<f32> = scores.iter().map(|s| s * 0.03125).collect();
+        assert_eq!(tidy_rrf_prefix_len(&scores), tidy_rrf_prefix_len(&scaled));
     }
 
     // --- --since / --source filters (ADR 0017) ----------------------------------------------------

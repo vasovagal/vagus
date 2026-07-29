@@ -86,6 +86,13 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   **before** truncation, **never** touching `rrf()` (G7/G8). `--chunks` skips the stage (raw chunk
   hits, pre-0.7 output byte-identical); filing `--suggest` stays chunk-level.
   ([ADR 0020](./adr/0020-note-level-results.md))
+- **G9d — Plain hybrid note `--limit` is an adaptive context ceiling.** After all existing rank/filter/
+  dedup/scope stages and legacy truncation, a guarded robust knee over the unchanged positive RRF
+  scores may drop only a statistically distinct low-signal **suffix**. It never reorders/backfills,
+  mutates scores, normalizes components, or touches `rrf()` (G8); malformed/short/smooth lists and
+  BM25/vec/rerank/smart/chunk/explicit-`--min-score` modes fail open. `--exhaustive` bypasses only this
+  stage and restores legacy fill-up-to-`--limit` results. JSON remains a pure unchanged-shape Hit array.
+  ([ADR 0023](./adr/0023-adaptive-context-tidy-results.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus**

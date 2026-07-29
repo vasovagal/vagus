@@ -14,7 +14,9 @@ coding harness (Claude Code and pi).
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
   Also the create-note skill to capture from a Claude Code or pi session.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
-  fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents.
+  fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
+  hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
+  a low-signal suffix, with `--exhaustive` restoring legacy fill (ADR 0023).
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.

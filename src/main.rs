@@ -123,6 +123,10 @@ enum Command {
         /// chunks (the pre-0.7 behavior — ADR 0020).
         #[arg(long)]
         chunks: bool,
+        /// Fill up to --limit by disabling the adaptive low-signal RRF-tail cutoff. Only affects
+        /// plain hybrid note results; ranking and scores are unchanged (ADR 0023).
+        #[arg(long)]
+        exhaustive: bool,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -262,6 +266,7 @@ fn main() -> Result<()> {
             timings,
             exact,
             chunks,
+            exhaustive,
         } => search::run(
             &cfg,
             &query,
@@ -280,6 +285,7 @@ fn main() -> Result<()> {
             exact,
             timings,
             chunks,
+            exhaustive,
         )?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]

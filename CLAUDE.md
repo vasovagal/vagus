@@ -78,6 +78,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
     reconciles all new/deleted files. It preserves older indexed notes and ticks; plain `reindex` is
     the full rebuild, and a G4 identity mismatch still requires one (chunk-version auto-reindex may
     upgrade the windowed run; a direct embedding mismatch refuses it).
+17. **Plain hybrid note search treats `--limit` as a context ceiling** (ADR 0023/G9d). A guarded
+    robust knee over unchanged RRF scores may drop only a statistically distinct low-signal suffix
+    after ranking/filtering/dedup/scope; it never reorders, backfills, normalizes, or touches `rrf()`.
+    Unsupported/smooth inputs fail open. `--exhaustive` restores legacy fill-up-to-limit results;
+    JSON keeps the same pure Hit-array shape.
 
 ## Layout
 

@@ -11,6 +11,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Context-tidy adaptive search results.** Plain tier-0 hybrid note search now treats `--limit` as a
+  ceiling rather than a quota: when a guarded robust RRF score knee separates a high-signal prefix
+  from a real low-signal tail, vagus drops only that suffix without reordering, backfilling, changing
+  scores, or touching `rrf()`. Unsupported/smooth result sets fail open. `--exhaustive` restores the
+  legacy fill-up-to-limit behavior. On the motivating query this reduced ten full-body candidates
+  from an estimated 4,276 to 2,619 tokens (−38.75%) while retaining all consensus/disputed useful
+  evidence; an 18-query development matrix reduced aggregate body characters 30.12%. (ADR 0023/G9d)
 - **Mtime-windowed forced reindex.** `vagus reindex --since <duration>` (for example `10d` or `2w`)
   snapshots every Markdown path + filesystem mtime, force-refreshes matching notes across SQLite,
   Tantivy, and usearch even when cached metadata says they are unchanged, and preserves older healthy
