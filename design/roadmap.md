@@ -14,13 +14,14 @@ where justified) are in-character. Retrieval comes in **three tiers**, selected 
 ```
 tier 0  (floor)        vagus search "q"            BM25 + cosine + RRF(k=60)            — deterministic, <1s
 tier 1  (shell+local)  vagus search "q" --smart    + local rewrite/HyDE + rerank       — offline, no agent
-tier 2  (skill+Opus)   search Agent Skill           Opus expansion+HyDE+full-body judge  — SOTA, on top of the CLI
+tier 2  (skill+Opus)   search Agent Skill           bounded exact+rerank+body judge      — concise, on top of CLI
 ```
 
-Tiers 1 and 2 are **parallel**: same retrieval + rerank core, same typed `lex:/vec:/hyde:` discipline —
-they differ only in *who generates the rewrite* (a local model vs. Opus). RRF is never modified (G8);
-reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus / position-blend are
-**rejected** as G8 breaches.
+Tiers 1 and 2 share the same retrieval + rerank core but use different context budgets. Tier 1 owns
+the typed `lex:/vec:/hyde:` rewrite; tier 2 normally judges one bounded full-body set and permits one
+modality-selected fallback only when nothing useful survives. RRF is never modified (G8); reranking
+is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus / position-blend are **rejected**
+as G8 breaches.
 
 ## Where each capability lives
 
@@ -36,7 +37,7 @@ reranking is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus /
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF-knee suffix drop (RRF untouched) | shipped (ADR 0023) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
-| Opus expansion + HyDE + full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus | **shipped (milestone 3)** |
+| Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
 
 **Why advanced search is *not* a plugin:** the plugin protocol is capture-shaped (one-way
@@ -56,11 +57,11 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — tier-2 SOTA skill** *(shipped)*: `skills/search/SKILL.md` rewritten as the Opus pipeline over
-  `vagus search --json --full --rerank --limit 20` — 20-candidate full-body 0–3 judge + drop false
-  positives + reorder (corpus signal as a weak prior) + cite `path › heading`. Judging stays in the
-  skill (G17); RRF is never re-derived (G8); the skill shells out and parses `--json` (G13). The same
-  Agent Skill installs for Claude Code (`/search`) and pi (`/skill:search`).
+- **M3 — tier-2 bounded skill** *(shipped; tightened 2026-07-29)*: `skills/search/SKILL.md` runs
+  `vagus search --json --full --rerank --exact --limit 10`, judges full bodies 0–3, presents only
+  nonredundant grade≥2 evidence (max 6, never pads), and permits one query-shape-selected fallback
+  only when none survive. Judging stays in the skill (G17); RRF is never re-derived (G8); the skill
+  parses `--json` (G13). The same Agent Skill installs for Claude Code and pi.
 
 ## Deferred / not building
 

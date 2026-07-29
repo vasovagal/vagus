@@ -1,7 +1,7 @@
 # Plan — Three-tier retrieval ("qmd-class" search as a self-contained Rust universe)
 
-> **Status:** M0 (design) + M1 (strong core) **shipped & verified** (2026-05-30); M2 (local rewriter)
-> and M3 (Opus skill) are next. Supersedes
+> **Status:** M0–M3 **shipped**; M3's agent context budget was tightened 2026-07-29 (ADR 0012).
+> Supersedes
 > [`plan-two-tier-search-and-embedding-upgrade.md`](./plan-two-tier-search-and-embedding-upgrade.md).
 > The durable map is [`roadmap.md`](./roadmap.md); the *why* is in ADRs 0012–0016.
 
@@ -45,10 +45,11 @@ Verified end-to-end on a temp vault: `doctor` shows `google/embeddinggemma-300m 
 multiple chunks; oversize code stays in one chunk; `--rerank` reorders by cross-encoder; `--full`/`
 --min-score` work; default JSON shape unchanged; semantic ordering sensible.
 
-## Next (M2, M3)
+## Later milestones (M2, M3 — shipped)
 
 - **M2 — local rewriter:** `src/rewrite.rs` (feature-gated candle), `vagus rewrite`, `vagus search
   --smart` (typed-variant routing → multi-query fuse → rerank). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — Opus skill:** rewrite `skills/search/SKILL.md` over `vagus search --json --full --rerank
-  --min-score` (expansion + conditional HyDE + full-body 0–3 judge + quality floor + cite
-  `path > heading`); add `Read(~/brain/**)` + the iCloud-canonical path to `allowed-tools`.
+- **M3 — Opus skill:** bounded full-body judge over `vagus search --json --full --rerank --exact
+  --limit 10`; present only grade≥2 evidence (max 6, never pad), with one modality-selected retry only
+  when none survive. The original routine expansion/HyDE/`--min-score` plan was superseded by the
+  2026-07-29 measured context budget in ADR 0012.

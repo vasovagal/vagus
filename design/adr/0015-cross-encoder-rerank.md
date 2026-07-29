@@ -62,7 +62,7 @@ Add an **in-core** reranker (`src/rerank.rs`, mirroring `src/embed.rs`):
 
 - G17 is amended: a deterministic cross-encoder scorer is allowed in core (like the embedder); the
   no-LLM line now governs *generative* models (see G17/G19).
-- `--rerank` is the shared rerank lever for tier-1 (shell) and tier-2 (the `/search` skill judges full
-  bodies *and* can pre-rerank with this).
+- `--rerank` is the shared rerank lever for tier-1 (shell) and tier-2. The bounded `/search` skill
+  pre-reranks 10 exact candidates, then independently judges the full bodies (ADR 0012 amendment).
 - First reranker model → an ADR-gated addition (G11). `doctor` reports whether it's cached without
   forcing the download.

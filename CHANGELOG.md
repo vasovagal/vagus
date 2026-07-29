@@ -9,6 +9,17 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent search uses a measured context budget instead of quota padding.** The bundled Claude Code/pi
+  search skill now retrieves 10 exact+cross-encoded full-body candidates (down from 20), presents only
+  nonredundant grade≥2 evidence (at most 6 notes), and never fills with tangential hits. It permits one
+  BM25-or-vector fallback only when no first-pass candidate is useful and no longer defaults to
+  `--min-score`, which forced the cross-encoder to score the whole pool. Across five grounded queries,
+  primary-answer recall stayed 5/5, MRR rose 0.829→0.833, candidate-body estimates fell 39,096→20,267
+  tokens (−48.16%), aggregate latency fell 12.84→9.44s (−26.45%), and the skill prompt itself shrank
+  28.67%. Re-run `vagus skills install --agent <claude|pi>` after upgrading. (ADR 0012/G19)
+
 ## [0.10.0] — 2026-07-29
 
 ### Added

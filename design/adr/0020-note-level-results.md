@@ -9,8 +9,8 @@ The unit of retrieval is a **chunk** (`chunk_id = sha256(path + "#" + ord)` — 
 and `--limit` truncates the ranked *chunk* list. A long note that matches broadly can occupy several
 of the top slots, so `--limit 10` may surface only 3–4 distinct notes. The human display already
 groups hits by note (`PER_FILE_CAP=3` + "+N more in this note"), but that is cosmetic: the limit and
-the `--json` array stay chunk-level, and the `/search` skill's `--limit 20` could deliver 20 chunks
-spanning far fewer notes.
+the `--json` array stayed chunk-level, and the `/search` skill's then-`--limit 20` could deliver 20
+chunks spanning far fewer notes. (ADR 0012 later reduced the skill budget to 10 distinct notes.)
 
 In practice the user asking for "10 hits" almost always means **10 different notes** — "the file
 with the best chunk", not "the 10 best chunks wherever they live". The roadmap had deferred a
