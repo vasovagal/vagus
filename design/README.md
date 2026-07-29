@@ -55,3 +55,5 @@ silently breaking an invariant.
   a post-rank dedup stage; `--chunks` opts out; adds G9c.
 - `0021-usage-ticks.md` — usage ticks (`vagus tick`/`fame`): local user data in meta.db, survives
   reindex, re-keyed on `vagus file` moves; adds G25, amends G2/G5.
+- `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault and
+  force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.

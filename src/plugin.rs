@@ -96,7 +96,7 @@ pub fn dispatch(cfg: &Config, argv: &[OsString]) -> Result<()> {
 
     // Core-side indexing: the plugin emits `note` events and never re-enters vagus itself.
     if saw_note && !no_index {
-        let stats = index::run(cfg, false)?;
+        let stats = index::run(cfg, index::IndexMode::Incremental)?;
         println!(
             "indexed: {} new, {} changed, {} unchanged, {} removed",
             stats.new, stats.changed, stats.unchanged, stats.removed

@@ -23,6 +23,42 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// Parse a relative duration into seconds. Accepts one number+unit token — `30s`, `90m`, `6h`,
+/// `10d`, `2w` — or a bare integer interpreted as days (`7` == `7d`). Shared by search filtering
+/// and mtime-windowed reindexing (ADR 0022).
+pub fn parse_duration(input: &str) -> anyhow::Result<i64> {
+    let s = input.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty duration (use e.g. 10d, 2w, 6h, 30m, 90s, or a bare number of days)");
+    }
+    let (num_str, unit_secs): (&str, i64) = match s.chars().last().unwrap() {
+        c if c.is_ascii_digit() => (s, 86_400), // bare number -> days
+        's' | 'S' => (&s[..s.len() - 1], 1),
+        'm' | 'M' => (&s[..s.len() - 1], 60),
+        'h' | 'H' => (&s[..s.len() - 1], 3_600),
+        'd' | 'D' => (&s[..s.len() - 1], 86_400),
+        'w' | 'W' => (&s[..s.len() - 1], 604_800),
+        other => anyhow::bail!(
+            "invalid duration unit {other:?} in {s:?} (use s, m, h, d, w, or a bare number of days)"
+        ),
+    };
+    // Parse the numeric part as-is (no inner trim) so embedded whitespace like "10 d" is rejected.
+    let n: i64 = num_str.parse().map_err(|_| {
+        anyhow::anyhow!("invalid duration {s:?} (expected e.g. 10d, 2w, 6h, 30m, 90s, or a number)")
+    })?;
+    if n < 0 {
+        anyhow::bail!("duration must not be negative: {s:?}");
+    }
+    n.checked_mul(unit_secs)
+        .ok_or_else(|| anyhow::anyhow!("duration too large: {s:?}"))
+}
+
+/// Compute a relative-duration cutoff in Unix seconds (`now - duration`). Saturation makes an
+/// extremely large but otherwise valid duration mean "from the beginning" rather than overflowing.
+pub fn since_cutoff(spec: &str) -> anyhow::Result<i64> {
+    Ok(now_unix().saturating_sub(parse_duration(spec)?))
+}
+
 /// Stable `u64` key for the usearch vector index, derived from a chunk id (ADR 0019).
 ///
 /// `chunk_id` is the lowercase hex SHA-256 of `path + '#' + ord` (see `chunk.rs` / [`sha256_hex`]),

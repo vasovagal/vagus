@@ -49,6 +49,14 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   embedder (EmbeddingGemma 2048 ctx → ~900-token target, ~128 overlap; estimate `chars/3.5`, no
   tokenizer in the hot path — G11). Roll changes via `CHUNK_VERSION`.
   ([ADR 0013](./adr/0013-chunk-budget.md))
+- **G26 — Windowed reindex is a forced incremental repair, never a partial index.** `vagus reindex
+  --since <duration>` first snapshots every Markdown path + **filesystem mtime** in the vault, then
+  force-refreshes selected existing notes through all three G5 stores even when mtime/hash metadata
+  agrees. Older notes keep normal incremental behavior; new files and deletions are reconciled across
+  the whole snapshot. It never clears older rows or ticks. Plain `reindex` remains the full rebuild;
+  an incompatible G4 identity still requires a full rebuild (a chunk-version auto-reindex may upgrade
+  the windowed run; a direct embedding mismatch refuses it).
+  ([ADR 0022](./adr/0022-mtime-windowed-reindex.md))
 
 ## Search behavior
 

@@ -9,6 +9,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Mtime-windowed forced reindex.** `vagus reindex --since <duration>` (for example `10d` or `2w`)
+  snapshots every Markdown path + filesystem mtime, force-refreshes matching notes across SQLite,
+  Tantivy, and usearch even when cached metadata says they are unchanged, and preserves older healthy
+  embeddings. New/deleted files are still reconciled across the whole vault; plain `vagus reindex`
+  remains the full rebuild. This is intended for recent iCloud synchronization/repair across machines
+  without paying for a whole-vault re-embed. (ADR 0022/G26)
+
 ## [0.9.0] — 2026-07-25
 
 ### Added

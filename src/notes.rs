@@ -191,7 +191,7 @@ pub fn add_note(
         }
     }
 
-    index::run(cfg, false)?; // index after the edit, so new content is searchable
+    index::run(cfg, index::IndexMode::Incremental)?; // index after edit: new content is searchable
 
     if print_path {
         println!("{}", path.display());
@@ -305,7 +305,7 @@ pub fn file(
 
     // reconcile: old path removed, new path indexed. Capture per-step index timings only when asked.
     let mut idx = stats.then(index::IndexTimings::default);
-    index::run_timed(cfg, false, idx.as_mut())?;
+    index::run_timed(cfg, index::IndexMode::Incremental, idx.as_mut())?;
 
     let dest_rel = vault_rel(cfg, &dest);
 

@@ -72,6 +72,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
     (`scripts/worktree-janitor.sh`).
 15. **Leave breadcrumbs** (ADR 0018/G24). Architectural changes update the matching ADR and keep the
     `design/README.md` ADR index, `design/guardrails.md`, and this file **in sync, same change**.
+16. **Windowed reindex is forced incremental repair, not a partial index** (ADR 0022/G26). `vagus
+    reindex --since <duration>` snapshots every Markdown path + filesystem mtime first, force-refreshes
+    selected existing notes across SQLite/Tantivy/usearch even when cached metadata agrees, and still
+    reconciles all new/deleted files. It preserves older indexed notes and ticks; plain `reindex` is
+    the full rebuild, and a G4 identity mismatch still requires one (chunk-version auto-reindex may
+    upgrade the windowed run; a direct embedding mismatch refuses it).
 
 ## Layout
 
