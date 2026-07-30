@@ -16,6 +16,8 @@ straight from a Claude Code or pi session).
 - **Context-tidy by default.** For plain hybrid note search, `--limit` is a ceiling: when the finished
   RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix—
   but never across a top-three BM25/cosine source hit. `--exhaustive` restores legacy fill.
+- **Measure retrieval, don't guess.** `vagus eval labels.jsonl` scores a fixed index with standard
+  P@k/R@k/MRR@k/nDCG@k and emits schema-versioned corpus/index/backend provenance for honest A/B runs.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
   local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
@@ -132,6 +134,7 @@ vagus compact               # defragment the tantivy index (force-merge segments
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
+vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankings against qrels
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
@@ -148,6 +151,12 @@ knee separates a high-signal prefix from a low-signal tail. The stage only drops
 changes ranking or scores, and it fails open before any top-three BM25/cosine source champion. Pass
 `--exhaustive` to fill the legacy result set up to the limit, or
 `--chunks` to rank individual chunks instead.
+
+`vagus eval` never refreshes the index: run `vagus index` first, then hold the index and JSONL labels
+fixed across A/B runs. Its P@k denominator is always k, MRR is explicitly MRR@k, undefined cohorts are
+`null`, and reports pin the ranked paths plus label/corpus/index/backend identities. Evaluation is
+note-level and exhaustive pre-tidy so a candidate cannot win by under-returning. See
+[`eval/README.md`](eval/README.md) for the label format.
 
 For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault
 and force-reindexes notes whose **filesystem mtime** is within the window, even if local cached

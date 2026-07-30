@@ -1,0 +1,3 @@
+{"query": "example: how do I reset the widget cache", "relevant": ["10-Projects/example/your-note.md", "30-Resources/example/another-note.md"]}
+{"query": "example: graded relevance for nDCG", "relevant": [{"path": "20-Areas/example/primary.md", "grade": 3}, {"path": "30-Resources/example/secondary.md", "grade": 1}]}
+{"query": "example: negative probe, nothing should rank high", "relevant": []}

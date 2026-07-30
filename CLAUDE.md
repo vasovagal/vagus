@@ -93,6 +93,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
     A proposed knee before a note with any top-three BM25/cosine source chunk is vetoed (folded sibling
     ranks survive dedup); unsupported/smooth inputs fail open. `--exhaustive` restores legacy results;
     JSON keeps the same pure Hit-array shape.
+18. **Eval evidence must be self-describing and honest** (ADR 0024/G27). `vagus eval` uses
+    fixed-denominator P@k, MRR@k, `null` undefined cohorts, and schema-versioned label/corpus/index/
+    backend provenance. It evaluates note-level exhaustive pre-tidy rankings without implicit index
+    refresh/scope/filter/floor. Raw top scores are diagnostics, never calibrated probabilities.
 
 ## Layout
 
