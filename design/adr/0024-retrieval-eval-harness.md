@@ -1,8 +1,9 @@
 # ADR 0024 — Reproducible retrieval-quality evaluation (`vagus eval`)
 
 - **Status:** Accepted (2026-07-30); **amended 2026-07-30** by ADR 0025 — schema 2 adds
-  query cohorts and explicit fusion-policy/candidate-pool provenance — and ADR 0015, which records
-  tokenizer-safe rerank-context policies in the existing provenance shape.
+  query cohorts and explicit fusion-policy/candidate-pool provenance — ADR 0015, which records
+  tokenizer-safe rerank-context policies, and ADR 0026, which adds an opt-in named cosine heuristic
+  to the existing score-diagnostic shape without changing metrics.
 
 ## Context
 
@@ -36,7 +37,7 @@ not query-comparable probabilities; averaging them must never be advertised as c
 ## Decision
 
 Add `vagus eval <labels.jsonl> [--k N] [--mode hybrid|bm25|vec] [--rerank
-[--rerank-context 0|1|2]] [--exact] [--json]`.
+[--rerank-context 0|1|2]] [--exact] [--relevance] [--json]`.
 It reads but never refreshes the current local index; callers run `vagus index` explicitly before a
 baseline. It uses note-level results with no CWD scope, frontmatter filter, score floor, or ADR 0023
 adaptive cutoff. The report calls this policy `note_level_exhaustive_pre_tidy`.
@@ -72,8 +73,11 @@ cohorts likewise serialize as `null`, never fabricated `0.0`. Every per-query re
 returned ranked note paths so metrics can be independently recomputed.
 
 The top hit's finite mode-specific score is retained as a diagnostic (`rrf`, `bm25`, `cosine`, or
-`rerank_sigmoid`). A cohort mean is defined only when that cohort is non-empty and every member
-returned a score. Neither it nor its delta is a calibrated probability or a ranking acceptance metric.
+`rerank_sigmoid`). ADR 0026's opt-in `--relevance` instead records finite original-query cosine
+clamped to `[0,1]` under the policy name `embeddinggemma300m_chunk5_cosine_clamped_v1`; this remains
+an explicitly uncalibrated heuristic. A cohort mean is defined only when that cohort is non-empty and
+**every** member returned a score. Neither it nor its delta is a probability or ranking acceptance
+metric; a BM25-only top hit can make the relevance diagnostic undefined.
 
 ### Provenance contract
 
@@ -85,7 +89,8 @@ JSON schema version **2** records:
 - k, mode, rerank, explicit-exact request, **effective** vector backend, and the automatic exact cutoff;
 - the exact capped-prefix rerank context radius + tokenizer maximum in `rerank_policy` (ADR 0015);
 - query cohort plus stable `fusion_policy` and `fusion_candidate_pool` identifiers (ADR 0025);
-- note-level/exhaustive-pre-tidy/no-refresh/no-scope policy and score kind.
+- note-level/exhaustive-pre-tidy/no-refresh/no-scope policy and score kind, including ADR 0026's
+  named policy when `--relevance` is explicit.
 
 The vector trait exposes only a stable diagnostic backend name; selection and fallback still flow
 through the exact same ADR 0019 factory used by search. This does not change ranking. Long runs

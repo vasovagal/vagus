@@ -1,9 +1,10 @@
 //! Search entry point: BM25 (lexical), vector (semantic), and hybrid (RRF k=60).
 //!
-//! Human output shows a 0–100 relevance **relative to the top hit** — the raw RRF scalar is
-//! rank-based and tiny (≤ 2/(k+1) ≈ 0.033), so printing it directly is misleading. `--json` keeps a
-//! stable shape for the bundled agent skill and carries the raw fused `score` plus the per-retriever
-//! `cosine` and `bm25` components.
+//! Default human output shows a 0–100 score **relative to the top hit** — the raw RRF scalar is
+//! rank-based and tiny (≤ 2/(k+1) ≈ 0.033), so printing it directly is misleading. Explicit
+//! `--relevance` instead shows the ADR 0026 bounded-cosine heuristic. Default `--json` keeps a stable
+//! shape for the bundled agent skill and carries the raw fused `score` plus per-retriever components;
+//! relevance fields are opt-in.
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -190,6 +191,14 @@ pub struct Hit {
     /// Primary ranking score for the chosen mode (RRF for hybrid, cosine for vec, BM25 for bm25).
     /// When `--rerank` is on, this is the cross-encoder score (sigmoid of the raw logit).
     pub score: f32,
+    /// Optional bounded semantic relevance: finite EmbeddingGemma cosine clamped to `[0,1]`.
+    /// This is a heuristic signal, not a probability, and never affects ranking (ADR 0026/G9e).
+    /// Search clears it unless `--relevance`/`--min-relevance` is explicit, preserving default JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance: Option<f32>,
+    /// Names the exact heuristic when relevance reporting is explicit, including for unknown hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance_policy: Option<&'static str>,
     /// RRF fused score (hybrid mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rrf: Option<f32>,
@@ -270,6 +279,21 @@ fn rel(score: f32, top: f32) -> i32 {
         .clamp(0.0, 100.0) as i32
 }
 
+/// Human percentage under explicit `--relevance`: a cosine-backed hit uses its bounded value;
+/// a hit without original-query cosine falls back to relative-to-top and is marked by the caller.
+fn relevance_pct(hit: &Hit, top: f32) -> (i32, bool) {
+    match hit.relevance {
+        Some(value) => ((100.0 * value).round().clamp(0.0, 100.0) as i32, true),
+        None => (rel(hit.score, top), false),
+    }
+}
+
+/// A positive explicit floor cannot be bypassed by a BM25-only/unjudged hit. Floor zero is the
+/// no-op boundary and retains it; every computed value is finite and bounded by `relevance`.
+fn passes_min_relevance(hit: &Hit, floor: f32) -> bool {
+    hit.relevance.is_some_and(|value| value >= floor) || floor == 0.0
+}
+
 /// Resolve a ranked `(vec_key, cosine)` list from a [`crate::vector::VectorIndex`] back to
 /// `(chunk_id, cosine)`, preserving rank order and dropping any key with no surviving chunk row
 /// (ADR 0019). usearch returns u64 keys; the reverse map lives in the indexed `chunks.vec_key` column.
@@ -336,6 +360,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
                 path,
                 heading,
                 score: s.score,
+                relevance: crate::relevance::from_cosine(s.cosine),
+                relevance_policy: None,
                 rrf: s.rrf,
                 cosine: s.cosine,
                 bm25: s.bm25,
@@ -401,7 +427,8 @@ fn rerank_documents(
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`). `full` retains the chunk
 /// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1),
 /// optionally reading `rerank_context` adjacent chunks without changing the returned Hit;
-/// `chunks` skips note-level dedup, returning raw chunk hits (ADRs 0015/0020).
+/// `chunks` skips note-level dedup, returning raw chunk hits (ADRs 0015/0020). A retained finite
+/// original-query cosine also populates internal `Hit.relevance`; `run` controls opt-in rendering.
 #[allow(clippy::too_many_arguments)]
 pub fn query(
     cfg: &Config,
@@ -907,6 +934,8 @@ pub fn run(
     rerank: bool,
     rerank_context: usize,
     min_score: Option<f32>,
+    show_relevance: bool,
+    min_relevance: Option<f32>,
     smart: bool,
     since: Option<&str>,
     source: Option<&str>,
@@ -917,6 +946,15 @@ pub fn run(
 ) -> Result<()> {
     if rerank_context > 0 && !rerank && !smart {
         bail!("--rerank-context requires --rerank or --smart");
+    }
+    let relevance_requested = show_relevance || min_relevance.is_some();
+    if relevance_requested && matches!(mode, Mode::Bm25) {
+        bail!("--relevance/--min-relevance require --mode hybrid or --mode vec");
+    }
+    if relevance_requested && smart {
+        bail!(
+            "--relevance/--min-relevance are unavailable with --smart because multi-query fusion does not retain original-query cosine; use --rerank"
+        );
     }
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
     let since_cut = match since {
@@ -963,6 +1001,11 @@ pub fn run(
         let top = hits.first().map(|h| h.score).unwrap_or(1.0);
         hits.retain(|h| rel(h.score, top) as f32 >= floor);
     }
+    // Optional bounded semantic floor (ADR 0026/G9e). It is deliberately post-dedup/truncation,
+    // matching --min-score: no backfill, and a positive floor drops hits with no finite cosine.
+    if let Some(floor) = min_relevance {
+        hits.retain(|hit| passes_min_relevance(hit, floor));
+    }
 
     // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a ceiling,
     // not a quota. If a robust RRF score knee separates a high-signal prefix from a real tail, drop
@@ -970,6 +1013,7 @@ pub fn run(
     let tidy_omitted = if !exhaustive
         && fusion_supports_adaptive_tidy(FUSION_POLICY)
         && min_score.is_none()
+        && min_relevance.is_none()
         && matches!(mode, Mode::Hybrid)
         && !rerank
         && !smart
@@ -990,7 +1034,17 @@ pub fn run(
         0
     };
 
-    emit(&hits, json, verbose, full);
+    // Preserve both default human rendering and the stable default JSON Hit shape. Relevance exists
+    // only under explicit opt-in (a floor implies opt-in); ranking/filter decisions above are done.
+    for hit in &mut hits {
+        if relevance_requested {
+            hit.relevance_policy = Some(crate::relevance::POLICY);
+        } else {
+            hit.relevance = None;
+            hit.relevance_policy = None;
+        }
+    }
+    emit(&hits, json, verbose, full, relevance_requested);
     if tidy_omitted > 0 {
         let msg = format!(
             "{tidy_omitted} low-signal tail hit(s) omitted by adaptive cutoff (--exhaustive to show)"
@@ -1118,7 +1172,7 @@ fn truncate_cols(s: &str, w: usize) -> String {
 /// Max hits shown per note before collapsing to a "+N more" line.
 const PER_FILE_CAP: usize = 3;
 
-fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
+fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool, show_relevance: bool) {
     if json {
         println!(
             "{}",
@@ -1130,8 +1184,14 @@ fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
         println!("(no results)");
         return;
     }
-    // Relevance relative to the top hit — the raw RRF/cosine scalar isn't human-meaningful.
+    // The primary score is used only for the legacy display and the explicitly marked fallback when
+    // a relevance-requested hit has no original-query cosine.
     let top = hits.first().map(|h| h.score).unwrap_or(1.0);
+    if show_relevance {
+        println!(
+            "semantic relevance: bounded cosine heuristic, not probability (~ = rank-relative fallback; cosine unknown)"
+        );
+    }
 
     if verbose || full {
         // Pre-compaction layout: full path, full breadcrumb, no width truncation. With `--full`,
@@ -1142,7 +1202,25 @@ fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
             } else {
                 format!("{} › {}", h.path, h.heading)
             };
-            println!("{:>2}. {:>3}%  {loc}", i + 1, rel(h.score, top));
+            if show_relevance {
+                let (pct, bounded) = relevance_pct(h, top);
+                if bounded {
+                    println!(
+                        "{:>2}. {:>3}%  {loc}  (rank {}%; bounded cosine)",
+                        i + 1,
+                        pct,
+                        rel(h.score, top)
+                    );
+                } else {
+                    println!(
+                        "{:>2}. ~{:>2}%  {loc}  (rank-relative fallback; no cosine)",
+                        i + 1,
+                        pct
+                    );
+                }
+            } else {
+                println!("{:>2}. {:>3}%  {loc}", i + 1, rel(h.score, top));
+            }
             let text = if full {
                 h.body.as_deref().unwrap_or(&h.snippet)
             } else {
@@ -1197,7 +1275,12 @@ fn emit(hits: &[Hit], json: bool, verbose: bool, full: bool) {
 
         // Hit lines: "  <rel>%  <leaf>  — <snippet>", whole line hard-truncated to one terminal row.
         for h in group.iter().take(PER_FILE_CAP) {
-            let prefix = format!("  {:>3}%  ", rel(h.score, top));
+            let prefix = if show_relevance {
+                let (pct, bounded) = relevance_pct(h, top);
+                format!(" {}{pct:>3}%  ", if bounded { ' ' } else { '~' })
+            } else {
+                format!("  {:>3}%  ", rel(h.score, top))
+            };
             let leaf = leaf_heading(&h.heading);
             let body = if leaf.is_empty() {
                 h.snippet.clone()
@@ -1234,6 +1317,8 @@ mod scope_filter_tests {
             path: path.to_string(),
             heading: String::new(),
             score: 0.0,
+            relevance: None,
+            relevance_policy: None,
             rrf: None,
             cosine: None,
             bm25: None,
@@ -1309,19 +1394,62 @@ mod scope_filter_tests {
             !j.contains("\"siblings\""),
             "siblings leaked into default JSON: {j}"
         );
-        // …but they serialize when populated (the `--rerank` / `--full` / note-mode paths).
+        assert!(
+            !j.contains("\"relevance\""),
+            "opt-in relevance leaked into default JSON: {j}"
+        );
+        assert!(
+            !j.contains("\"relevance_policy\""),
+            "opt-in relevance policy leaked into default JSON: {j}"
+        );
+        // …but they serialize when populated (the explicit/`--rerank`/`--full`/note-mode paths).
         let mut h2 = hit("30-Resources/rust/d.md");
         h2.rerank = Some(1.5);
+        h2.relevance = Some(0.42);
+        h2.relevance_policy = Some(crate::relevance::POLICY);
         h2.body = Some("full text".into());
         h2.siblings = Some(2);
         h2.bm25_rank = Some(1);
         h2.cosine_rank = Some(2);
         let j2 = serde_json::to_string(&h2).unwrap();
         assert!(j2.contains("\"rerank\":1.5"));
+        assert!(j2.contains("\"relevance\":0.42"));
+        assert!(j2.contains(&format!(
+            "\"relevance_policy\":\"{}\"",
+            crate::relevance::POLICY
+        )));
         assert!(j2.contains("\"body\":\"full text\""));
         assert!(j2.contains("\"siblings\":2"));
         assert!(!j2.contains("bm25_rank"));
         assert!(!j2.contains("cosine_rank"));
+
+        let mut unknown = hit("lexical-only.md");
+        unknown.relevance_policy = Some(crate::relevance::POLICY);
+        let j3 = serde_json::to_string(&unknown).unwrap();
+        assert!(j3.contains("\"relevance_policy\""));
+        assert!(!j3.contains("\"relevance\":"));
+    }
+
+    #[test]
+    fn relevance_floor_is_fail_closed_only_when_positive() {
+        let mut bounded = hit("bounded.md");
+        bounded.relevance = Some(0.42);
+        let unknown = hit("unknown.md");
+        assert!(passes_min_relevance(&bounded, 0.3));
+        assert!(!passes_min_relevance(&bounded, 0.5));
+        assert!(!passes_min_relevance(&unknown, 0.3));
+        assert!(passes_min_relevance(&unknown, 0.0));
+    }
+
+    #[test]
+    fn explicit_relevance_percentage_marks_unknown_fallback() {
+        let mut bounded = hit("bounded.md");
+        bounded.score = 1.0;
+        bounded.relevance = Some(0.42);
+        assert_eq!(relevance_pct(&bounded, 1.0), (42, true));
+        let mut unknown = hit("unknown.md");
+        unknown.score = 0.5;
+        assert_eq!(relevance_pct(&unknown, 1.0), (50, false));
     }
 
     #[test]
@@ -1674,6 +1802,7 @@ mod scope_filter_tests {
         // RRF order and score untouched. This is the compute cap that halves the forward passes.
         let mk = |path: &str, rrf: f32| Hit {
             score: rrf,
+            relevance: Some(rrf),
             rrf: Some(rrf),
             ..hit(path)
         };
@@ -1695,6 +1824,11 @@ mod scope_filter_tests {
         assert!(out[2..].iter().all(|h| h.rerank.is_none()));
         assert_eq!(out[2].score, 0.03); // tail RRF score untouched
         assert_eq!(out[4].score, 0.01);
+        assert_eq!(
+            out.iter().map(|hit| hit.relevance).collect::<Vec<_>>(),
+            [Some(0.04), Some(0.05), Some(0.03), Some(0.02), Some(0.01)],
+            "cosine relevance survives both reranked prefix reorder and unscored tail"
+        );
     }
 
     #[test]

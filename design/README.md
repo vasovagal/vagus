@@ -68,3 +68,5 @@ silently breaking an invariant.
   metrics and corpus/index/backend/fusion/cohort provenance; adds G27.
 - `0025-evidence-gated-fusion.md` — RRF k=60 remains the only default; same-pool explicit fusion
   experiments require a fixed held-out paired `eval-gate`, and default promotion needs another ADR.
+- `0026-bounded-semantic-relevance.md` — opt-in finite original-query cosine clamped to `[0,1]` as a
+  named heuristic; post-truncation floor with honest unknowns; adds G9e and aligns search/rerank/eval.

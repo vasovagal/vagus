@@ -11,6 +11,18 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Honest opt-in semantic relevance.** `search --relevance` reports finite original-query
+  EmbeddingGemma cosine clamped to `[0,1]` under a model/chunk-named policy, explicitly as a heuristic
+  rather than confidence or probability. `--min-relevance 0..=1` applies an order-preserving,
+  post-truncation floor with no backfill; positive floors drop unknown/BM25-only hits and disable
+  adaptive tidy. Reranking carries cosine unchanged through its capped prefix and RRF tail, while
+  BM25-only/`--smart` reject unsupported reporting. `eval --relevance` records the same diagnostic;
+  the bundled tier-2 skill deliberately keeps its stronger full-body grade and does not request these
+  flags. Default ranking and human/JSON output are unchanged. A 15+/15− development diagnostic
+  suggested an exploratory 0.30 floor. On a later frozen 5+/5− holdout, it retained every positive top hit and
+  dropped 4/5 plain or 5/5 radius-0 reranked negatives; the plain miss scored 0.300044, exposing the
+  boundary rather than justifying calibration. All five existing known answers also survived that
+  floor through rerank radii 0–2. (ADR 0026/G9e)
 - **Tokenizer-safe small-to-big reranking.** `search --rerank-context 1|2` (also `--smart`) lets the
   cross-encoder judge up to one or two adjacent in-note chunks per side while returning only the
   matched chunk. Actual pair-tokenizer budgeting reserves query/special-token space and prevents a

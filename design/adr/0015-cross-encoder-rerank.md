@@ -1,7 +1,8 @@
 # ADR 0015 — In-core cross-encoder reranker
 
 - **Status:** Accepted (2026-05-30); **amended 2026-07-30** to make ordinary `doctor` presence-only,
-  add explicit `doctor --fetch-models`, and add bounded tokenizer-safe small-to-big rerank context.
+  add explicit `doctor --fetch-models`, add bounded tokenizer-safe small-to-big rerank context, and
+  preserve original-query cosine for ADR 0026 relevance without changing the cap.
   Amends [ADR 0003](./0003-search-stack.md) and guardrail G17.
 
 ## Context
@@ -53,6 +54,10 @@ Add an **in-core** reranker (`src/rerank.rs`, mirroring `src/embed.rs`):
     the sigmoid head top would floor the whole tail out and drop tail-filled slots the full-pool rerank
     would have kept; so when a `--min-score` floor is active the cap is lifted (the whole pool is
     reranked), restoring the pre-cap fill exactly for that combination.
+  - **Amended by ADR 0026:** opt-in semantic relevance carries each hit's finite original-query cosine
+    unchanged through prefix reordering and the unscored tail; it never repurposes sigmoid/logit as
+    confidence. Unlike `--min-score`, `--min-relevance` does not lift the rerank cap: its semantic
+    floor runs after truncation without backfill, and a positive floor drops BM25-only unknowns.
 - Add **`--rerank-context N`**, bounded to `0..=2`, to `search --rerank`, `search --smart`, and
   `eval --rerank`. It reconstructs up to N ordinal neighbors per side from SQLite only for the
   cross-encoder input. It never changes indexed chunks, retrieval, RRF, filters, note dedup, the
