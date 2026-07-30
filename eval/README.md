@@ -54,11 +54,13 @@ vagus eval eval/my.labels.jsonl                         # hybrid, k=10, normal b
 vagus eval eval/my.labels.jsonl --exact                 # force the cosine oracle
 vagus eval eval/my.labels.jsonl --mode bm25 --k 20      # lexical-only P/R/RR/nDCG @20
 vagus eval eval/my.labels.jsonl --rerank --json > run.json
+vagus eval eval/my.labels.jsonl --rerank --rerank-context 1 --json > context-1.json
 ```
 
 `--json` schema version 2 pins the label and corpus SHA-256s, index/model identities and counts,
 binary version + executable SHA-256, result policy, cohort, fusion policy/candidate pool, score kind,
-explicit-exact request, and effective exact/usearch backend.
+explicit-exact request, effective exact/usearch backend, and (inside `rerank_policy`) the exact
+rerank-context radius + tokenizer maximum.
 Only compare reports whose fingerprints and evaluation config match, unless the changed field is the
 variable being deliberately tested. If another process changes the index during a run, eval detects
 the final fingerprint mismatch and exits without publishing a mixed-generation report.

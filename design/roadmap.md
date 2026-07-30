@@ -32,7 +32,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
 | Mtime-windowed forced reindex (`reindex --since`) | core `vagus` | full-vault snapshot + G5 replacement path | shipped (ADR 0022) |
 | Fail-closed vault onboarding + network-free doctor | core `vagus` | alias-aware paths; explicit model-fetch consent | shipped (ADRs 0004/0006/0015) |
-| Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
+| Cross-encoder reranker (`--rerank`, optional `--rerank-context 1|2`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en**; exact pair-token budgeting | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
@@ -55,12 +55,14 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M0 — design overhaul** *(this round)*: this roadmap, ADRs 0012–0016, the [identity reframe](./adr/0014-self-contained-universe.md),
   guardrail edits (G4/G7/G8/G9/G17/G19/G20). ✅
 - **M1 — strong core** *(this round)*: EmbeddingGemma-300M + token-budgeted chunking (one reindex);
-  in-core `--rerank`; `--full` / `--min-score`. ✅ (verified end-to-end)
+  in-core `--rerank` with bounded tokenizer-safe small-to-big context; `--full` / `--min-score`. ✅
+  (verified end-to-end; context radius 0 remains the default)
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
 - **M3 — tier-2 bounded skill** *(shipped; tightened 2026-07-29)*: `skills/search/SKILL.md` runs
-  `vagus search --json --full --rerank --exact --limit 10`, judges full bodies 0–3, presents only
+  `vagus search --json --full --rerank --exact --limit 10` (rerank-context radius 0), judges full
+  bodies 0–3, presents only
   nonredundant grade≥2 evidence (max 6, never pads), and permits one query-shape-selected fallback
   only when none survive. Judging stays in the skill (G17); RRF is never re-derived (G8); the skill
   parses `--json` (G13). The same Agent Skill installs for Claude Code and pi.

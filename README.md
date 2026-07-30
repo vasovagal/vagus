@@ -20,7 +20,8 @@ straight from a Claude Code or pi session).
   backend/fusion/cohort provenance; `vagus eval-gate` applies a fixed held-out paired contract before
   any same-pool alternate fusion can even land as opt-in. RRF k=60 remains the only default.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
-  (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
+  (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies; difficult boundary-spanning
+  queries can opt into tokenizer-safe adjacent context with `--rerank-context 1|2`. Or use `--smart` for a
   local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
   search skill gives the host agent 10 exact+reranked full-body candidates, then presents only useful
   (grade ≥2), nonredundant evidence — at most 6 notes, never quota padding. Every tier runs **offline**.
@@ -116,11 +117,15 @@ scale it is effectively instant; a synthetic 10k×768 exact load+search fixture 
 | Query | Latency |
 |-------|---------|
 | `vagus search` (default hybrid) | **~1 s** warm; a few seconds on the first query of a session (loads the embedder) |
-| `--rerank` (cross-encoder) | **+~2 s** |
+| `--rerank` (cross-encoder, context 0) | **+~0.7 s** for the capped 20-doc stage |
+| `--rerank --rerank-context 1` | **~2.8 s** rerank stage; up to ~3.2 GiB process RSS |
+| `--rerank --rerank-context 2` | **~5.7 s** rerank stage; up to ~5.6 GiB process RSS |
 | `--smart` (local rewrite + rerank) | a few seconds cached, ~10 s cold; scales with vault size |
 
-*(Measured on Apple Silicon. The `--smart` rewrite is cached per query, so repeats are much
-faster — ~5 s cold / ~2.3 s warm on a small vault.)* No daemon and no cloud round-trip on any
+*(Measured on Apple Silicon over five exact, capped-20 rerank queries in a 4,148-chunk corpus. Wider
+attention is quadratic; radius 1 is the practical first try and radius 2 needs adequate memory. The
+`--smart` rewrite is cached per query, so repeats are much faster — ~5 s cold / ~2.3 s warm on a small
+vault.)* No daemon and no cloud round-trip on any
 path.
 
 ## Usage
@@ -135,7 +140,9 @@ vagus compact               # defragment the tantivy index (force-merge segments
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
+vagus search "<query>" --rerank --rerank-context 1  # score with adjacent in-note context
 vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankings against qrels
+vagus eval labels.jsonl --exact --rerank --rerank-context 1 --json  # evaluate that input policy
 vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
@@ -154,9 +161,17 @@ changes ranking or scores, and it fails open before any top-three BM25/cosine so
 `--exhaustive` to fill the legacy result set up to the limit, or
 `--chunks` to rank individual chunks instead.
 
+`--rerank-context N` accepts 0–2 and requires `--rerank` or `--smart`. Radius 0 is the exact historical
+center-only path. Radius 1/2 gives the cross-encoder up to N adjacent chunks per side, admitting whole
+neighbors only when the model's actual pair tokenizer can retain the query, special tokens, and
+matched center. This changes only rerank ordering: returned `body`/`snippet`, retrieval, RRF, capped
+prefix, and unscored RRF tail are unchanged. Use it selectively; wider attention is expensive and can
+help or hurt an individual query.
+
 `vagus eval` never refreshes the index: run `vagus index` first, then hold the index and JSONL labels
 fixed across A/B runs. Its P@k denominator is always k, MRR is explicitly MRR@k, undefined cohorts are
-`null`, and schema-2 reports pin rankings plus label/corpus/index/backend/fusion/cohort identities.
+`null`, and schema-2 reports pin rankings plus label/corpus/index/backend/fusion/cohort identities;
+reranked reports include the context radius and tokenizer maximum in `rerank_policy`.
 Evaluation is note-level exhaustive pre-tidy so a candidate cannot win by under-returning. The
 non-configurable `eval-gate` requires a held-out graded/diverse sample, paired nDCG confidence, and
 recall/MRR/P/cohort nonregressions; passing permits only explicit experimentation, not a new default.

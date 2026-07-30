@@ -13,7 +13,7 @@ use std::io::IsTerminal;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::ValueEnum;
 use serde::Serialize;
 
@@ -353,9 +353,55 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
+/// Build exactly the documents scored by the capped reranker prefix. Radius zero is intentionally a
+/// byte-for-byte body clone with no extra DB lookup. An opt-in radius reconstructs only each hit's
+/// adjacent in-note chunks, then delegates exact tokenizer-budget fitting to the loaded reranker
+/// (ADR 0015). Returned Hit bodies/snippets remain the matched center chunk.
+fn rerank_documents(
+    db: &Db,
+    reranker: &Reranker,
+    query: &str,
+    hits: &[Hit],
+) -> Result<Vec<String>> {
+    if reranker.context_radius() == 0 {
+        return Ok(hits
+            .iter()
+            .map(|hit| hit.body.clone().unwrap_or_default())
+            .collect());
+    }
+
+    let mut documents = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let center_body = hit.body.as_deref().unwrap_or_default();
+        let window = db.chunk_window(&hit.path, &hit.chunk_id, reranker.context_radius())?;
+        let Some(center_index) = window.iter().position(|(_, id, _)| id == &hit.chunk_id) else {
+            // A second process can replace this derived row between hydration and the neighbor read.
+            // Preserve a useful center-only rerank rather than letting optional context erase a hit.
+            documents.push(reranker.prepare_context(query, center_body, &[], &[])?);
+            continue;
+        };
+        let before: Vec<&str> = window[..center_index]
+            .iter()
+            .map(|(_, _, body)| body.as_str())
+            .collect();
+        let after: Vec<&str> = window[center_index + 1..]
+            .iter()
+            .map(|(_, _, body)| body.as_str())
+            .collect();
+        documents.push(reranker.prepare_context(
+            query,
+            &window[center_index].2,
+            &before,
+            &after,
+        )?);
+    }
+    Ok(documents)
+}
+
 /// Reusable: returns ranked hits (used by `run` and by filing `--suggest`). `full` retains the chunk
-/// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1);
-/// `chunks` skips note-level dedup, returning raw chunk hits (ADR 0020).
+/// body on each hit; `rerank` re-scores a deeper candidate pool with the cross-encoder (tier-1),
+/// optionally reading `rerank_context` adjacent chunks without changing the returned Hit;
+/// `chunks` skips note-level dedup, returning raw chunk hits (ADRs 0015/0020).
 #[allow(clippy::too_many_arguments)]
 pub fn query(
     cfg: &Config,
@@ -365,6 +411,7 @@ pub fn query(
     scope: &Scope,
     full: bool,
     rerank: bool,
+    rerank_context: usize,
     since: Option<i64>,
     source: Option<&str>,
     exact: bool,
@@ -460,14 +507,11 @@ pub fn query(
     // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF — G8 — untouched).
     if rerank && !hits.is_empty() {
         let t0 = Instant::now();
-        let mut rr = Reranker::new(&cfg.cache_dir)?;
+        let mut rr = Reranker::new(&cfg.cache_dir, rerank_context)?;
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
-        let docs: Vec<String> = hits[..cap]
-            .iter()
-            .map(|h| h.body.clone().unwrap_or_default())
-            .collect();
         let t0 = Instant::now();
+        let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
         let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
         hits = apply_rerank_prefix(hits, cap, order);
         t.rerank_ms = ms_since(t0);
@@ -599,6 +643,7 @@ fn smart_query(
     limit: usize,
     scope: &Scope,
     full: bool,
+    rerank_context: usize,
     since: Option<i64>,
     source: Option<&str>,
     exact: bool,
@@ -626,7 +671,7 @@ fn smart_query(
     });
     let rr_warm: JoinHandle<Result<Reranker>> = {
         let cache = cfg.cache_dir.clone();
-        std::thread::spawn(move || Reranker::new(&cache))
+        std::thread::spawn(move || Reranker::new(&cache, rerank_context))
     };
 
     // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
@@ -706,6 +751,11 @@ fn smart_query(
             t.retrieval_ms += ms_since(t0);
         }
     }
+    // Retrieval is complete. Release the embedder before widened quadratic-attention inference;
+    // keeping two ONNX sessions resident buys no latency now and materially raises `--smart
+    // --rerank-context` peak memory. The vector sidecar is likewise no longer needed.
+    drop(vindex);
+    drop(emb);
 
     // 3) Fuse all lists, hydrate with bodies.
     let t0 = Instant::now();
@@ -730,15 +780,12 @@ fn smart_query(
         // Collect the prewarmed reranker (Fix B); a worker panic falls back to a foreground build.
         let mut rr = match rr_warm.join() {
             Ok(r) => r?,
-            Err(_) => Reranker::new(&cfg.cache_dir)?,
+            Err(_) => Reranker::new(&cfg.cache_dir, rerank_context)?,
         };
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
-        let docs: Vec<String> = hits[..cap]
-            .iter()
-            .map(|h| h.body.clone().unwrap_or_default())
-            .collect();
         let t0 = Instant::now();
+        let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
         let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
         hits = apply_rerank_prefix(hits, cap, order);
         t.rerank_ms = ms_since(t0);
@@ -791,6 +838,7 @@ fn run_query(
     scope: &Scope,
     full: bool,
     rerank: bool,
+    rerank_context: usize,
     smart: bool,
     since: Option<i64>,
     source: Option<&str>,
@@ -807,6 +855,7 @@ fn run_query(
             limit,
             scope,
             full,
+            rerank_context,
             since,
             source,
             exact,
@@ -834,6 +883,7 @@ fn run_query(
         scope,
         full,
         rerank || smart,
+        rerank_context,
         since,
         source,
         exact,
@@ -855,6 +905,7 @@ pub fn run(
     all: bool,
     full: bool,
     rerank: bool,
+    rerank_context: usize,
     min_score: Option<f32>,
     smart: bool,
     since: Option<&str>,
@@ -864,6 +915,9 @@ pub fn run(
     chunks: bool,
     exhaustive: bool,
 ) -> Result<()> {
+    if rerank_context > 0 && !rerank && !smart {
+        bail!("--rerank-context requires --rerank or --smart");
+    }
     // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
     let since_cut = match since {
         Some(spec) => Some(since_cutoff(spec)?),
@@ -894,6 +948,7 @@ pub fn run(
         &scope,
         full,
         rerank,
+        rerank_context,
         smart,
         since_cut,
         source,

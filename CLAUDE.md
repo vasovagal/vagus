@@ -43,7 +43,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
    transforms to live scores. Same-pool alternate fusion may land only as explicit opt-in after the
    fixed ADR 0025 `eval-gate`; passing does not authorize a new default or G9d score semantics. The
    cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
-   and must not touch `rrf()` — as is note-level dedup, the default where `--limit` counts distinct
+   and must not touch `rrf()`. `--rerank-context` is input-only, bounded 0–2, and defaults to the exact
+   legacy 512-token center-only path; widened input must use actual pair-tokenizer budgeting, retain
+   the matched center, and preserve the capped prefix plus unscored RRF tail — as is note-level dedup,
+   the default where `--limit` counts distinct
    notes (`--chunks` opts out; ADR 0020/G9c). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
    now) and **don't double-prefix**.
@@ -69,8 +72,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
-    `/skill:search` in pi) = Opus over 10 exact+reranked bodies, grade≥2 only, max 6 presented, one
-    fallback only if none survive. Advanced search is **in core**,
+    `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
+    only, max 6 presented, one fallback only if none survive. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the

@@ -2,7 +2,9 @@
 
 - **Status:** Accepted + **implemented (2026-05-30)** — `src/rewrite.rs` behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`. **Amended 2026-07-29:** tier-2 no
-  longer performs routine expansion/HyDE fan-out; ADR 0012 gives it one bounded fallback. Amends G17.
+  longer performs routine expansion/HyDE fan-out; ADR 0012 gives it one bounded fallback. **Amended
+  2026-07-30:** forwards ADR 0015's optional small-to-big rerank context and drops the embedder before
+  widened inference. Amends G17.
 
 ## Context
 
@@ -38,8 +40,9 @@ binary), behind a **cargo feature** (default-on in releases; a lean build can ex
   `lex:` (→ BM25), `vec:` (→ semantic), `hyde:` (a hypothetical answer passage → `--mode vec`). The
   original query is always retained.
 - **Surface:** `vagus rewrite "q"` prints the typed lines; `vagus search "q" --smart` runs the rewrite
-  in-process, issues one retrieval per typed variant, fuses (RRF), and reranks (`--rerank`). Offline,
-  **no daemon** (G14) — one-shot per search.
+  in-process, issues one retrieval per typed variant, fuses (RRF), and reranks (`--rerank`). It accepts
+  `--rerank-context 0|1|2` under ADR 0015; once retrieval ends, the embedder session is released before
+  the potentially widened forward pass. Offline, **no daemon** (G14) — one-shot per search.
 - **Amendment (ADR 0012):** the skill (tier-2) does not routinely emit the typed variants. It retrieves
   one bounded exact+reranked set and judges bodies; only if zero candidates are useful may the host
   agent choose one BM25 or exact-vector retry. Routine expansion/HyDE was removed from tier 2 because
@@ -71,8 +74,9 @@ binary), behind a **cargo feature** (default-on in releases; a lean build can ex
   default-on, with `--no-default-features` for a lean candle-free build (CI guards that lane). The
   macOS Metal backend links only system frameworks (`Metal`/`Foundation`/`CoreFoundation`) —
   re-verified self-contained via `otool -L` (system frameworks/dylibs only).
-- **Latency (verified, release, Apple Silicon, model cached):** the `--smart` pipeline is **~5 s on a
-  cold query / ~2.3 s on a repeat**, down from ~9.5 s, via three optimizations (perf pass, 2026-05-30):
+- **Latency (verified, release, Apple Silicon, model cached, rerank context 0):** the `--smart`
+  pipeline is **~5 s on a cold query / ~2.3 s on a repeat**, down from ~9.5 s, via three optimizations
+  (perf pass, 2026-05-30):
   - **Overlapped model loads (Fix B):** the embedder (~2 s) and reranker (~0.15 s) ONNX models load on
     background threads that overlap the multi-second LLM decode instead of running serially after it.
     Still no daemon (G14) — the threads are joined within the one-shot process.

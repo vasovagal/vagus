@@ -509,6 +509,7 @@ fn evaluate(
     k: usize,
     mode: Mode,
     rerank: bool,
+    rerank_context: usize,
     exact: bool,
 ) -> Result<EvalReport> {
     if !(1..=MAX_EVAL_K).contains(&k) {
@@ -516,6 +517,9 @@ fn evaluate(
     }
     if exact && matches!(mode, Mode::Bm25) {
         bail!("--exact requires --mode hybrid or --mode vec");
+    }
+    if rerank_context > 0 && !rerank {
+        bail!("--rerank-context requires --rerank");
     }
 
     let labels = parse_labels(label_content)?;
@@ -544,7 +548,13 @@ fn evaluate(
         }
         .to_owned(),
         rerank,
-        rerank_policy: if rerank { "capped_prefix" } else { "none" }.to_owned(),
+        // Keep schema 2 while making the exact input policy self-describing in its existing field.
+        // The fusion gate compares this value, so unlike contexts cannot be mistaken as comparable.
+        rerank_policy: if rerank {
+            crate::rerank::policy_id(rerank_context)?
+        } else {
+            "none".to_owned()
+        },
         score_floor: false,
         exact_requested: exact,
         vector_backend: vector_backend.to_owned(),
@@ -574,6 +584,7 @@ fn evaluate(
             &Scope::none(),
             false, // full bodies are not part of the report
             rerank,
+            rerank_context,
             None, // no frontmatter time filter
             None, // no source filter
             exact,
@@ -615,18 +626,20 @@ fn evaluate(
 
 /// Score the current index and print either the stable JSON report or a human table. This command
 /// never refreshes the index; run `vagus index` explicitly before taking a baseline.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     cfg: &Config,
     labels: &Path,
     k: usize,
     mode: Mode,
     rerank: bool,
+    rerank_context: usize,
     exact: bool,
     json: bool,
 ) -> Result<()> {
     let content = std::fs::read_to_string(labels)
         .with_context(|| format!("reading label file {}", labels.display()))?;
-    let report = evaluate(cfg, &content, k, mode, rerank, exact)?;
+    let report = evaluate(cfg, &content, k, mode, rerank, rerank_context, exact)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -657,8 +670,14 @@ fn print_table(report: &EvalReport, labels: &Path) {
     let c = &report.config;
     let a = &report.aggregate;
     println!(
-        "vagus eval — k={} mode={} rerank={} exact={} backend={} policy={}",
-        c.k, c.mode, c.rerank, c.exact_requested, c.vector_backend, c.result_policy
+        "vagus eval — k={} mode={} rerank={} ({}) exact={} backend={} policy={}",
+        c.k,
+        c.mode,
+        c.rerank,
+        c.rerank_policy,
+        c.exact_requested,
+        c.vector_backend,
+        c.result_policy
     );
     println!(
         "labels: {}  ({} queries: {} positive, {} negative)\n",

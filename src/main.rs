@@ -94,6 +94,10 @@ enum Command {
         /// first use). Re-scores a deeper candidate pool against full chunk bodies. RRF is untouched.
         #[arg(long)]
         rerank: bool,
+        /// Give the reranker up to N adjacent chunks on each side of the matched chunk (0-2).
+        /// Search results still return only the matched chunk body. Requires --rerank or --smart.
+        #[arg(long, default_value_t = 0, value_parser = rerank::parse_context_radius)]
+        rerank_context: usize,
         /// Include each hit's full chunk body in the output (the `--json` skill path consumes this;
         /// human output prints the untruncated body). Default output is unchanged.
         #[arg(long)]
@@ -145,6 +149,9 @@ enum Command {
         /// Evaluate the cross-encoder ordering (its capped-prefix policy is recorded in provenance).
         #[arg(long)]
         rerank: bool,
+        /// Give the evaluated reranker up to N adjacent chunks on each side (0-2). Requires --rerank.
+        #[arg(long, default_value_t = 0, value_parser = rerank::parse_context_radius)]
+        rerank_context: usize,
         /// Force the exact cosine oracle; otherwise the normal scale-selected backend is recorded.
         #[arg(long)]
         exact: bool,
@@ -342,6 +349,7 @@ fn main() -> Result<()> {
             verbose,
             all,
             rerank,
+            rerank_context,
             full,
             min_score,
             smart,
@@ -362,6 +370,7 @@ fn main() -> Result<()> {
             all,
             full,
             rerank,
+            rerank_context,
             min_score,
             smart,
             since.as_deref(),
@@ -376,9 +385,10 @@ fn main() -> Result<()> {
             k,
             mode,
             rerank,
+            rerank_context,
             exact,
             json,
-        } => eval::run(&cfg, &labels, k, mode, rerank, exact, json)?,
+        } => eval::run(&cfg, &labels, k, mode, rerank, rerank_context, exact, json)?,
         Command::EvalGate { .. } => unreachable!("eval-gate returned before loading config"),
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]
@@ -805,7 +815,7 @@ fn validate_embedder(cache_dir: &Path) -> Result<String> {
 }
 
 fn validate_reranker(cache_dir: &Path) -> Result<String> {
-    let mut reranker = rerank::Reranker::new(cache_dir)?;
+    let mut reranker = rerank::Reranker::new(cache_dir, 0)?;
     let scores = reranker.rerank(
         "vagus doctor local model validation",
         &["local model validation".to_string()],
@@ -1065,6 +1075,34 @@ mod eval_cli_tests {
                 mode: Mode::Vec,
                 exact: true,
                 json: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rerank_context_is_bounded_during_cli_parsing() {
+        assert!(
+            Cli::try_parse_from(["vagus", "search", "query", "--rerank-context", "3"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["vagus", "eval", "labels.jsonl", "--rerank-context", "3"])
+                .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "vagus",
+            "search",
+            "query",
+            "--rerank",
+            "--rerank-context",
+            "2",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Search {
+                rerank: true,
+                rerank_context: 2,
                 ..
             }
         ));

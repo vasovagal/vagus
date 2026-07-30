@@ -27,8 +27,8 @@ escalation prompts.
 | Tier | Channel | Pipeline | Generation |
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
-| **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank** | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates → agent 0–3 judge → grade ≥2, max 6; one modality-selected fallback only if none survive | Opus |
+| **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank**; optional tokenizer-safe radius 1/2 context | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
+| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6; one modality-selected fallback only if none survive | Opus |
 
 The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
 standards-compatible `SKILL.md` is embedded once and installed by
@@ -42,7 +42,8 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   modality-selected retry (BM25 for rare literals, exact vector for conceptual paraphrase). The skill
   literally wraps the CLI, so retrieval itself cannot silently diverge.
 - **The reranker is a scoring model, in core** ([ADR 0015](./0015-cross-encoder-rerank.md)) — available
-  to both tier 1 and tier 2 (`--rerank`).
+  to both tier 1 and tier 2 (`--rerank`). Small-to-big context is an expensive tier-1 opt-in; tier 2's
+  fixed command keeps radius 0 so model-input tuning cannot silently change the agent-context contract.
 - **The generative rewriter is tier-1-local; tier-2 reformulation is a bounded fallback, never
   tier-0.** The local rewriter is opt-in and offline ([ADR 0016](./0016-local-generative-rewriter.md)).
   The skill does not routinely fan out expansion/HyDE because every extra full-body retrieval consumes

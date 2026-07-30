@@ -46,8 +46,9 @@ silently breaking an invariant.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit
-  doctor fetch/validation policy; amends 0003 + G17.
-- `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); amends G17 (next).
+  doctor fetch/validation and bounded tokenizer-safe `--rerank-context`; amends 0003 + G17.
+- `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); `--smart`
+  forwards bounded rerank context and releases its embedder before widened inference; amends G17.
 - `0017-indexed-frontmatter-filters.md` — `search --since`/`--source` via SQLite-denormalized
   `created_at`/`source` (no tantivy schema change); adds G9b.
 - `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,

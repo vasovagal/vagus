@@ -259,6 +259,33 @@ impl Db {
         Ok(row)
     }
 
+    /// The matched chunk and up to `radius` ordinal neighbors on each side, in note order. This is a
+    /// read-only rerank-input lookup (ADR 0015): retrieval chunks and every indexed store stay intact.
+    pub fn chunk_window(
+        &self,
+        path: &str,
+        center_id: &str,
+        radius: usize,
+    ) -> Result<Vec<(usize, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "WITH center(ord) AS (
+                 SELECT ord FROM chunks WHERE path=?1 AND id=?2
+             )
+             SELECT c.ord, c.id, c.body
+             FROM chunks c, center
+             WHERE c.path=?1 AND c.ord BETWEEN center.ord - ?3 AND center.ord + ?3
+             ORDER BY c.ord",
+        )?;
+        let rows = stmt.query_map(params![path, center_id, radius as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as usize,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn chunk_ids_for(&self, path: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT id FROM chunks WHERE path=?1")?;
         let rows = stmt.query_map(params![path], |r| r.get::<_, String>(0))?;
@@ -462,6 +489,32 @@ mod tests {
             heading_path: String::new(),
             body: "body".into(),
         }
+    }
+
+    #[test]
+    fn chunk_window_returns_only_ordered_adjacent_chunks() {
+        let (_d, db) = temp_db("chunk-window");
+        let path = "20-Areas/foo.md";
+        db.upsert_file(path, 1.0, "sha", 1).unwrap();
+        let mut chunks: Vec<Chunk> = (0..6).map(|ord| chunk(path, ord)).collect();
+        for chunk in &mut chunks {
+            chunk.body = format!("body {}", chunk.ord);
+        }
+        db.replace_chunks(path, &chunks, None, None).unwrap();
+
+        let rows = db.chunk_window(path, &chunks[3].id, 2).unwrap();
+        assert_eq!(
+            rows.iter().map(|(ord, _, _)| *ord).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert_eq!(rows[2].1, chunks[3].id);
+        assert_eq!(rows[2].2, "body 3");
+        let edge = db.chunk_window(path, &chunks[0].id, 2).unwrap();
+        assert_eq!(
+            edge.iter().map(|(ord, _, _)| *ord).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert!(db.chunk_window(path, "missing", 2).unwrap().is_empty());
     }
 
     #[test]

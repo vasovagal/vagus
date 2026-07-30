@@ -11,6 +11,17 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Tokenizer-safe small-to-big reranking.** `search --rerank-context 1|2` (also `--smart`) lets the
+  cross-encoder judge up to one or two adjacent in-note chunks per side while returning only the
+  matched chunk. Actual pair-tokenizer budgeting reserves query/special-token space and prevents a
+  neighbor from truncating away the center; the audited 8,192-position model config is checked before
+  overriding fastembed's stale 512-token metadata. Widened inference is batch-one, and `--smart`
+  releases its embedder before that forward pass. The cap, unscored RRF tail, Hit shape/body, and all
+  retrieval stages are unchanged. Radius 0 remains the byte-identical 512-token default. Schema-2
+  `eval --rerank-context` records the exact policy. On five preselected 483-note-corpus qrels, radius
+  0/1/2 kept R@10 at 1.0 and moved MRR@10 .429→.495→.589, but median rerank time rose
+  .715s→2.806s→5.723s and one transcript answer regressed, so widening remains selective and opt-in.
+  (ADR 0015/G8/G27)
 - **Reproducible retrieval evaluation and a fixed fusion gate.** `vagus eval <labels.jsonl>` scores a
   fixed index with P@k/R@k/MRR@k/nDCG@k; schema-2 JSON adds full rankings plus label/corpus/index/model/
   backend/fusion/cohort provenance. `vagus eval-gate BASELINE CANDIDATE` enforces ADR 0025's held-out
