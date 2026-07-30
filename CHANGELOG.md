@@ -9,6 +9,16 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- `vagus vectors export --out DIR [--format npy|f32]`: coherent, streaming dump of the embedding
+  matrix for offline analysis (clustering, calibration, eval). Writes `vectors.npy` (NumPy v1.0,
+  C-order f32; `--format f32` for raw little-endian f32 instead), row-aligned `meta.jsonl`, and a
+  manifest with embedding identity + shape, all from one SQLite snapshot. Fresh staging files and a
+  manifest-last publication rule prevent failed exports from blessing mixed generations. `--json`
+  emits a stable summary; `--force` replaces existing export artifacts without following symlinks;
+  fail-closed path resolution refuses every vault-contained output spelling (G1).
+
 ### Changed
 
 - **Agent search uses a measured context budget instead of quota padding.** The bundled Claude Code/pi
