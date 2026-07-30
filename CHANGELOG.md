@@ -11,6 +11,11 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Reproducible retrieval evaluation.** `vagus eval <labels.jsonl>` scores a fixed current index with
+  standard fixed-denominator P@k, R@k, MRR@k, and optional nDCG@k over vault-specific qrels. Stable
+  schema-versioned JSON includes complete rankings plus label/corpus/index/model/backend/config
+  provenance; stale qrel paths and ambiguous labels fail closed, undefined cohorts stay `null`, and
+  evaluation is always note-level exhaustive pre-tidy with no implicit index refresh. (ADR 0024/G27)
 - **Fail-closed first-run setup.** `vagus init` creates the fixed PARA layout; `--icloud` uses the
   standard iCloud Drive `Brain` directory and a friendly vault symlink. It resolves aliases and
   missing paths, preflights equality/overlap/occupancy/traversal before mutation, initializes a direct

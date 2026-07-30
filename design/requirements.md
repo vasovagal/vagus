@@ -30,6 +30,9 @@ coding harness (Claude Code and pi).
   10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), and never pads.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
+- **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against
+  vault-specific JSONL qrels with standard P@k/R@k/MRR@k/nDCG@k semantics, explicit undefined values,
+  complete ranked paths, and schema-versioned label/corpus/index/backend provenance (ADR 0024/G27).
 
 ## Non-functional requirements
 

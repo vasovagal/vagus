@@ -62,5 +62,6 @@ silently breaking an invariant.
   force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.
 - `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,
   dropping only a distinct low-signal RRF suffix without crossing a top-three source champion;
-  `--exhaustive` restores legacy fill;
-  adds G9d and amends 0012/0020.
+  `--exhaustive` restores legacy fill; adds G9d and amends 0012/0020.
+- `0024-retrieval-eval-harness.md` — schema-versioned `vagus eval` over private qrels, with fixed
+  metric semantics and corpus/index/backend provenance; adds G27 without relaxing G8.

@@ -109,6 +109,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
   *channel* picks the tier — no escalation prompts or routine tier-2 fan-out.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
+- **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
+  fixed-denominator P@k, explicitly truncated MRR@k, and `null` for undefined cohorts. Its stable JSON
+  pins labels/corpus/index/backend/config identity and includes ranked paths. Runs are note-level and
+  exhaustive pre-tidy, with no implicit index refresh/scope/filter/floor; raw top scores are diagnostic,
+  never calibrated probabilities. Changing metric meaning requires a schema-version and ADR update.
+  ([ADR 0024](./adr/0024-retrieval-eval-harness.md))
 
 ## Build & dependencies
 

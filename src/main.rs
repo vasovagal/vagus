@@ -8,6 +8,7 @@ mod chunk;
 mod config;
 mod db;
 mod embed;
+mod eval;
 mod export;
 mod index;
 mod init;
@@ -130,6 +131,26 @@ enum Command {
         /// plain hybrid note results; ranking and scores are unchanged (ADR 0023).
         #[arg(long)]
         exhaustive: bool,
+    },
+    /// Score the fixed current index against vault-specific JSONL relevance judgments (ADR 0024).
+    Eval {
+        /// JSONL labels: one query and its relevant vault-relative note paths per line.
+        labels: PathBuf,
+        /// Requested result depth. Metrics are P@k, R@k, RR@k/MRR@k, and optional nDCG@k.
+        #[arg(long, default_value = "10", value_parser = eval::parse_positive_k)]
+        k: usize,
+        /// Which retriever(s) to evaluate.
+        #[arg(long, value_enum, default_value_t = Mode::Hybrid)]
+        mode: Mode,
+        /// Evaluate the cross-encoder ordering (its capped-prefix policy is recorded in provenance).
+        #[arg(long)]
+        rerank: bool,
+        /// Force the exact cosine oracle; otherwise the normal scale-selected backend is recorded.
+        #[arg(long)]
+        exact: bool,
+        /// Emit stable schema-versioned JSON rather than the human table.
+        #[arg(long)]
+        json: bool,
     },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
@@ -331,6 +352,14 @@ fn main() -> Result<()> {
             chunks,
             exhaustive,
         )?,
+        Command::Eval {
+            labels,
+            k,
+            mode,
+            rerank,
+            exact,
+            json,
+        } => eval::run(&cfg, &labels, k, mode, rerank, exact, json)?,
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]
             {
@@ -986,5 +1015,38 @@ mod doctor_tests {
         let (ok, detail) = vault_health(&vault);
         assert!(!ok);
         assert!(detail.contains("not a directory"));
+    }
+}
+
+#[cfg(test)]
+mod eval_cli_tests {
+    use super::*;
+
+    #[test]
+    fn eval_k_is_bounded_during_cli_parsing() {
+        assert!(Cli::try_parse_from(["vagus", "eval", "labels.jsonl", "--k", "0"]).is_err());
+        assert!(Cli::try_parse_from(["vagus", "eval", "labels.jsonl", "--k", "1001"]).is_err());
+        let cli = Cli::try_parse_from([
+            "vagus",
+            "eval",
+            "labels.jsonl",
+            "--k",
+            "20",
+            "--mode",
+            "vec",
+            "--exact",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Eval {
+                k: 20,
+                mode: Mode::Vec,
+                exact: true,
+                json: true,
+                ..
+            }
+        ));
     }
 }

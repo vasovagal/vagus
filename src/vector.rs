@@ -33,7 +33,7 @@ const EXPANSION_SEARCH: usize = 64;
 /// Below this many embedded chunks an exact scan adds only a small fraction of query wall time while
 /// avoiding measurable ANN misses. The 4,023-chunk corpus audit in ADR 0019 measured ~43 ms median
 /// overhead on a ~1 s command; 10k keeps matrix memory near 30 MiB.
-const EXACT_SCAN_CUTOFF: usize = 10_000;
+pub const EXACT_SCAN_CUTOFF: usize = 10_000;
 
 fn use_exact_scan(embedded: usize, forced: bool) -> bool {
     forced || embedded < EXACT_SCAN_CUTOFF
@@ -43,6 +43,8 @@ fn use_exact_scan(embedded: usize, forced: bool) -> bool {
 /// by both backends; consumed by `search.rs` and never by `rrf()` (G8).
 pub trait VectorIndex {
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>>;
+    /// Stable diagnostic name used by the eval report; never affects ranking.
+    fn backend_name(&self) -> &'static str;
     fn len(&self) -> usize;
     #[allow(dead_code)] // paired with `len` (clippy::len_without_is_empty); handy for callers/tests
     fn is_empty(&self) -> bool {
@@ -154,6 +156,10 @@ impl VectorIndex for UsearchIndex {
         Ok(hits)
     }
 
+    fn backend_name(&self) -> &'static str {
+        "usearch"
+    }
+
     fn len(&self) -> usize {
         self.index.size()
     }
@@ -212,6 +218,10 @@ impl VectorIndex for BruteForceIndex {
         Ok(scored)
     }
 
+    fn backend_name(&self) -> &'static str {
+        "exact"
+    }
+
     fn len(&self) -> usize {
         self.keys.len()
     }
@@ -234,6 +244,12 @@ pub fn open_for_search(cfg: &Config, db: &Db, exact: bool) -> Result<Box<dyn Vec
         }
     }
     Ok(Box::new(BruteForceIndex::load(db, EMBED_DIMS)?))
+}
+
+/// Resolve the same query-time selector and fallback as search, returning only its stable diagnostic
+/// name. Used once per `vagus eval` run to pin whether a report measured exact cosine or usearch.
+pub fn backend_name_for_search(cfg: &Config, db: &Db, exact: bool) -> Result<&'static str> {
+    Ok(open_for_search(cfg, db, exact)?.backend_name())
 }
 
 #[cfg(test)]
@@ -391,6 +407,7 @@ mod tests {
             index.add(key, &[1.0, 0.0]).unwrap();
         }
         let ann = UsearchIndex { index };
+        assert_eq!(ann.backend_name(), "usearch");
         let got = ann.search(&[1.0, 0.0], 3).unwrap();
         assert_eq!(
             got.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
@@ -405,6 +422,7 @@ mod tests {
             mat: vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
             dims: 2,
         };
+        assert_eq!(exact.backend_name(), "exact");
         let got = exact.search(&[1.0, 0.0], 3).unwrap();
         assert_eq!(
             got.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
