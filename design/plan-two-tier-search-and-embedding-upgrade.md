@@ -47,8 +47,8 @@ binary stays LLM-free, daemonless, and self-contained.
 
 ## Hard constraints (do not violate)
 - **G17 / G14:** no LLM and no daemon in the binary. *All* expansion/HyDE/rerank lives in the skill.
-- **G8:** RRF stays `Σ 1/(k+rank)`, k=60, no normalization. Any weighting/bonus requires editing G8 +
-  ADR 0003 in the same change → **deferred / not this round.**
+- **G8:** production RRF stays `Σ 1/(60+rank)`. Weighting/bonus was deferred in this round; ADR 0025
+  later defined a fixed gate for explicit same-pool experiments, not default replacement.
 - **G4:** embed identity is code-enforced (`index.rs`, `main.rs` bail on mismatch). Changing the model
   (dims 384→768) and chunker (`CHUNK_VERSION` bump) **forces one `vagus reindex`** — do them together.
 - **G1/G2:** index/model-cache stay outside iCloud; markdown is source of truth; index is rebuildable.
@@ -193,8 +193,8 @@ pinned-Opus subagent is a clearly-marked **non-default** later toggle). Flow:
   no-ops). Must **not** touch `rrf()`. Validate it doesn't crowd out genuine body-only hits.
 
 ## Not this round (explicit "do not build")
-- RRF weighting / top-rank bonus (would breach G8; nothing to dilute with 2 lists) — revisit only if
-  in-skill expansion later proves it needs binary-side help (then edit G8 + ADR 0003 together).
+- RRF weighting / top-rank bonus — not built here. ADR 0025 later permits only an explicit same-pool
+  experiment after its held-out gate; default promotion still needs another ADR.
 - True cosine-MMR / ranked-set per-note cap (`PER_FILE_CAP=3` already handles display dominance).
 - Pinned-Opus-subagent plumbing (inline pool fits Opus context; keep as documented toggle).
 - A real tokenizer in the chunk hot path (the char heuristic suffices; G11).

@@ -1,6 +1,7 @@
 # ADR 0024 — Reproducible retrieval-quality evaluation (`vagus eval`)
 
-- **Status:** Accepted (2026-07-30)
+- **Status:** Accepted (2026-07-30); **amended 2026-07-30** by ADR 0025 — schema 2 adds
+  query cohorts and explicit fusion-policy/candidate-pool provenance.
 
 ## Context
 
@@ -43,10 +44,11 @@ adaptive cutoff. The report calls this policy `note_level_exhaustive_pre_tidy`.
 Each nonblank JSONL line is exactly:
 
 ```json
-{"query":"...","relevant":["vault/path.md"]}
+{"query":"...","cohort":"semantic","relevant":["vault/path.md"]}
 ```
 
-or uses `{"path":"...","grade":0..3}` entries. Bare paths have grade 1. Grades 1–3 are relevant;
+`cohort` is an optional normalized label for exploratory eval and mandatory only for ADR 0025's
+promotion gate. The qrels may use `{"path":"...","grade":0..3}` entries. Bare paths have grade 1. Grades 1–3 are relevant;
 grade 0 records a judged non-relevant note. An explicit empty relevant set is a negative probe.
 Unknown keys, missing `relevant`, empty queries/files, duplicate queries/qrels, non-normalized or
 non-Markdown paths, grades outside 0–3, and qrel paths absent from the current index or lacking a
@@ -73,12 +75,13 @@ returned a score. Neither it nor its delta is a calibrated probability or a rank
 
 ### Provenance contract
 
-JSON schema version 1 records:
+JSON schema version **2** records:
 
 - binary version **and executable SHA-256**, plus raw label-file SHA-256;
 - corpus SHA-256 over sorted `(vault-relative path, note-content hash)` pairs;
 - indexed file/chunk/embedding counts and pinned model/chunk/tantivy/vector identities;
 - k, mode, rerank, explicit-exact request, **effective** vector backend, and the automatic exact cutoff;
+- query cohort plus stable `fusion_policy` and `fusion_candidate_pool` identifiers (ADR 0025);
 - note-level/exhaustive-pre-tidy/no-refresh/no-scope policy and score kind.
 
 The vector trait exposes only a stable diagnostic backend name; selection and fallback still flow
@@ -90,11 +93,12 @@ another process changed the index mid-run.
 
 Metric/parser/undefined-cohort tests are model-free. A current-index integration fixture builds real
 SQLite + Tantivy state, runs BM25 through `search::query`, verifies fixed-denominator P@k and MRR@k,
-and pins the schema/provenance/null contract. Vector-model quality remains a local corpus run, not a
+and pins the schema/provenance/null contract. ADR 0025 adds deterministic paired-bootstrap and
+accept/reject fixtures for `vagus eval-gate`. Vector-model quality remains a local corpus run, not a
 networked CI dependency.
 
-This contract is guardrail **G27**. A separate policy ADR may use comparable reports as an evidence
-gate, but merely adding this harness does not relax G8 or authorize a different fusion formula.
+This contract is guardrail **G27**. [ADR 0025](./0025-evidence-gated-fusion.md) uses comparable reports
+as an evidence gate for explicit experiments; it does not itself change default fusion.
 
 ## Consequences
 

@@ -47,12 +47,13 @@ fn parser_accepts_binary_graded_and_explicit_negative_forms() {
     assert!(!binary.has_grades);
 
     let graded = parse_label(
-        r#"{"query":"q","relevant":[{"path":"a.md","grade":3},{"path":"b.md","grade":0}]}"#,
+        r#"{"query":"q","cohort":"semantic","relevant":[{"path":"a.md","grade":3},{"path":"b.md","grade":0}]}"#,
     )
     .unwrap();
     assert_eq!(graded.relevant.get("a.md"), Some(&3));
     assert!(!graded.relevant.contains_key("b.md"));
     assert!(graded.has_grades);
+    assert_eq!(graded.cohort.as_deref(), Some("semantic"));
     assert_eq!(graded.judged_paths, ["a.md", "b.md"]);
 
     let negative = parse_label(r#"{"query":"none","relevant":[]}"#).unwrap();
@@ -70,6 +71,7 @@ fn parser_rejects_ambiguous_or_invalid_labels() {
         r#"{"query":"q","relevant":["a.md","a.md"]}"#,
         r#"{"query":"q","relevant":[{"path":"a.md","grade":4}]}"#,
         r#"{"query":"q","relevant":[{"path":"a.md","grade":1,"typo":2}]}"#,
+        r#"{"query":"q","cohort":"bad cohort!","relevant":[]}"#,
     ] {
         assert!(parse_label(bad).is_err(), "unexpectedly accepted {bad}");
     }
@@ -129,12 +131,14 @@ fn fixture() -> (TempDir, Config) {
 fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
     let (_root, cfg) = fixture();
     let labels = concat!(
-        "{\"query\":\"alpha\",\"relevant\":[\"a.md\"]}\n",
+        "{\"query\":\"alpha\",\"cohort\":\"lexical\",\"relevant\":[\"a.md\"]}\n",
         "{\"query\":\"beta\",\"relevant\":[]}\n"
     );
     let report = evaluate(&cfg, labels, 2, Mode::Bm25, false, false).unwrap();
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.config.result_policy, RESULT_POLICY);
+    assert_eq!(report.config.fusion_policy, "none");
+    assert_eq!(report.config.fusion_candidate_pool, "single_retriever");
     assert_eq!(report.config.vector_backend, "none");
     assert_eq!(report.config.rerank_policy, "none");
     assert!(!report.config.score_floor);
@@ -157,7 +161,7 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
     assert_eq!(report.aggregate.n_negative, 1);
 
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(
         json["queries"][1]["precision_at_k"],
         serde_json::Value::Null
@@ -187,6 +191,8 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
             "automatic_exact_cutoff",
             "cwd_scope",
             "exact_requested",
+            "fusion_candidate_pool",
+            "fusion_policy",
             "index_refresh",
             "k",
             "mode",
@@ -238,6 +244,7 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
     assert_eq!(
         keys(&json["queries"][0]),
         [
+            "cohort",
             "found",
             "is_negative",
             "missing",
@@ -251,6 +258,13 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
             "top_score",
         ]
     );
+
+    let mut unknown = json;
+    unknown["config"]
+        .as_object_mut()
+        .unwrap()
+        .insert("unversioned_option".to_owned(), serde_json::json!(true));
+    assert!(serde_json::from_value::<EvalReport>(unknown).is_err());
 }
 
 #[test]

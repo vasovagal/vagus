@@ -19,9 +19,9 @@ tier 2  (skill+Opus)   search Agent Skill           bounded exact+rerank+body ju
 
 Tiers 1 and 2 share the same retrieval + rerank core but use different context budgets. Tier 1 owns
 the typed `lex:/vec:/hyde:` rewrite; tier 2 normally judges one bounded full-body set and permits one
-modality-selected fallback only when nothing useful survives. RRF is never modified (G8); reranking
-is a separate post-fusion stage. qmd's weighted-RRF / top-rank bonus / position-blend are **rejected**
-as G8 breaches.
+modality-selected fallback only when nothing useful survives. Production RRF is never modified and
+reranking stays separate. Same-pool alternate fusion is allowed only as an explicit ADR 0025
+fixed-gate experiment; no alternate is currently shipped or default.
 
 ## Where each capability lives
 
@@ -37,7 +37,7 @@ as G8 breaches.
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF knee + source-champion veto (RRF untouched) | shipped (ADR 0023) |
-| Reproducible retrieval evaluation (`vagus eval`) | core `vagus` | private JSONL qrels + schema-versioned metrics/provenance | shipped (ADR 0024) |
+| Reproducible retrieval evaluation + fusion gate | core `vagus` | `vagus eval` schema 2 + fixed paired `eval-gate` | shipped (ADRs 0024/0025) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
@@ -67,7 +67,8 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 
 ## Deferred / not building
 
-- RRF weighting / top-rank bonus / position-blend (breach G8 — revisit only with an ADR + G8 edit).
+- Default RRF replacement. Same-pool explicit experiments now have ADR 0025's fixed gate, but none
+  is accepted; promotion needs a new ADR with context/latency/default+`--exhaustive` evidence.
 - True cosine-MMR (still deferred). The **ranked per-note cap shipped** as the note-level default —
   a post-rank dedup stage, [ADR 0020](./adr/0020-note-level-results.md); `PER_FILE_CAP=3` remains
   for `--chunks` display.

@@ -29,7 +29,8 @@ so we build the second-brain layer and lean on `frankensearch` for retrieval.
   `lex:/vec:/hyde:` pass; reranker is **Qwen3-Reranker-0.6B** — a *decoder* scored by yes/no logprobs
   (llama.cpp rank-pooling), **not** a fastembed-compatible cross-encoder; embedder is
   **EmbeddingGemma-300M** (768-dim). qmd also adds weighted-RRF + a top-rank bonus + a position-aware
-  RRF/reranker blend — which vagus **rejects** (G8). **Spec to match**, not a base to fork: vagus apes
+  RRF/reranker blend. Vagus does **not** adopt them by analogy: RRF k=60 remains default, and any
+  same-pool experiment must clear ADR 0025's fixed gate (G8). **Spec to match**, not a base to fork: vagus apes
   the embedder (on the ort stack) and the expansion model + typed-output protocol (via candle), but
   deviates on the reranker (jina cross-encoder, in-core). See ADRs 0012/0015/0016.
 - **[papers-cli](https://crates.io/crates/papers-cli)** — Rust, fastembed + ort + LanceDB + MCP, ships

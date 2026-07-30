@@ -19,7 +19,8 @@ coding harness (Claude Code and pi).
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
   hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
   a low-signal suffix and must not cross a top-three BM25/cosine source champion; `--exhaustive`
-  restores legacy fill (ADR 0023).
+  restores legacy fill (ADR 0023). Unweighted RRF k=60 remains the only production default; a
+  same-candidate-pool alternate is explicit-only and must clear ADR 0025 before it may land.
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.
@@ -32,7 +33,9 @@ coding harness (Claude Code and pi).
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 - **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against
   vault-specific JSONL qrels with standard P@k/R@k/MRR@k/nDCG@k semantics, explicit undefined values,
-  complete ranked paths, and schema-versioned label/corpus/index/backend provenance (ADR 0024/G27).
+  complete ranked paths, and schema-versioned label/corpus/index/backend/fusion/cohort provenance.
+  `vagus eval-gate` enforces ADR 0025's non-configurable held-out fusion thresholds (ADRs 0024/0025,
+  G27).
 
 ## Non-functional requirements
 

@@ -64,4 +64,6 @@ silently breaking an invariant.
   dropping only a distinct low-signal RRF suffix without crossing a top-three source champion;
   `--exhaustive` restores legacy fill; adds G9d and amends 0012/0020.
 - `0024-retrieval-eval-harness.md` — schema-versioned `vagus eval` over private qrels, with fixed
-  metric semantics and corpus/index/backend provenance; adds G27 without relaxing G8.
+  metrics and corpus/index/backend/fusion/cohort provenance; adds G27.
+- `0025-evidence-gated-fusion.md` — RRF k=60 remains the only default; same-pool explicit fusion
+  experiments require a fixed held-out paired `eval-gate`, and default promotion needs another ADR.

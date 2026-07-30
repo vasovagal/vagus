@@ -16,8 +16,9 @@ straight from a Claude Code or pi session).
 - **Context-tidy by default.** For plain hybrid note search, `--limit` is a ceiling: when the finished
   RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix—
   but never across a top-three BM25/cosine source hit. `--exhaustive` restores legacy fill.
-- **Measure retrieval, don't guess.** `vagus eval labels.jsonl` scores a fixed index with standard
-  P@k/R@k/MRR@k/nDCG@k and emits schema-versioned corpus/index/backend provenance for honest A/B runs.
+- **Measure retrieval, don't guess.** `vagus eval` emits schema-2 metrics and full corpus/index/
+  backend/fusion/cohort provenance; `vagus eval-gate` applies a fixed held-out paired contract before
+  any same-pool alternate fusion can even land as opt-in. RRF k=60 remains the only default.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
   local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
@@ -135,6 +136,7 @@ vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by 
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
 vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankings against qrels
+vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
@@ -154,9 +156,11 @@ changes ranking or scores, and it fails open before any top-three BM25/cosine so
 
 `vagus eval` never refreshes the index: run `vagus index` first, then hold the index and JSONL labels
 fixed across A/B runs. Its P@k denominator is always k, MRR is explicitly MRR@k, undefined cohorts are
-`null`, and reports pin the ranked paths plus label/corpus/index/backend identities. Evaluation is
-note-level and exhaustive pre-tidy so a candidate cannot win by under-returning. See
-[`eval/README.md`](eval/README.md) for the label format.
+`null`, and schema-2 reports pin rankings plus label/corpus/index/backend/fusion/cohort identities.
+Evaluation is note-level exhaustive pre-tidy so a candidate cannot win by under-returning. The
+non-configurable `eval-gate` requires a held-out graded/diverse sample, paired nDCG confidence, and
+recall/MRR/P/cohort nonregressions; passing permits only explicit experimentation, not a new default.
+See [`eval/README.md`](eval/README.md) for labels and the complete gate contract.
 
 For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault
 and force-reindexes notes whose **filesystem mtime** is within the window, even if local cached

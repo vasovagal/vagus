@@ -1,7 +1,7 @@
 # ADR 0003 — Search stack: tantivy + fastembed + brute-force cosine + RRF
 
-- **Status:** Accepted (2026-05-29); **amended 2026-07-30** — equal RRF scores use a stable,
-  modality-neutral chunk-id tie-break.
+- **Status:** Accepted (2026-05-29); **amended 2026-07-30** — stable modality-neutral ties;
+  ADR 0025 permits only fixed-gate, explicit same-pool fusion experiments while RRF stays default.
 
 ## Context
 
@@ -30,6 +30,10 @@ Hybrid retrieval over a personal-scale Markdown vault (tens of thousands of chun
   scores use ascending opaque `chunk_id`: randomized `HashMap` iteration otherwise changed which tied
   chunk/body represented a note across identical processes. This tie-break changes no score and
   favors neither source list.
+  > **Amended by [ADR 0025](./0025-evidence-gated-fusion.md):** this remains the only production
+  > default. A same-candidate-pool alternate may be developed as explicit opt-in only after the fixed
+  > held-out `vagus eval-gate` passes. Raw-score blending remains banned; passing cannot silently
+  > replace the default or feed non-RRF scores into ADR 0023.
 - **bge prefixing:** query gets `"Represent this sentence for searching relevant passages: "`;
   documents un-prefixed. Don't double-prefix (respect what the lib already applies).
 
