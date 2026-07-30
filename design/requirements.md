@@ -20,7 +20,9 @@ coding harness (Claude Code and pi).
   hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
   a low-signal suffix and must not cross a top-three BM25/cosine source champion; `--exhaustive`
   restores legacy fill (ADR 0023). Unweighted RRF k=60 remains the only production default; a
-  same-candidate-pool alternate is explicit-only and must clear ADR 0025 before it may land.
+  same-candidate-pool alternate is explicit-only and must clear ADR 0025 before it may land. The
+  separate cross-encoder may opt into tokenizer-safe small-to-big context (`--rerank-context 1|2`),
+  while radius 0 remains the exact center-only default and returned bodies stay unchanged (ADR 0015).
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.
@@ -33,8 +35,9 @@ coding harness (Claude Code and pi).
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 - **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against
   vault-specific JSONL qrels with standard P@k/R@k/MRR@k/nDCG@k semantics, explicit undefined values,
-  complete ranked paths, and schema-versioned label/corpus/index/backend/fusion/cohort provenance.
-  `vagus eval-gate` enforces ADR 0025's non-configurable held-out fusion thresholds (ADRs 0024/0025,
+  complete ranked paths, and schema-versioned label/corpus/index/backend/fusion/cohort provenance;
+  rerank provenance identifies its exact context/tokenizer policy. `vagus eval-gate` enforces ADR
+  0025's non-configurable held-out fusion thresholds (ADRs 0024/0025,
   G27).
 
 ## Non-functional requirements
@@ -49,6 +52,8 @@ coding harness (Claude Code and pi).
   cosine is automatic below 10,000 chunks (a 10k×768 fixture is ~30 MiB and measures ~26.6 ms including
   SQLite load), then usearch HNSW supplies growth headroom. One-shot end-to-end search may be about one
   second when local model initialization dominates; explicit `--exact` remains an all-mode oracle.
+  Widened cross-encoder context is deliberately opt-in: measured radius 1/2 rerank stages are about
+  2.8/5.7 s median and can peak near 3.2/5.6 GiB RSS on the representative Apple Silicon corpus.
 - **N5 — Owned in Rust, no versioned runtime.** A self-contained Rust universe — the `vagus` binary
   (plus optional `vagus-<name>` companions/plugins), each statically linking its native deps
   (onnxruntime today; candle/ggml where justified). **No Python/Node/TS/managed runtime to reconcile.**

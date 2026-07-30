@@ -38,7 +38,9 @@ local rewriter. Engine/model feasibility was verified by research workflows (see
   ~128 overlap; **fenced code kept atomic**.
 - **`src/rerank.rs` (new) + `src/search.rs` + `src/main.rs`:** `--rerank` re-scores the deeper fused
   pool on full bodies (sigmoid display score, raw logit in `Hit.rerank`), truncates to `--limit`;
-  `--full` adds `Hit.body`; `--min-score` relative-to-top floor. Default `--json` byte-identical (G9a).
+  optional `--rerank-context 1|2` builds an actual-tokenizer-budgeted in-note window without changing
+  the matched Hit; `--full` adds `Hit.body`; `--min-score` is a relative-to-top floor. Radius 0 and
+  default `--json` remain byte-identical (G9a/ADR 0015).
 - **`src/index.rs`:** one-line stderr notice when the format-change auto-reindex fires.
 - **`RELEASING.md`:** upgrade note (auto-reindex; run `vagus reindex` once; ~1.23GB model cache).
 
@@ -51,6 +53,7 @@ multiple chunks; oversize code stays in one chunk; `--rerank` reorders by cross-
 - **M2 — local rewriter:** `src/rewrite.rs` (feature-gated candle), `vagus rewrite`, `vagus search
   --smart` (typed-variant routing → multi-query fuse → rerank). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
 - **M3 — Opus skill:** bounded full-body judge over `vagus search --json --full --rerank --exact
-  --limit 10`; present only grade≥2 evidence (max 6, never pad), with one modality-selected retry only
+  --limit 10` at rerank-context radius 0; present only grade≥2 evidence (max 6, never pad), with one
+  modality-selected retry only
   when none survive. The original routine expansion/HyDE/`--min-score` plan was superseded by the
   2026-07-29 measured context budget in ADR 0012.

@@ -1,7 +1,8 @@
 # ADR 0024 — Reproducible retrieval-quality evaluation (`vagus eval`)
 
 - **Status:** Accepted (2026-07-30); **amended 2026-07-30** by ADR 0025 — schema 2 adds
-  query cohorts and explicit fusion-policy/candidate-pool provenance.
+  query cohorts and explicit fusion-policy/candidate-pool provenance — and ADR 0015, which records
+  tokenizer-safe rerank-context policies in the existing provenance shape.
 
 ## Context
 
@@ -34,7 +35,8 @@ not query-comparable probabilities; averaging them must never be advertised as c
 
 ## Decision
 
-Add `vagus eval <labels.jsonl> [--k N] [--mode hybrid|bm25|vec] [--rerank] [--exact] [--json]`.
+Add `vagus eval <labels.jsonl> [--k N] [--mode hybrid|bm25|vec] [--rerank
+[--rerank-context 0|1|2]] [--exact] [--json]`.
 It reads but never refreshes the current local index; callers run `vagus index` explicitly before a
 baseline. It uses note-level results with no CWD scope, frontmatter filter, score floor, or ADR 0023
 adaptive cutoff. The report calls this policy `note_level_exhaustive_pre_tidy`.
@@ -81,6 +83,7 @@ JSON schema version **2** records:
 - corpus SHA-256 over sorted `(vault-relative path, note-content hash)` pairs;
 - indexed file/chunk/embedding counts and pinned model/chunk/tantivy/vector identities;
 - k, mode, rerank, explicit-exact request, **effective** vector backend, and the automatic exact cutoff;
+- the exact capped-prefix rerank context radius + tokenizer maximum in `rerank_policy` (ADR 0015);
 - query cohort plus stable `fusion_policy` and `fusion_candidate_pool` identifiers (ADR 0025);
 - note-level/exhaustive-pre-tidy/no-refresh/no-scope policy and score kind.
 

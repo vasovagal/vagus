@@ -402,6 +402,7 @@ fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<(
         &Scope::none(),
         false,
         false,
+        0,     // no rerank context on the filing path (rerank is off)
         None,  // no --since for filing suggestions (ADR 0017)
         None,  // no --source for filing suggestions (ADR 0017)
         false, // approximate (HNSW) is fine for filing suggestions (ADR 0019)

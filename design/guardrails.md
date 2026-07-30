@@ -71,7 +71,11 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   only the same candidate union and may land only as explicit opt-in after ADR 0025's fixed held-out
   `eval-gate` passes; passing does **not** authorize default replacement. Cross-encoder reranking stays
   separate. Default promotion and any G9d reuse require a new ADR plus context/latency evidence.
-  ([ADR 0003](./adr/0003-search-stack.md), [ADR 0015](./adr/0015-cross-encoder-rerank.md),
+  Small-to-big rerank context is an input-only opt-in (`--rerank-context 0..=2`, default 0): actual
+  pair-tokenizer budgeting must reserve query/special tokens and keep the matched center; it cannot
+  change retrieval, the capped rerank prefix, or the unscored RRF tail. Radius 0 preserves the legacy
+  512-token center-only path exactly. ([ADR 0003](./adr/0003-search-stack.md),
+  [ADR 0015](./adr/0015-cross-encoder-rerank.md),
   [ADR 0025](./adr/0025-evidence-gated-fusion.md))
 - **G9 — embedder prefixes.** Apply the model's prompt template, query- vs document-side, and **don't
   double-prefix** (respect what the lib already applies). EmbeddingGemma (fastembed does *not*
@@ -111,13 +115,17 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
-  *channel* picks the tier — no escalation prompts or routine tier-2 fan-out.
+  *channel* picks the tier — no escalation prompts or routine tier-2 fan-out. The skill keeps
+  rerank-context radius 0; optional wider model input never expands the ten matched bodies shown to
+  the agent.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
   fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins
   labels/corpus/index/backend/config/fusion identity, cohorts, and complete rankings; runs are
   note-level exhaustive pre-tidy with no implicit refresh/scope/filter/floor. Raw scores are diagnostic.
-  Fusion claims use only ADR 0025's non-configurable paired gate; metric/gate changes require an ADR
+  Reranked reports encode the context radius + tokenizer limit in `rerank_policy`, so unlike inputs
+  cannot be compared as one configuration. Fusion claims use only ADR 0025's non-configurable paired
+  gate; metric/gate changes require an ADR
   and schema/contract-version update. ([ADR 0024](./adr/0024-retrieval-eval-harness.md),
   [ADR 0025](./adr/0025-evidence-gated-fusion.md))
 

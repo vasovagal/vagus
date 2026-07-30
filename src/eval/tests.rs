@@ -134,7 +134,7 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
         "{\"query\":\"alpha\",\"cohort\":\"lexical\",\"relevant\":[\"a.md\"]}\n",
         "{\"query\":\"beta\",\"relevant\":[]}\n"
     );
-    let report = evaluate(&cfg, labels, 2, Mode::Bm25, false, false).unwrap();
+    let report = evaluate(&cfg, labels, 2, Mode::Bm25, false, 0, false).unwrap();
     assert_eq!(report.schema_version, 2);
     assert_eq!(report.config.result_policy, RESULT_POLICY);
     assert_eq!(report.config.fusion_policy, "none");
@@ -283,12 +283,13 @@ fn changed_index_snapshot_is_rejected() {
 fn runner_rejects_unknown_qrel_path_and_zero_k() {
     let (_root, cfg) = fixture();
     let unknown = "{\"query\":\"alpha\",\"relevant\":[\"missing.md\"]}\n";
-    assert!(evaluate(&cfg, unknown, 10, Mode::Bm25, false, false).is_err());
+    assert!(evaluate(&cfg, unknown, 10, Mode::Bm25, false, 0, false).is_err());
     let db = Db::open(&cfg.db_path()).unwrap();
     db.upsert_file("empty.md", 1.0, "empty", 1).unwrap();
     let empty = "{\"query\":\"empty\",\"relevant\":[\"empty.md\"]}\n";
-    assert!(evaluate(&cfg, empty, 10, Mode::Bm25, false, false).is_err());
+    assert!(evaluate(&cfg, empty, 10, Mode::Bm25, false, 0, false).is_err());
     let known = "{\"query\":\"alpha\",\"relevant\":[\"a.md\"]}\n";
-    assert!(evaluate(&cfg, known, 0, Mode::Bm25, false, false).is_err());
-    assert!(evaluate(&cfg, known, 10, Mode::Bm25, false, true).is_err());
+    assert!(evaluate(&cfg, known, 0, Mode::Bm25, false, 0, false).is_err());
+    assert!(evaluate(&cfg, known, 10, Mode::Bm25, false, 1, false).is_err());
+    assert!(evaluate(&cfg, known, 10, Mode::Bm25, false, 0, true).is_err());
 }
