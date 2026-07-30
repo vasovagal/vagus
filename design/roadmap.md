@@ -31,6 +31,7 @@ as G8 breaches.
 | Embedder | core `vagus` | fastembed/ort — **EmbeddingGemma-300M** (768-dim, 2048 ctx) | shipped (ADR 0006) |
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
 | Mtime-windowed forced reindex (`reindex --since`) | core `vagus` | full-vault snapshot + G5 replacement path | shipped (ADR 0022) |
+| Fail-closed vault onboarding + network-free doctor | core `vagus` | alias-aware paths; explicit model-fetch consent | shipped (ADRs 0004/0006/0015) |
 | Cross-encoder reranker (`--rerank`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en** | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |

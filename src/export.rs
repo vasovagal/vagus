@@ -7,10 +7,9 @@
 //! completion marker. Output paths are resolved fail-closed and may never enter the Markdown vault
 //! (G1). Instrumentation only — no embed/index/RRF change, so no new ADR.
 
-use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::OptionalExtension;
@@ -235,7 +234,7 @@ fn prepare_output(out: &Path, vault: &Path, cwd: &Path, force: bool) -> Result<P
 /// any destination at or below the similarly resolved vault path, including when the vault does not
 /// exist yet. Errors fail closed rather than turning an unreadable path into "outside".
 fn safe_output_path_with_cwd(out: &Path, vault: &Path, cwd: &Path) -> Result<PathBuf> {
-    let out_abs = lexical_absolute_from(out, cwd)?;
+    let out_abs = crate::path_safety::absolute_from(out, cwd)?;
     if let Ok(meta) = fs::symlink_metadata(&out_abs)
         && meta.file_type().is_symlink()
     {
@@ -244,9 +243,8 @@ fn safe_output_path_with_cwd(out: &Path, vault: &Path, cwd: &Path) -> Result<Pat
             out_abs.display()
         )
     }
-    let vault_abs = lexical_absolute_from(vault, cwd)?;
-    let out_resolved = resolve_existing_ancestor(&out_abs)?;
-    let vault_resolved = resolve_existing_ancestor(&vault_abs)?;
+    let out_resolved = crate::path_safety::resolve_from(&out_abs, cwd)?;
+    let vault_resolved = crate::path_safety::resolve_from(vault, cwd)?;
     if out_resolved.starts_with(&vault_resolved) {
         bail!(
             "--out {} is inside the vault ({}) — G1: the vault holds Markdown only",
@@ -255,63 +253,6 @@ fn safe_output_path_with_cwd(out: &Path, vault: &Path, cwd: &Path) -> Result<Pat
         )
     }
     Ok(out_resolved)
-}
-
-fn lexical_absolute_from(path: &Path, cwd: &Path) -> Result<PathBuf> {
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-    let mut clean = PathBuf::new();
-    for component in joined.components() {
-        match component {
-            Component::Prefix(prefix) => clean.push(prefix.as_os_str()),
-            Component::RootDir => clean.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !clean.pop() {
-                    bail!("path {} escapes the filesystem root", path.display())
-                }
-            }
-            Component::Normal(part) => clean.push(part),
-        }
-    }
-    if !clean.is_absolute() {
-        bail!("could not resolve {} to an absolute path", path.display())
-    }
-    Ok(clean)
-}
-
-/// Canonicalize the nearest existing ancestor and append every unresolved component afterward. This
-/// catches aliases such as `/tmp` -> `/private/tmp` without discarding a missing destination suffix.
-fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
-    let mut probe = path.to_path_buf();
-    let mut suffix: Vec<OsString> = Vec::new();
-    loop {
-        match fs::symlink_metadata(&probe) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let name = probe.file_name().ok_or_else(|| {
-                    anyhow!("cannot find an existing ancestor for {}", path.display())
-                })?;
-                suffix.push(name.to_os_string());
-                if !probe.pop() {
-                    bail!("cannot find an existing ancestor for {}", path.display())
-                }
-            }
-            Err(e) => {
-                return Err(e).with_context(|| format!("inspecting {}", probe.display()));
-            }
-        }
-    }
-    let mut resolved = probe
-        .canonicalize()
-        .with_context(|| format!("resolving {}", probe.display()))?;
-    for part in suffix.into_iter().rev() {
-        resolved.push(part);
-    }
-    lexical_absolute_from(&resolved, Path::new(std::path::MAIN_SEPARATOR_STR))
 }
 
 fn dir_non_empty(path: &Path) -> Result<bool> {

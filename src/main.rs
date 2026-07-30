@@ -10,8 +10,10 @@ mod db;
 mod embed;
 mod export;
 mod index;
+mod init;
 mod lex;
 mod notes;
+mod path_safety;
 mod plugin;
 mod rerank;
 #[cfg(feature = "generate")]
@@ -27,7 +29,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use config::Config;
@@ -180,10 +182,20 @@ enum Command {
         #[arg(long)]
         stats: bool,
     },
+    /// Create or complete the vault's PARA folder layout (idempotent and fail-closed).
+    Init {
+        /// Use the fixed iCloud Drive Brain directory and symlink the configured vault path to it.
+        #[arg(long)]
+        icloud: bool,
+    },
     /// Print a short guide to capturing, searching, and filing notes with PARA.
     Tutorial,
-    /// Health check: vault symlink, model cache, dylib, dims, index openable.
-    Doctor,
+    /// Health check: vault, storage separation, model-cache presence, identity, and indexes.
+    Doctor {
+        /// Explicitly download and validate both ONNX models now. Plain doctor never downloads.
+        #[arg(long)]
+        fetch_models: bool,
+    },
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
     /// Manage the bundled Claude Code / pi skills (create-note / search / process-inbox).
@@ -270,6 +282,11 @@ enum VectorsAction {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load()?;
+    // Every command that may open/create meta.db or a model cache enforces G1 first. Doctor performs
+    // the same validation itself so it can print a diagnostic instead of failing before its report.
+    if !matches!(&cli.command, Command::Doctor { .. }) {
+        cfg.validate_storage_separation()?;
+    }
 
     match cli.command {
         Command::Status => cmd_status(&cfg)?,
@@ -360,8 +377,9 @@ fn main() -> Result<()> {
             thought_process,
             stats,
         )?,
+        Command::Init { icloud } => init::run(&cfg, icloud)?,
         Command::Tutorial => cmd_tutorial(&cfg),
-        Command::Doctor => cmd_doctor(&cfg)?,
+        Command::Doctor { fetch_models } => cmd_doctor(&cfg, fetch_models)?,
         Command::Skills { action } => match action {
             SkillsAction::Install { agent, dir, force } => skills::install(agent, dir, force)?,
             SkillsAction::List { agent } => skills::list(agent)?,
@@ -388,21 +406,61 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor(cfg: &Config) -> Result<()> {
+const EMBED_CACHE_REPO: &str = "models--onnx-community--embeddinggemma-300m-ONNX";
+const EMBED_CACHE_FILES: &[&str] = &[
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "onnx/model.onnx",
+    "onnx/model.onnx_data",
+];
+const RERANK_CACHE_REPO: &str = "models--jinaai--jina-reranker-v1-turbo-en";
+const RERANK_CACHE_FILES: &[&str] = &[
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "onnx/model.onnx",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelCacheState {
+    Missing,
+    Partial,
+    Complete,
+}
+
+fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
     fn line(label: &str, ok: bool, detail: &str) {
         println!("  [{}] {label}: {detail}", if ok { "ok" } else { "!!" });
     }
+
     println!("vagus doctor");
+    let (vault_ok, vault_detail) = vault_health(&cfg.vault);
+    line("vault", vault_ok, &vault_detail);
+
+    let data_safe = storage_path_health(&cfg.data_dir, &cfg.vault);
+    let cache_safe = storage_path_health(&cfg.cache_dir, &cfg.vault);
     line(
-        "vault",
-        cfg.vault.exists(),
-        &cfg.vault.display().to_string(),
+        "index outside vault",
+        data_safe.is_ok(),
+        &data_safe
+            .as_ref()
+            .map(|_| cfg.data_dir.display().to_string())
+            .unwrap_or_else(|e| e.to_string()),
     );
     line(
-        "data dir",
-        cfg.data_dir.exists(),
-        &cfg.data_dir.display().to_string(),
+        "model cache outside vault",
+        cache_safe.is_ok(),
+        &cache_safe
+            .as_ref()
+            .map(|_| cfg.cache_dir.display().to_string())
+            .unwrap_or_else(|e| e.to_string()),
     );
+    if let Err(e) = data_safe {
+        bail!("refusing to open derived data at an unsafe path: {e}")
+    }
 
     let db = Db::open(&cfg.db_path())?;
     let model = db
@@ -414,45 +472,73 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
     let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
     line("embed identity", id_ok, &format!("{model} / {dims}"));
 
-    let seg = lex::Lex::open(&cfg.tantivy_dir()).and_then(|l| l.segment_stats());
+    let seg = lex::Lex::open(&cfg.tantivy_dir()).and_then(|lex| lex.segment_stats());
     let seg_detail = match &seg {
-        Ok(s) => format!(
+        Ok(stats) => format!(
             "{} ({} segments, {} docs, {} deleted)",
             cfg.tantivy_dir().display(),
-            s.segments,
-            s.docs,
-            s.deleted
+            stats.segments,
+            stats.docs,
+            stats.deleted
         ),
-        Err(_) => cfg.tantivy_dir().display().to_string(),
+        Err(e) => format!("{} ({e})", cfg.tantivy_dir().display()),
     };
     line("tantivy index", seg.is_ok(), &seg_detail);
-    line(
-        "onnx + model",
-        embed::Embedder::new(&cfg.cache_dir).is_ok(),
-        &cfg.cache_dir.display().to_string(),
-    );
-    // The cross-encoder reranker is opt-in (tier-1, `--rerank`); report whether its model is already
-    // cached WITHOUT instantiating it (that would force the ~150MB download). `ok` is informational.
-    let rerank_cached = std::fs::read_dir(&cfg.cache_dir)
-        .map(|rd| {
-            rd.flatten().any(|e| {
-                let n = e.file_name().to_string_lossy().to_lowercase();
-                n.contains("rerank") || n.contains("jina")
-            })
-        })
-        .unwrap_or(false);
-    line(
-        "reranker (opt-in)",
-        true,
-        &format!(
-            "jina-reranker-v1-turbo-en — {}",
-            if rerank_cached {
-                "cached"
-            } else {
-                "downloads on first --rerank"
+
+    let mut fetch_errors = Vec::new();
+    if fetch_models {
+        if let Err(e) = cache_safe {
+            fetch_errors.push(format!("unsafe model-cache path: {e}"));
+            line(
+                "embedder model",
+                false,
+                "not fetched: model cache is inside the vault",
+            );
+            line(
+                "reranker model",
+                false,
+                "not fetched: model cache is inside the vault",
+            );
+        } else {
+            println!(
+                "  fetching and validating models in {} (explicit network operation) …",
+                cfg.cache_dir.display()
+            );
+            match validate_embedder(&cfg.cache_dir) {
+                Ok(detail) => line("embedder model", true, &detail),
+                Err(e) => {
+                    line("embedder model", false, &e.to_string());
+                    fetch_errors.push(format!("embedder: {e}"));
+                }
             }
-        ),
-    );
+            match validate_reranker(&cfg.cache_dir) {
+                Ok(detail) => line("reranker model", true, &detail),
+                Err(e) => {
+                    line("reranker model", false, &e.to_string());
+                    fetch_errors.push(format!("reranker: {e}"));
+                }
+            }
+        }
+    } else {
+        // Presence-only checks are deliberately pure filesystem reads. Never call fastembed model
+        // constructors here: even a partial cache can make those constructors access the network.
+        report_cache_state(
+            "embedder model",
+            &cfg.cache_dir,
+            EMBED_CACHE_REPO,
+            EMBED_CACHE_FILES,
+            "~1.2 GB; downloads on first index/search",
+            &line,
+        );
+        report_cache_state(
+            "reranker model",
+            &cfg.cache_dir,
+            RERANK_CACHE_REPO,
+            RERANK_CACHE_FILES,
+            "~150 MB; downloads on first --rerank",
+            &line,
+        );
+    }
 
     let files = db.count("SELECT count(*) FROM files")?;
     let chunks = db.count("SELECT count(*) FROM chunks")?;
@@ -462,9 +548,6 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         embedded == chunks,
         &format!("{files} files, {chunks} chunks, {embedded} embedded"),
     );
-
-    // Ticks are user data (ADR 0021/G25), intentionally outside the G5 hash-diff; orphans are
-    // informational, never an error — and meta.db is no longer safe to delete as a "reset".
     line(
         "ticks",
         true,
@@ -474,68 +557,219 @@ fn cmd_doctor(cfg: &Config) -> Result<()> {
         ),
     );
 
-    // Vector index (ADR 0019): the usearch HNSW sidecar. Healthy when present and its key count matches
-    // the embedded-chunk count (G5 cross-check); missing ⇒ it rebuilds from the f32 BLOBs on next index.
-    let vpath = cfg.vector_path();
-    let (vec_ok, vec_detail) = if vpath.exists() {
-        match vector::UsearchIndex::view(&vpath, config::EMBED_DIMS) {
-            Ok(vi) => {
-                let n = vector::VectorIndex::len(&vi);
+    let vector_path = cfg.vector_path();
+    let (vector_ok, vector_detail) = if vector_path.exists() {
+        match vector::UsearchIndex::view(&vector_path, config::EMBED_DIMS) {
+            Ok(index) => {
+                let count = vector::VectorIndex::len(&index);
                 (
-                    n as i64 == embedded,
-                    format!("{} ({n} vectors, {embedded} embedded)", vpath.display()),
+                    count as i64 == embedded,
+                    format!(
+                        "{} ({count} vectors, {embedded} embedded)",
+                        vector_path.display()
+                    ),
                 )
             }
-            Err(e) => (false, format!("{} (open failed: {e})", vpath.display())),
+            Err(e) => (
+                false,
+                format!("{} (open failed: {e})", vector_path.display()),
+            ),
         }
     } else {
         (
             embedded == 0,
             format!(
                 "{} (missing — rebuilds on next `vagus index`)",
-                vpath.display()
+                vector_path.display()
             ),
         )
     };
-    line("vector index (usearch)", vec_ok, &vec_detail);
+    line("vector index (usearch)", vector_ok, &vector_detail);
 
-    // Guardrail G1: the index must not live inside the iCloud vault.
-    let inside = cfg.data_dir.starts_with(&cfg.vault);
-    line(
-        "index outside vault",
-        !inside,
-        if inside {
-            "INDEX IS INSIDE THE VAULT (G1 violation)"
-        } else {
-            "ok"
-        },
-    );
-
-    // Fragmentation hint: per-file commits accumulate segments + tombstones over time.
-    if let Ok(s) = &seg
-        && (s.segments >= 8 || (s.docs > 0 && s.deleted >= s.docs))
+    if let Ok(stats) = &seg
+        && (stats.segments >= 8 || (stats.docs > 0 && stats.deleted >= stats.docs))
     {
         println!(
             "\n  fragmented: {} segments, {} deleted docs — run `vagus compact`.",
-            s.segments, s.deleted
+            stats.segments, stats.deleted
         );
     }
 
-    // Disk usage of the derived index (~/.local/share/vagus), by file type.
     println!("\nindex size ({}):", cfg.data_dir.display());
     let sizes = dir_size_by_ext(&cfg.data_dir);
-    let (mut total_n, mut total_b) = (0u64, 0u64);
-    for (ext, (n, b)) in &sizes {
-        println!("  {ext:<10} {n:>4} file(s)  {:>10}", human_size(*b));
-        total_n += n;
-        total_b += b;
+    let (mut total_files, mut total_bytes) = (0_u64, 0_u64);
+    for (ext, (count, bytes)) in &sizes {
+        println!("  {ext:<10} {count:>4} file(s)  {:>10}", human_size(*bytes));
+        total_files += count;
+        total_bytes += bytes;
     }
     println!(
-        "  {:<10} {total_n:>4} file(s)  {:>10}",
+        "  {:<10} {total_files:>4} file(s)  {:>10}",
         "total",
-        human_size(total_b)
+        human_size(total_bytes)
     );
+
+    if !fetch_errors.is_empty() {
+        bail!(
+            "model fetch/validation failed:\n  - {}",
+            fetch_errors.join("\n  - ")
+        )
+    }
     Ok(())
+}
+
+fn vault_health(vault: &Path) -> (bool, String) {
+    match std::fs::symlink_metadata(vault) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            false,
+            format!(
+                "{} — missing; run `vagus init --icloud` (or plain `vagus init`)",
+                vault.display()
+            ),
+        ),
+        Err(e) => (false, format!("{} ({e})", vault.display())),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = std::fs::read_link(vault)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|e| format!("unreadable target: {e}"));
+            if vault.is_dir() {
+                (true, format!("{} → {target}", vault.display()))
+            } else {
+                (
+                    false,
+                    format!("{} → {target} (broken or not a directory)", vault.display()),
+                )
+            }
+        }
+        Ok(meta) if !meta.is_dir() => (false, format!("{} is not a directory", vault.display())),
+        Ok(_) => {
+            let canonical = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
+            if cfg!(target_os = "macos") && !init::is_icloud_path(&canonical) {
+                (
+                    true,
+                    format!(
+                        "{} (local only; `vagus init --icloud` enables device sync)",
+                        vault.display()
+                    ),
+                )
+            } else {
+                (true, vault.display().to_string())
+            }
+        }
+    }
+}
+
+fn storage_path_health(path: &Path, vault: &Path) -> Result<()> {
+    if crate::path_safety::at_or_within(path, vault)? {
+        bail!(
+            "{} resolves inside vault {} (G1 violation)",
+            path.display(),
+            vault.display()
+        )
+    }
+    Ok(())
+}
+
+fn model_cache_state(cache_dir: &Path, repo: &str, required: &[&str]) -> Result<ModelCacheState> {
+    let repo_dir = cache_dir.join(repo);
+    match std::fs::symlink_metadata(&repo_dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ModelCacheState::Missing),
+        Err(e) => return Err(e.into()),
+        Ok(meta) if !meta.is_dir() => return Ok(ModelCacheState::Partial),
+        Ok(_) => {}
+    }
+    let snapshots = repo_dir.join("snapshots");
+    let entries = match std::fs::read_dir(&snapshots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ModelCacheState::Partial),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let mut complete = true;
+        for relative in required {
+            match std::fs::metadata(entry.path().join(relative)) {
+                Ok(meta) if meta.is_file() && meta.len() > 0 => {}
+                Ok(_) => complete = false,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => complete = false,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if complete {
+            return Ok(ModelCacheState::Complete);
+        }
+    }
+    Ok(ModelCacheState::Partial)
+}
+
+fn report_cache_state(
+    label: &str,
+    cache_dir: &Path,
+    repo: &str,
+    required: &[&str],
+    missing_detail: &str,
+    line: &impl Fn(&str, bool, &str),
+) {
+    match model_cache_state(cache_dir, repo, required) {
+        Ok(ModelCacheState::Complete) => line(
+            label,
+            true,
+            "complete on disk (presence-only; plain doctor never loads/downloads models)",
+        ),
+        Ok(ModelCacheState::Missing) => line(
+            label,
+            true,
+            &format!("not downloaded ({missing_detail}; use `vagus doctor --fetch-models`)"),
+        ),
+        Ok(ModelCacheState::Partial) => line(
+            label,
+            false,
+            "partial cache; use `vagus doctor --fetch-models` to repair and validate it",
+        ),
+        Err(e) => line(label, false, &format!("cache inspection failed: {e}")),
+    }
+}
+
+fn validate_embedder(cache_dir: &Path) -> Result<String> {
+    let mut embedder = embed::Embedder::new(cache_dir)?;
+    let vector = embedder.embed_query("vagus doctor local model validation")?;
+    if vector.len() != config::EMBED_DIMS || vector.iter().any(|value| !value.is_finite()) {
+        bail!(
+            "embedder returned {} values; expected {} finite values",
+            vector.len(),
+            config::EMBED_DIMS
+        )
+    }
+    if model_cache_state(cache_dir, EMBED_CACHE_REPO, EMBED_CACHE_FILES)?
+        != ModelCacheState::Complete
+    {
+        bail!("embedder loaded but its on-disk cache is incomplete")
+    }
+    Ok(format!(
+        "{} — downloaded, loaded, and verified at {} dims",
+        config::EMBED_MODEL,
+        vector.len()
+    ))
+}
+
+fn validate_reranker(cache_dir: &Path) -> Result<String> {
+    let mut reranker = rerank::Reranker::new(cache_dir)?;
+    let scores = reranker.rerank(
+        "vagus doctor local model validation",
+        &["local model validation".to_string()],
+    )?;
+    if scores.len() != 1 || !scores[0].1.is_finite() {
+        bail!("reranker did not return one finite validation score")
+    }
+    if model_cache_state(cache_dir, RERANK_CACHE_REPO, RERANK_CACHE_FILES)?
+        != ModelCacheState::Complete
+    {
+        bail!("reranker loaded but its on-disk cache is incomplete")
+    }
+    Ok("jina-reranker-v1-turbo-en — downloaded, loaded, and verified".into())
 }
 
 /// Total file count + bytes per file extension under `root` (recursive).
@@ -665,6 +899,11 @@ fn cmd_tutorial(cfg: &Config) {
     println!(
         r#"vagus — your PARA second brain   (vault: {vault})
 
+SETUP — once:
+  vagus init                          create the vault with the PARA folders
+  vagus init --icloud                 use iCloud Drive and symlink the friendly vault path
+  vagus doctor                        network-free health check (--fetch-models is explicit)
+
 CAPTURE — zero ceremony:
   vim ~/brain/00-Inbox/my-idea.md     just write Markdown; no frontmatter needed
   vagus add-note "My idea"            create the note + open it in $EDITOR, then index
@@ -693,4 +932,59 @@ Notes are searchable the moment they're indexed, even before you file them.
 
 Agent skills (Claude Code / pi):  vagus skills install [--agent claude|pi]"#
     );
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+    use crate::util::testdir::TempDir;
+
+    fn cache_snapshot(root: &Path, repo: &str, files: &[&str]) {
+        let snapshot = root.join(repo).join("snapshots/revision");
+        for relative in files {
+            let path = snapshot.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"present").unwrap();
+        }
+    }
+
+    #[test]
+    fn cache_state_distinguishes_missing_partial_and_complete() {
+        let dir = TempDir::new("doctor-model-cache");
+        assert_eq!(
+            model_cache_state(dir.path(), EMBED_CACHE_REPO, EMBED_CACHE_FILES).unwrap(),
+            ModelCacheState::Missing
+        );
+        std::fs::create_dir_all(dir.path().join(EMBED_CACHE_REPO)).unwrap();
+        assert_eq!(
+            model_cache_state(dir.path(), EMBED_CACHE_REPO, EMBED_CACHE_FILES).unwrap(),
+            ModelCacheState::Partial
+        );
+        cache_snapshot(dir.path(), EMBED_CACHE_REPO, EMBED_CACHE_FILES);
+        assert_eq!(
+            model_cache_state(dir.path(), EMBED_CACHE_REPO, EMBED_CACHE_FILES).unwrap(),
+            ModelCacheState::Complete
+        );
+        std::fs::write(
+            dir.path()
+                .join(EMBED_CACHE_REPO)
+                .join("snapshots/revision/onnx/model.onnx"),
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            model_cache_state(dir.path(), EMBED_CACHE_REPO, EMBED_CACHE_FILES).unwrap(),
+            ModelCacheState::Partial
+        );
+    }
+
+    #[test]
+    fn regular_file_is_not_a_healthy_vault() {
+        let dir = TempDir::new("doctor-vault-file");
+        let vault = dir.path().join("brain");
+        std::fs::write(&vault, "not a directory").unwrap();
+        let (ok, detail) = vault_health(&vault);
+        assert!(!ok);
+        assert!(detail.contains("not a directory"));
+    }
 }
