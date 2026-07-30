@@ -31,9 +31,11 @@ silently breaking an invariant.
 - `0002-language-rust.md` — Rust over Python.
 - `0003-search-stack.md` — tantivy + fastembed/ort + brute-force cosine + RRF(k=60). *(vector component
   superseded by 0019.)*
-- `0004-icloud-markdown-only.md` — iCloud holds Markdown only; index/DB/cache live outside iCloud.
+- `0004-icloud-markdown-only.md` — iCloud holds Markdown only; index/DB/cache stay outside via
+  alias-aware path checks; `init --icloud` uses fail-closed, no-note-migration setup.
 - `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
-- `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default.
+- `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default; plain doctor
+  never downloads, while explicit `--fetch-models` validates both ONNX models.
 - `0007-lean-on-frankensearch.md` — depend/vendor the retrieval engine (pending smoke test).
 - `0008-naming.md` — `vagus` / `vasovagal`.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
@@ -43,7 +45,8 @@ silently breaking an invariant.
   channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 context contract.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
-- `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); amends 0003 + G17.
+- `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit
+  doctor fetch/validation policy; amends 0003 + G17.
 - `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); amends G17 (next).
 - `0017-indexed-frontmatter-filters.md` — `search --since`/`--source` via SQLite-denormalized
   `created_at`/`source` (no tantivy schema change); adds G9b.

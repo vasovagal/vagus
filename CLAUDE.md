@@ -12,8 +12,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
 
 1. **Only plain Markdown goes in the iCloud vault.** The search index (`tantivy/`), the SQLite
    `meta.db`, and the model cache live **outside** iCloud — `~/.local/share/vagus/` and
-   `~/Library/Caches/vagus/`. Never write a database or index into the iCloud vault: iCloud syncs
-   `.db`/`-wal`/`-shm` independently and will corrupt it (`database disk image is malformed`).
+   `~/Library/Caches/vagus/`. Enforce this with alias-aware, missing-path-safe resolution before any
+   derived write. `vagus init --icloud` may create only the PARA skeleton/symlink after a complete
+   fail-closed preflight; it never moves/deletes occupied notes. Never write a database or index into
+   the iCloud vault: independently synced `.db`/`-wal`/`-shm` files corrupt it.
 2. **The index is a derived cache, never the source of truth.** It must be fully rebuildable from the
    Markdown via `vagus reindex`. The Markdown files are authoritative. Sole exception: the `ticks`
    usage counters (ADR 0021/G25) are local user data in `meta.db` — reindex preserves them and they
@@ -32,7 +34,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
    The f32 BLOBs are authoritative; the `.usearch` sidecar is a rebuildable derived cache (missing/stale
    ⇒ rebuilt from the BLOBs, no re-embed).
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —
-   always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or `FASTEMBED_CACHE_DIR`).
+   always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or
+   `FASTEMBED_CACHE_DIR`). Plain `vagus doctor` is filesystem-presence-only and must never instantiate
+   a possibly partial model cache; only explicit `doctor --fetch-models` may download and validate both
+   ONNX models, failing nonzero if either fails.
 7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`; no
    weighting/normalization. The cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
    and must not touch `rrf()` — as is note-level dedup, the default where `--limit` counts distinct
@@ -88,6 +93,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
 
 ## Layout
 
+These are the **maintainer machine's** paths, not an installation template. Users install from the
+brew tap and choose their own home/vault paths; follow the README when helping them onboard.
+
 ```
 ~/code/vasovagal/vagus/     # this repo (org dir ~/code/vasovagal/)
   src/                      # the vagus crate
@@ -114,6 +122,15 @@ The installed `vagus` on PATH comes from the **Homebrew tap** (`brew tap vasovag
 install vagus`), upgraded once per release (see Releasing). Do **not** `cargo install --path .` —
 `~/.cargo/bin` precedes `/opt/homebrew/bin` on PATH, so a cargo-installed copy silently shadows the
 brew one and drifts. Dev builds run from `target/`.
+
+**Dev builds must not share the installed binary's derived index when their chunk/embed identity may
+be different.** A chunk-version mismatch can auto-reindex while a direct embedding mismatch refuses
+incremental work under G4; either way, alternating identities wastes work and risks confusing repair.
+Use an isolated derived-data directory for dev indexing/search (models are safe to share):
+
+```sh
+VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
+```
 
 ## Releasing
 

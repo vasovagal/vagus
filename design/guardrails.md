@@ -9,7 +9,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G1 — iCloud holds Markdown only.** The tantivy index, the SQLite `meta.db`, and the model cache
   live **outside** iCloud (`~/.local/share/vagus/`, `~/Library/Caches/vagus/`). Never place a SQLite
   DB or search index inside the iCloud vault — async multi-file sync of `.db`/`-wal`/`-shm` corrupts
-  it. ([ADR 0004](./adr/0004-icloud-markdown-only.md))
+  it. Every derived-output path is checked with alias-aware resolution that retains unresolved suffixes,
+  so relative/missing/`..`/symlink spellings cannot bypass the boundary. `vagus init --icloud` is the
+  one explicit setup path: it preflights source/target identity, overlap, occupancy, special entries,
+  and traversal errors before mutation; it never moves or recursively deletes an occupied vault, and
+  removes only an exactly recognized empty PARA skeleton with non-recursive `rmdir` operations.
+  ([ADR 0004](./adr/0004-icloud-markdown-only.md))
 - **G2 — The index is a derived cache.** The index and derived tables (`files`/`chunks`/`meta`/
   `expansion_cache`, the tantivy dir, the usearch sidecar) must be 100% rebuildable from the Markdown
   via `vagus reindex`. Markdown files are the source of truth; the DB never is. **Sole exception:**
@@ -103,8 +108,13 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 ## Build & dependencies
 
-- **G10 — fastembed cache dir is explicit.** Never rely on fastembed's `./.fastembed_cache` CWD
-  default; set it to `~/Library/Caches/vagus/models` via `with_cache_dir` / `FASTEMBED_CACHE_DIR`.
+- **G10 — fastembed cache dir and download consent are explicit.** Never rely on fastembed's
+  `./.fastembed_cache` CWD default; set it to `~/Library/Caches/vagus/models` via `with_cache_dir` /
+  `FASTEMBED_CACHE_DIR`. Plain `vagus doctor` is strictly network-incapable: it inspects the exact
+  required files in local Hugging Face snapshots and never calls a download-capable model constructor,
+  even for a partial cache. Only `doctor --fetch-models` may construct/download both ONNX models; it
+  validates each with inference and exits nonzero if either fails. ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md),
+  [ADR 0015](./adr/0015-cross-encoder-rerank.md))
 - **G11 — Retrieval fusion is hand-rolled** (tantivy BM25 + RRF k=60; [ADR 0003](./adr/0003-search-stack.md)).
   The cosine component is the embedded **usearch HNSW** vector index, statically linked and pinned
   ([ADR 0019](./adr/0019-usearch-ann-backend.md)) — with an exact brute-force fallback (`--exact`). The

@@ -41,6 +41,7 @@ straight from a Claude Code or pi session).
 
 ```sh
 brew tap vasovagal/tap
+brew trust --tap vasovagal/tap    # Homebrew 6+: trust this third-party tap
 brew install vagus
 ```
 
@@ -61,6 +62,35 @@ search vagus downloads the embedding model (**EmbeddingGemma-300M, ~1.23 GB**) t
 `~/Library/Caches/vagus/models`, outside iCloud. The optional tiers fetch their models lazily
 the first time you use them — `--rerank` ~150 MB, `--smart` ~1.2 GB — so a plain install only
 pays for the embedder.
+
+## Setup
+
+```sh
+vagus init --icloud      # recommended on macOS: iCloud Brain + friendly ~/brain symlink
+vagus init               # alternatively, a local-only vault
+vagus doctor             # network-free health/cache-presence check
+vagus doctor --fetch-models  # explicit download + inference validation of both ONNX models
+```
+
+`--icloud` uses `~/Library/Mobile Documents/com~apple~CloudDocs/Brain` as the real vault and
+symlinks the configured vault path (normally `~/brain`) to it. Only Markdown enters iCloud; each Mac
+keeps its own SQLite/Tantivy/usearch index and model cache locally. Point Obsidian at either spelling
+of the same folder—vagus never edits a note unless you explicitly create or file it.
+
+Setup is idempotent and fail-closed. A missing vault or an exact empty PARA skeleton can be linked;
+existing iCloud notes are preserved. If the local vault contains any note, symlink, special entry, or
+unrecognized directory, init changes **neither** path and asks for a manual migration. When the iCloud
+`Brain` target does not yet exist, the safe whole-directory move is:
+
+```sh
+target="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Brain"
+[ ! -e "$target" ] && [ ! -L "$target" ]  # both must pass; otherwise merge manually
+mv -- "$HOME/brain" "$target"
+vagus init --icloud
+```
+
+For a bulk import, copy Markdown into the PARA folders (or `00-Inbox/`) and run one `vagus index`;
+do not loop over `add-note`, which would load the embedder once per process.
 
 ### Claude Code and pi skills
 
@@ -92,6 +122,7 @@ path.
 ## Usage
 
 ```sh
+vagus init --icloud         # one-time fail-closed iCloud/PARA setup (`vagus init`: local only)
 vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
@@ -102,7 +133,8 @@ vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall res
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
-vagus doctor                # health check (symlink, model cache, dylib, dims, index)
+vagus doctor                # network-free health/cache-presence check
+vagus doctor --fetch-models # explicitly download + validate embedder and reranker
 vagus status                # counts, model/dims, index size
 vagus vectors export --out DIR  # coherent local vector/metadata snapshot for offline analysis
 vagus skills install        # install agent skills (--agent claude|pi; default: claude)

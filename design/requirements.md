@@ -11,6 +11,8 @@ coding harness (Claude Code and pi).
 
 - **F1 — PARA vault of plain Markdown.** Folders `00-Inbox / 10-Projects / 20-Areas / 30-Resources /
   40-Archive` (+ optional `50-Meta`). One `.md` file per note; whole-folder `mv` for lifecycle moves.
+  `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
+  or recursively deletes an occupied vault.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
   Also the create-note skill to capture from a Claude Code or pi session.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
@@ -31,7 +33,8 @@ coding harness (Claude Code and pi).
 ## Non-functional requirements
 
 - **N1 — Local-first & private.** Works fully offline after first run; no note text leaves the machine
-  by default.
+  by default. Plain `doctor` is network-incapable; model downloads occur only on first model use or the
+  explicit `doctor --fetch-models` consent path.
 - **N2 — No background daemon** in the default path; indexing is on-demand (a watcher is opt-in, later).
 - **N3 — Durable & recoverable.** Markdown is the source of truth; the index is a rebuildable cache.
   iCloud holds *only* Markdown (see [ADR 0004](./adr/0004-icloud-markdown-only.md)).

@@ -2,7 +2,8 @@
 
 - **Status:** Accepted (2026-05-29); **amended 2026-05-30** to adopt EmbeddingGemma-300M (was
   bge-small-en-v1.5). The "local, no daemon, fastembed/ort, swappable backend" decision is unchanged —
-  only the model identity changed.
+  only the model identity changed. **Amended 2026-07-30:** ordinary `doctor` is network-incapable;
+  model download/validation requires explicit `doctor --fetch-models`.
 
 ## Context
 
@@ -33,6 +34,16 @@ we prepend it ourselves — query `task: search result | query: {text}`, documen
 `title: none | text: {text}` (documents were *un*-prefixed under bge — this is a real behavior change).
 Vectors are L2-normalized (G7). Changing model + dims (384→768) forces one `vagus reindex` (G4); we bump
 `CHUNK_VERSION` in the same change so the reindex is automatic.
+
+### 2026-07-30 doctor/download amendment
+
+Constructing a fastembed model is download-capable when any required snapshot file is absent. A
+repository-name substring is therefore not proof that a model is cached: interrupted downloads create
+the repository directory early. Plain `vagus doctor` now performs exact local snapshot-file presence
+checks only and never calls `TextEmbedding::try_new`, including for a partial cache. Explicit
+`doctor --fetch-models` is the consent boundary: it constructs/downloads the embedder and reranker,
+runs one inference through each, verifies the embedder dimensions/finite values, and exits nonzero if
+either model fails. This refines G10 without changing normal first-use lazy download behavior.
 
 ## Consequences
 

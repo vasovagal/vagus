@@ -14,15 +14,23 @@ cargo build              # first build fetches a prebuilt ONNX Runtime (network,
 cargo test
 cargo clippy --all-targets
 cargo fmt                # run before every push (CI runs cargo fmt --check)
-cargo install --path .   # install `vagus` on PATH
-vagus doctor             # verify symlink, model cache, dylib, dims, index health
+./target/debug/vagus --version   # run dev builds from target/; do not shadow the brew binary
+vagus doctor             # network-free installed-binary health/cache check
 vagus status             # counts, model/dims, index size
 ```
 
 First **build** downloads a prebuilt ONNX Runtime (a static `libonnxruntime.a`) and links
 it in — the installed artifact is a self-contained binary (system dylibs only; verify with
 `otool -L`). First **run** downloads the embedding model (EmbeddingGemma-300M, ~1.23 GB) to
-`~/Library/Caches/vagus/models`, outside iCloud.
+`~/Library/Caches/vagus/models`, outside iCloud. `vagus doctor --fetch-models` is the explicit
+prefetch/validation path; plain doctor never downloads.
+
+Never point a dev build at the installed binary's derived index when identities may differ. Use an
+isolated data directory (the model cache can remain shared):
+
+```sh
+VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
+```
 
 ### Feature flags
 

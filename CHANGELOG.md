@@ -11,6 +11,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Fail-closed first-run setup.** `vagus init` creates the fixed PARA layout; `--icloud` uses the
+  standard iCloud Drive `Brain` directory and a friendly vault symlink. It resolves aliases and
+  missing paths, preflights equality/overlap/occupancy/traversal before mutation, initializes a direct
+  iCloud vault in place, preserves existing iCloud notes, and never moves or recursively deletes an
+  occupied local vault. Only an exact empty PARA skeleton is replaceable. (ADR 0004/G1)
+- **Explicit model prefetch.** `vagus doctor --fetch-models` downloads both ONNX models, runs an
+  embedder and reranker inference, validates finite output/dimensions and complete snapshots, and
+  exits nonzero if either fails. Plain `doctor` never performs network-capable model construction.
+  (ADRs 0006/0015/G10)
 - `vagus vectors export --out DIR [--format npy|f32]`: coherent, streaming dump of the embedding
   matrix for offline analysis (clustering, calibration, eval). Writes `vectors.npy` (NumPy v1.0,
   C-order f32; `--format f32` for raw little-endian f32 instead), row-aligned `meta.jsonl`, and a
@@ -29,6 +38,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   primary-answer recall stayed 5/5, MRR rose 0.829→0.833, candidate-body estimates fell 39,096→20,267
   tokens (−48.16%), aggregate latency fell 12.84→9.44s (−26.45%), and the skill prompt itself shrank
   28.67%. Re-run `vagus skills install --agent <claude|pi>` after upgrading. (ADR 0012/G19)
+
+### Fixed
+
+- Derived data and model-cache paths are now checked with shared alias-aware resolution before any
+  command can create state, closing relative/missing/`..`/symlink spellings of a G1 violation.
+  `doctor` also rejects regular files as vaults and distinguishes complete, partial, and missing
+  local model snapshots without turning an interrupted cache into a surprise download.
 
 ## [0.10.0] — 2026-07-29
 

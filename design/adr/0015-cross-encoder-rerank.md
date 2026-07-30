@@ -1,6 +1,8 @@
 # ADR 0015 — In-core cross-encoder reranker
 
-- **Status:** Accepted (2026-05-30). Amends [ADR 0003](./0003-search-stack.md) and guardrail G17.
+- **Status:** Accepted (2026-05-30); **amended 2026-07-30** to make ordinary `doctor` presence-only
+  and explicit `doctor --fetch-models` validate the reranker. Amends [ADR 0003](./0003-search-stack.md)
+  and guardrail G17.
 
 ## Context
 
@@ -57,6 +59,14 @@ Add an **in-core** reranker (`src/rerank.rs`, mirroring `src/embed.rs`):
 - **`jina-reranker-v2-base-multilingual`** — the stack-native upgrade if the vault ever needs
   multilingual reranking (still a fastembed cross-encoder, in-core); not the default (heavier, English
   vault).
+
+### 2026-07-30 doctor/download amendment
+
+The reranker follows the same explicit-consent rule as the embedder (ADR 0006/G10). Plain `doctor`
+checks the exact required local snapshot files and never constructs `TextRerank`, because a partial
+cache would otherwise trigger network access. `doctor --fetch-models` unconditionally constructs both
+ONNX models, runs a one-pair rerank inference, validates a finite result, and returns nonzero if the
+reranker or embedder fails. A directory name containing `jina`/`rerank` is not cache completeness.
 
 ## Consequences
 

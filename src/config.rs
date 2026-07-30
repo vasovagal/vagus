@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Default embedding model + its dimensionality. Pinned into the `meta` table at index time so a
 /// change forces a `reindex` (guardrail G4). EmbeddingGemma-300M: 768-dim, 2048-token context,
@@ -85,12 +85,68 @@ impl Config {
         self.data_dir.join("vectors.usearch")
     }
 
+    /// Refuse every lexical, missing-path, and symlink-alias spelling that would put derived state in
+    /// the Markdown vault (G1). This is called before commands can open/create meta.db or a model.
+    pub fn validate_storage_separation(&self) -> Result<()> {
+        for (label, path) in [
+            ("data directory", &self.data_dir),
+            ("model cache", &self.cache_dir),
+        ] {
+            if crate::path_safety::at_or_within(path, &self.vault)? {
+                bail!(
+                    "{label} {} resolves inside vault {} — G1 requires all derived state outside iCloud",
+                    path.display(),
+                    self.vault.display()
+                )
+            }
+        }
+        Ok(())
+    }
+
     /// Create the derived-state directories (NOT the vault — that is the user's iCloud folder).
     pub fn ensure_dirs(&self) -> Result<()> {
+        self.validate_storage_separation()?;
         std::fs::create_dir_all(&self.data_dir)
             .with_context(|| format!("creating data dir {}", self.data_dir.display()))?;
         std::fs::create_dir_all(&self.cache_dir)
             .with_context(|| format!("creating cache dir {}", self.cache_dir.display()))?;
-        Ok(())
+        // Recheck after creation: a missing ancestor may have exposed a symlink alias meanwhile.
+        self.validate_storage_separation()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::testdir::TempDir;
+
+    #[test]
+    fn storage_separation_rejects_missing_paths_under_vault() {
+        let dir = TempDir::new("config-storage-missing");
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("vault/missing/data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        assert!(cfg.validate_storage_separation().is_err());
+        assert!(!cfg.vault.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_separation_rejects_symlink_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new("config-storage-alias");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&vault, &alias).unwrap();
+        let cfg = Config {
+            vault,
+            data_dir: alias.join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        assert!(cfg.validate_storage_separation().is_err());
     }
 }
