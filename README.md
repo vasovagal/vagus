@@ -76,8 +76,8 @@ upgrade, install again for each agent you use; in an existing pi session, run `/
 
 ## Speed
 
-Hybrid retrieval is hand-rolled (BM25 + brute-force cosine + RRF over SQLite vectors) — at
-personal scale it's effectively instant:
+Hybrid retrieval is hand-rolled (BM25 + usearch cosine + RRF, with exact SQLite-vector fallback) —
+at personal scale it's effectively instant:
 
 | Query | Latency |
 |-------|---------|
@@ -104,6 +104,7 @@ vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # health check (symlink, model cache, dylib, dims, index)
 vagus status                # counts, model/dims, index size
+vagus vectors export --out DIR  # coherent local vector/metadata snapshot for offline analysis
 vagus skills install        # install agent skills (--agent claude|pi; default: claude)
 ```
 

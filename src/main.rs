@@ -8,6 +8,7 @@ mod chunk;
 mod config;
 mod db;
 mod embed;
+mod export;
 mod index;
 mod lex;
 mod notes;
@@ -190,6 +191,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// Export the embedding matrix for offline analysis without loading a model or changing vectors.
+    Vectors {
+        #[command(subcommand)]
+        action: VectorsAction,
+    },
     /// List discovered `vagus-<name>` plugins on your PATH.
     Plugins,
     /// Record a usage tick for one or more notes (used by the /search skill after presenting results).
@@ -237,6 +243,27 @@ enum SkillsAction {
         /// Agent whose global skills directory to inspect.
         #[arg(long, value_enum, default_value = "claude")]
         agent: skills::Agent,
+    },
+}
+
+#[derive(Subcommand)]
+enum VectorsAction {
+    /// Dump every embedded chunk's vector + metadata into DIR (vectors.(npy|f32) + meta.jsonl +
+    /// manifest.json), in deterministic (path, ord) order. Uses one coherent DB snapshot.
+    Export {
+        /// Output directory (created; must not be inside your vault or be a symlink). Refuses a
+        /// non-empty directory unless --force; the manifest is published last.
+        #[arg(long)]
+        out: PathBuf,
+        /// Matrix format: `npy` (NumPy v1.0, C-order f32) or `f32` (raw little-endian f32).
+        #[arg(long, value_enum, default_value_t = export::ExportFormat::Npy)]
+        format: export::ExportFormat,
+        /// Overwrite a non-empty --out directory.
+        #[arg(long)]
+        force: bool,
+        /// Emit a stable one-object JSON summary instead of the human summary.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -338,6 +365,14 @@ fn main() -> Result<()> {
         Command::Skills { action } => match action {
             SkillsAction::Install { agent, dir, force } => skills::install(agent, dir, force)?,
             SkillsAction::List { agent } => skills::list(agent)?,
+        },
+        Command::Vectors { action } => match action {
+            VectorsAction::Export {
+                out,
+                format,
+                force,
+                json,
+            } => export::export(&cfg, &out, format, force, json)?,
         },
         Command::Plugins => {
             let builtins: Vec<String> = Cli::command()
