@@ -11,11 +11,11 @@ straight from a Claude Code or pi session).
 
 - **Hybrid search that just works.** [tantivy](https://github.com/quickwit-oss/tantivy)
   BM25 keyword matching and local ONNX embeddings (Google **EmbeddingGemma-300M**, 768-dim)
-  fused with **Reciprocal Rank Fusion** — you get exact-term *and* meaning-based hits from
-  one query, no tuning.
+  fused with **Reciprocal Rank Fusion** — exact cosine below 10,000 chunks, usearch HNSW above it,
+  and an all-mode `--exact` oracle. You get exact-term *and* meaning-based hits with no tuning.
 - **Context-tidy by default.** For plain hybrid note search, `--limit` is a ceiling: when the finished
-  RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix
-  instead of padding an LLM's context with quota-filling results. `--exhaustive` restores legacy fill.
+  RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix—
+  but never across a top-three BM25/cosine source hit. `--exhaustive` restores legacy fill.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies, or `--smart` for a
   local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
@@ -106,8 +106,9 @@ upgrade, install again for each agent you use; in an existing pi session, run `/
 
 ## Speed
 
-Hybrid retrieval is hand-rolled (BM25 + usearch cosine + RRF, with exact SQLite-vector fallback) —
-at personal scale it's effectively instant:
+Hybrid retrieval is hand-rolled (BM25 + exact cosine below 10,000 embedded chunks, usearch HNSW
+above it, then RRF). `--exact` forces the ground-truth scan at any size and in every mode. At personal
+scale it is effectively instant; a synthetic 10k×768 exact load+search fixture measures ~26.6 ms:
 
 | Query | Latency |
 |-------|---------|
@@ -130,6 +131,7 @@ vagus reindex --since 10d   # force-refresh recent filesystem mtimes; preserve o
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
+vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
@@ -143,7 +145,8 @@ vagus skills install        # install agent skills (--agent claude|pi; default: 
 Search results are **one per note** by default, each shown as its best-matching chunk. `--limit 10`
 means **at most** 10 distinct notes: plain hybrid search may return fewer when a guarded robust RRF
 knee separates a high-signal prefix from a low-signal tail. The stage only drops a suffix; it never
-changes ranking or scores. Pass `--exhaustive` to fill the legacy result set up to the limit, or
+changes ranking or scores, and it fails open before any top-three BM25/cosine source champion. Pass
+`--exhaustive` to fill the legacy result set up to the limit, or
 `--chunks` to rank individual chunks instead.
 
 For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault

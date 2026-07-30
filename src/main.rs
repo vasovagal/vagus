@@ -118,8 +118,8 @@ enum Command {
         /// total). Diagnostic for `--smart`/`--rerank`; stdout and the `--json` shape are unchanged.
         #[arg(long)]
         timings: bool,
-        /// Force exact (brute-force) semantic search instead of the approximate usearch HNSW index
-        /// (ADR 0019). Slower on large corpora but 100% recall — the ground-truth escape hatch.
+        /// Force exact brute-force semantic search in every mode instead of usearch HNSW (ADR 0019).
+        /// Exact is already automatic below 10k embedded chunks; this is the large-corpus oracle.
         #[arg(long)]
         exact: bool,
         /// Return individual chunk hits instead of one best-chunk hit per note; --limit then counts

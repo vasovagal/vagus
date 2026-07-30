@@ -2,8 +2,9 @@
 //!
 //! Semantic / hybrid search ranks chunks by cosine similarity. The backend is an embedded **usearch**
 //! HNSW index, statically linked into the binary (no daemon, no dylib to fetch — G13/ADR 0014), with
-//! an **exact brute-force** backend kept as the test oracle, the small-corpus path, and the `--exact`
-//! escape hatch. The `.usearch` sidecar lives OUTSIDE iCloud (G1) and is a pure derived cache (G2):
+//! an **exact brute-force** backend kept as the test oracle, the <10k-chunk automatic path, and the
+//! `--exact` escape hatch. The `.usearch` sidecar lives OUTSIDE iCloud (G1) and is a pure derived
+//! cache (G2):
 //! the authoritative copy of every vector is the f32 BLOB column in `meta.db`, so the index is always
 //! rebuildable from SQLite with no re-embed.
 //!
@@ -29,9 +30,14 @@ const CONNECTIVITY: usize = 16;
 const EXPANSION_ADD: usize = 128;
 const EXPANSION_SEARCH: usize = 64;
 
-/// Below this many embedded chunks an exact scan is both faster and exact, so the query path uses
-/// brute force regardless of whether a sidecar exists.
-const SMALL_CORPUS: usize = 2_000;
+/// Below this many embedded chunks an exact scan adds only a small fraction of query wall time while
+/// avoiding measurable ANN misses. The 4,023-chunk corpus audit in ADR 0019 measured ~43 ms median
+/// overhead on a ~1 s command; 10k keeps matrix memory near 30 MiB.
+const EXACT_SCAN_CUTOFF: usize = 10_000;
+
+fn use_exact_scan(embedded: usize, forced: bool) -> bool {
+    forced || embedded < EXACT_SCAN_CUTOFF
+}
 
 /// Query-time seam: a ranked source of `(vec_key, cosine)` for a normalized query vector. Implemented
 /// by both backends; consumed by `search.rs` and never by `rrf()` (G8).
@@ -136,11 +142,16 @@ impl VectorIndex for UsearchIndex {
             return Ok(Vec::new());
         }
         let m = self.index.search(query, k).context("usearch: search")?;
-        Ok(m.keys
+        let mut hits: Vec<(u64, f32)> = m
+            .keys
             .into_iter()
             .zip(m.distances)
-            .map(|(key, dist)| (key, 1.0 - dist)) // IP distance = 1 - dot; vectors normalized ⇒ cosine
-            .collect())
+            .map(|(key, dist)| (key, 1.0 - dist)) // IP distance = 1 - dot; normalized ⇒ cosine
+            .collect();
+        // usearch does not promise a secondary order for equal distances. Match the exact oracle's
+        // stable, opaque-key tie-break so vector rank and downstream RRF are process-independent.
+        hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(hits)
     }
 
     fn len(&self) -> usize {
@@ -154,7 +165,7 @@ impl VectorIndex for UsearchIndex {
 
 /// Exact cosine via a contiguous in-RAM f32 matrix loaded once from the BLOBs. Bounded top-k via
 /// `select_nth_unstable` (no full sort over N). This is the ground-truth oracle for the recall test,
-/// the automatic fallback when the sidecar is missing, the small-corpus path, and `--exact`.
+/// the automatic fallback when the sidecar is missing, the <10k path, and `--exact` in every mode.
 pub struct BruteForceIndex {
     keys: Vec<u64>,
     mat: Vec<f32>, // row-major, keys.len() × dims
@@ -192,11 +203,12 @@ impl VectorIndex for BruteForceIndex {
             })
             .collect();
         let k = k.min(scored.len());
+        let cmp = |a: &(u64, f32), b: &(u64, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
         if k < scored.len() {
-            scored.select_nth_unstable_by(k, |a, b| b.1.total_cmp(&a.1));
+            scored.select_nth_unstable_by(k, cmp);
             scored.truncate(k);
         }
-        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.sort_by(cmp);
         Ok(scored)
     }
 
@@ -210,12 +222,12 @@ impl VectorIndex for BruteForceIndex {
 // ---------------------------------------------------------------------------
 
 /// Choose the query-time backend. Exact brute force when `exact` is forced, when the sidecar is
-/// missing, or for a small corpus; otherwise the mmap'd usearch HNSW view. Any usearch open error
+/// missing, or below the exact cutoff; otherwise the mmap'd usearch HNSW view. Any usearch open error
 /// falls back to brute force so search never hard-fails (G2: the BLOBs are always sufficient).
 pub fn open_for_search(cfg: &Config, db: &Db, exact: bool) -> Result<Box<dyn VectorIndex>> {
     let path = cfg.vector_path();
     let embedded = db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")? as usize;
-    if !exact && embedded >= SMALL_CORPUS && path.exists() {
+    if !use_exact_scan(embedded, exact) && path.exists() {
         match UsearchIndex::view(&path, EMBED_DIMS) {
             Ok(idx) => return Ok(Box::new(idx)),
             Err(_) => { /* fall through to the exact backend */ }
@@ -227,6 +239,15 @@ pub fn open_for_search(cfg: &Config, db: &Db, exact: bool) -> Result<Box<dyn Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_scale_prefers_exact_scan_until_cutoff() {
+        assert!(use_exact_scan(0, false));
+        assert!(use_exact_scan(EXACT_SCAN_CUTOFF - 1, false));
+        assert!(!use_exact_scan(EXACT_SCAN_CUTOFF, false));
+        assert!(use_exact_scan(EXACT_SCAN_CUTOFF, true));
+        assert!(use_exact_scan(1_000_000, true));
+    }
 
     fn normalize(v: &mut [f32]) {
         let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -304,6 +325,91 @@ mod tests {
         }
         let recall = hit as f32 / total as f32;
         assert!(recall >= 0.98, "recall@10 = {recall} (< 0.98)");
+    }
+
+    /// Reproducible near-cutoff timing fixture for ADR 0019/N4. Ignored in CI because it writes a
+    /// ~30 MiB SQLite matrix and is evidence tooling, not a correctness gate. Run with:
+    /// `cargo test --release benchmark_exact_backend_at_cutoff -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual vector-cutoff benchmark"]
+    fn benchmark_exact_backend_at_cutoff() {
+        use std::time::Instant;
+
+        use crate::util::testdir::TempDir;
+
+        let data = fixture(EXACT_SCAN_CUTOFF, EMBED_DIMS);
+        let dir = TempDir::new("vector-cutoff-benchmark");
+        let db = Db::open(&dir.path().join("meta.db")).unwrap();
+        db.upsert_file("fixture.md", 1.0, "fixture", 1).unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,vec_key)
+                     VALUES(?1,'fixture.md',?2,'fixture','fixture',?3,?4)",
+                )
+                .unwrap();
+            for (ord, (key, vector)) in data.iter().enumerate() {
+                let id = format!("{key:016x}{:048x}", 0);
+                let bytes: Vec<u8> = vector
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect();
+                insert
+                    .execute(rusqlite::params![id, ord as i64, bytes, *key as i64])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = Instant::now();
+        let exact = BruteForceIndex::load(&db, EMBED_DIMS).unwrap();
+        let load_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let query = &data[7].1;
+        let mut samples = Vec::new();
+        for _ in 0..21 {
+            let started = Instant::now();
+            assert_eq!(exact.search(query, 120).unwrap().len(), 120);
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(f64::total_cmp);
+        let median_search_ms = samples[samples.len() / 2];
+        eprintln!(
+            "exact cutoff benchmark: vectors={} dims={} matrix_mib={:.1} sqlite_load_ms={load_ms:.3} median_search120_ms={median_search_ms:.3} load_plus_search_ms={:.3}",
+            EXACT_SCAN_CUTOFF,
+            EMBED_DIMS,
+            EXACT_SCAN_CUTOFF * EMBED_DIMS * 4 / 1024 / 1024,
+            load_ms + median_search_ms
+        );
+    }
+
+    #[test]
+    fn usearch_equal_scores_break_ties_by_stable_key() {
+        let index = Index::new(&options(2)).unwrap();
+        index.reserve(3).unwrap();
+        for key in [9, 3, 7] {
+            index.add(key, &[1.0, 0.0]).unwrap();
+        }
+        let ann = UsearchIndex { index };
+        let got = ann.search(&[1.0, 0.0], 3).unwrap();
+        assert_eq!(
+            got.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [3, 7, 9]
+        );
+    }
+
+    #[test]
+    fn brute_force_equal_scores_break_ties_by_stable_key() {
+        let exact = BruteForceIndex {
+            keys: vec![9, 3, 7],
+            mat: vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            dims: 2,
+        };
+        let got = exact.search(&[1.0, 0.0], 3).unwrap();
+        assert_eq!(
+            got.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [3, 7, 9]
+        );
     }
 
     #[test]

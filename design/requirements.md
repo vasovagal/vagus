@@ -18,7 +18,8 @@ coding harness (Claude Code and pi).
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
   hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
-  a low-signal suffix, with `--exhaustive` restoring legacy fill (ADR 0023).
+  a low-signal suffix and must not cross a top-three BM25/cosine source champion; `--exhaustive`
+  restores legacy fill (ADR 0023).
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.
@@ -38,8 +39,10 @@ coding harness (Claude Code and pi).
 - **N2 — No background daemon** in the default path; indexing is on-demand (a watcher is opt-in, later).
 - **N3 — Durable & recoverable.** Markdown is the source of truth; the index is a rebuildable cache.
   iCloud holds *only* Markdown (see [ADR 0004](./adr/0004-icloud-markdown-only.md)).
-- **N4 — Fast enough.** Search returns in well under a second on a personal-scale vault
-  (tens of thousands of chunks); brute-force cosine is acceptable at this scale.
+- **N4 — Fast enough.** Backend retrieval stays comfortably interactive at personal scale: exact
+  cosine is automatic below 10,000 chunks (a 10k×768 fixture is ~30 MiB and measures ~26.6 ms including
+  SQLite load), then usearch HNSW supplies growth headroom. One-shot end-to-end search may be about one
+  second when local model initialization dominates; explicit `--exact` remains an all-mode oracle.
 - **N5 — Owned in Rust, no versioned runtime.** A self-contained Rust universe — the `vagus` binary
   (plus optional `vagus-<name>` companions/plugins), each statically linking its native deps
   (onnxruntime today; candle/ggml where justified). **No Python/Node/TS/managed runtime to reconcile.**

@@ -1,7 +1,9 @@
 # ADR 0019 — Vector backend: embedded usearch HNSW (statically linked)
 
-- **Status:** Accepted (2026-06-07). Supersedes the "brute-force exact cosine; no ANN crate yet" stance
-  of [ADR 0003](./0003-search-stack.md) for the *vector* component (BM25 + RRF fusion are unchanged).
+- **Status:** Accepted (2026-06-07); **amended 2026-07-30** — exact scan is automatic below
+  10,000 embedded chunks after a corpus-grounded HNSW miss, and `--exact` is enforced in every mode.
+  Supersedes the "brute-force exact cosine; no ANN crate yet" stance of
+  [ADR 0003](./0003-search-stack.md) for the *vector* component (BM25 + RRF remain unchanged).
 
 ## Context
 
@@ -70,17 +72,65 @@ cold-start, and a genuinely clean static link.
   rebuilds the sidecar from the BLOBs — **no re-embed, no `CHUNK_VERSION` bump** (the vectors are
   unchanged).
 - **Exact fallback / `--exact`.** A tuned exact brute-force `BruteForceIndex` (contiguous matrix +
-  `select_nth_unstable` top-k) implements the same trait. It is the test oracle, the automatic fallback
-  when the sidecar is missing or the corpus is tiny (<2,000 chunks), and the `vagus search --exact`
-  ground-truth escape hatch. HNSW search is *approximate*; `expansion_search` is set so recall@10 ≥ 0.98
-  vs the oracle (asserted in `vector::tests`).
+  `select_nth_unstable` top-k) implements the same trait. It is the test oracle, the automatic path
+  below **10,000 embedded chunks**, the fallback when the sidecar is missing/broken, and the explicit
+  `vagus search --exact` ground-truth escape at/above the cutoff. The flag is forwarded through plain,
+  reranked, and `--smart` search alike. HNSW is approximate: synthetic recall@10 ≥0.98 does not prevent
+  a query-specific miss. Both backends order equal cosine scores by stable ascending `vec_key`.
 - **RRF / rerank untouched (G7/G8).** The backend only feeds the cosine-rank *source* list;
   `search::rrf()` and the cross-encoder stage never see the backend choice.
 
+## 2026-07-30 corpus and cutoff evidence
+
+A stratified audit of the live 471-note / 4,023-chunk vault sampled every PARA tier and fixed a known
+answer before each query. The snapshot predates indexing the resulting benchmark report (avoiding
+self-retrieval leakage); primary paths and exact queries are pinned here:
+
+| Query | Primary answer note | Behavior exercised |
+|---|---|---|
+| `What setting stops an Argo CD sync from running forever, and why does it break retries?` | `30-Resources/ArgoCD/20260530-010529-argocd-stuck-operation.md` | terms + causal semantics |
+| `How can I keep the main coding-agent conversation clean while isolating noisy exploratory debugging?` | `30-Resources/Claude Code/20260714-170940-rx-workflow-disposable-interactive-workt.md` | workflow paraphrase |
+| `Why did NDP Sydney still fail to pull Kubernetes images after Private Google Access was working?` | `00-Inbox/20260727-202411-ndp-prod-external-dns-viasat-io-dns-auth.md` | long incident note |
+| `What safeguard makes etcd read-only before low disk space can corrupt its data, and how do we recover?` | `20-Areas/Viasat/20260619-130132-zoom-call-2026-06-19-12-30.md` | noisy transcript |
+| `Why did changing GitHub Actions runner images trigger a Rust build even though Gemfile.lock was identical?` | `40-Archive/20260617-231154-red-candle-gem-needs-rust-to-build-no-pr.md` | corrected postmortem |
+
+The etcd query was the decisive failure. HNSW omitted the answer chunk from **120 vector candidates**.
+BM25 still found it at source rank 2, but one-channel RRF put it at fused rank 10 and the adaptive knee
+returned four notes without it. Exact cosine found it at vector rank 10 / fused rank 3; the same knee
+then returned three notes including the answer.
+
+| Query | v0.10 HNSW count / target / est. tokens | exact-first count / target / est. tokens |
+|---|---:|---:|
+| Argo CD | 10 / 1 / 2,542 | 10 / 1 / 2,542 |
+| agent context | 10 / 1 / 4,898 | 10 / 1 / 4,078 |
+| NDP Sydney | 10 / 1 / 4,945 | 10 / 1 / 4,945 |
+| etcd safeguard | 4 / **miss** / 1,764 | 3 / **3** / 1,565 |
+| runner/Rust | 10 / 1 / 4,793 | 10 / 1 / 4,793 |
+
+Primary-answer recall improved **4/5→5/5**, MRR **0.800→0.867**, and estimated body context
+**18,942→17,923 tokens (−5.38%)**. Tokens are `ceil(decoded body chars/4)`, not provider billing.
+
+Eight interleaved optimized one-shot runs at 4,023 chunks measured HNSW at 1,000.5 ms median and exact
+at 1,043.2 ms: **+42.7 ms / +4.3%**, mostly one-shot embedder load. The cutoff itself is independently
+reproducible with:
+
+```sh
+cargo test --release benchmark_exact_backend_at_cutoff -- --ignored --nocapture
+```
+
+Five repeated 10,000×768 runs (a ~30 MiB matrix) measured median SQLite load **20.5 ms**, median exact
+search@120 **6.1 ms**, and load+search **26.6 ms** on Apple Silicon. This reconciles N4: a bare one-shot
+command is approximately one second at current scale, while the near-cutoff vector backend consumes
+only tens of milliseconds. **10k is a conservative policy ceiling, not the measured algorithmic
+crossover** (which is much higher): it gives the current corpus ~2.5× exact-growth headroom while
+bounding the per-command matrix near 30 MiB before the low-hundreds-of-thousands trajectory. Moving
+it requires both a near-cutoff load/search benchmark and corpus qrels; aggregate ANN recall alone is
+insufficient. HNSW still takes over at 10k for the >500k trajectory.
+
 ## Consequences
 
-- True HNSW headroom to the low-hundreds-of-thousands and beyond, while small/medium vaults and
-  `--exact` keep exact recall. `vagus doctor` cross-checks `usearch key count == embedded chunks` (G5).
+- True HNSW headroom at/above 10k and to the low-hundreds-of-thousands, while personal-scale vaults
+  and explicit `--exact` retain exact recall. `vagus doctor` still cross-checks sidecar count (G5).
 - A **third on-disk store** to keep consistent (tantivy + SQLite-vectors + `.usearch`). Mitigated by:
   BLOBs authoritative + sidecar rebuildable (G2), one save per index run, and the doctor cross-check.
 - **Incremental-index cost:** mutating the sidecar `load`s it into RAM and `save`s the whole file each

@@ -1,6 +1,7 @@
 # ADR 0023 — Adaptive context-tidy result ceiling
 
-- **Status:** Accepted (2026-07-29)
+- **Status:** Accepted (2026-07-29); **amended 2026-07-30** — veto a knee that would hide any
+  top-three BM25/cosine source champion, including one represented by a folded sibling chunk.
 
 ## Context
 
@@ -61,12 +62,15 @@ For **plain tier-0 hybrid note results only**, make `--limit` an adaptive ceilin
    outlier relative to the list's own gaps.
 5. Among boundaries leaving at least three hits on both sides, choose the largest gap (latest boundary
    on an exact tie, favoring recall). Truncate only when that gap is strictly greater than `T`.
-6. Invalid, missing, non-positive, non-monotone, short, smooth, or threshold-free inputs **fail open**
-   and retain the full list.
-7. The stage may only drop a suffix. It never reorders, backfills, mutates a score, normalizes a
+6. Veto that knee if any note after it has a top-three BM25 or cosine source rank. Fusion records these
+   ranks as internal observability, and note dedup folds each minimum across sibling chunks; they do
+   not alter RRF scores, ordering, or JSON.
+7. Invalid, missing, non-positive, non-monotone, short, smooth, threshold-free, or champion-crossing
+   inputs **fail open** and retain the full list.
+8. The stage may only drop a suffix. It never reorders, backfills, mutates a score, normalizes a
    component, or calls/modifies `rrf()` (G8). `--json` remains the same pure Hit array; an omission
    notice goes to stderr. Human output gets the same notice inline.
-8. `--exhaustive` bypasses only this adaptive stage and restores the legacy fill-up-to-`--limit`
+9. `--exhaustive` bypasses only this adaptive stage and restores the legacy fill-up-to-`--limit`
    count/order/Hit objects. It composes with `--exact` for maximum-recall retrieval.
 
 This is guardrail **G9d**.
@@ -103,6 +107,21 @@ invariance cases. Four independent post-change subagents then reran both CLI pat
 count, verified adaptive output was the exact exhaustive prefix, and unanimously graded dropped ranks
 8/9/10 as `1/0/1` (tangential/trash/tangential): **zero dropped hits at the useful ≥2 threshold**.
 They also independently recomputed the 18-query aggregate from raw rows with no disagreement.
+
+### 2026-07-30 source-champion counterexample
+
+A five-query corpus audit fixed one known answer note per query before retrieval. For the etcd
+low-disk safeguard question, HNSW omitted the transcript answer from 120 vector candidates; BM25 found
+it at source rank 2, but one-channel RRF left it at fused rank 10 and the original knee returned four
+notes without it. Exact cosine found the same note at vector rank 10 / fused rank 3. With exact-first
+retrieval plus the source-champion veto, primary recall improved **4/5→5/5**, MRR **.800→.867**, and
+estimated body context fell **18,942→17,923 tokens (−5.38%)**. The veto specifically covers the more
+subtle case where a note's retained chunk is not the sibling that held the champion source rank; a
+composed dedup→champion→knee regression pins it.
+
+The champion threshold is deliberately rank-based and symmetric: top three from either existing
+source, no score weighting, and no preference between BM25 and cosine. It can retain an irrelevant
+source outlier, but false negatives are more costly here; `--exhaustive` remains the full-prefix oracle.
 
 ## Consequences
 

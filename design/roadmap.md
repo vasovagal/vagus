@@ -12,7 +12,7 @@ where justified) are in-character. Retrieval comes in **three tiers**, selected 
 ([ADR 0012](./adr/0012-three-tier-retrieval.md)):
 
 ```
-tier 0  (floor)        vagus search "q"            BM25 + cosine + RRF(k=60)            — deterministic, <1s
+tier 0  (floor)        vagus search "q"            BM25 + cosine + RRF(k=60)            — deterministic, interactive
 tier 1  (shell+local)  vagus search "q" --smart    + local rewrite/HyDE + rerank       — offline, no agent
 tier 2  (skill+Opus)   search Agent Skill           bounded exact+rerank+body judge      — concise, on top of CLI
 ```
@@ -27,7 +27,7 @@ as G8 breaches.
 
 | Capability | Home | Engine / model | Status |
 |---|---|---|---|
-| BM25 + cosine + RRF (tier 0) | core `vagus` | tantivy + **usearch HNSW** (exact brute-force fallback) | shipped (ADR 0019) |
+| BM25 + cosine + RRF (tier 0) | core `vagus` | exact <10k; **usearch HNSW** ≥10k; all-mode `--exact` oracle | shipped (ADRs 0003/0019) |
 | Embedder | core `vagus` | fastembed/ort — **EmbeddingGemma-300M** (768-dim, 2048 ctx) | shipped (ADR 0006) |
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
 | Mtime-windowed forced reindex (`reindex --since`) | core `vagus` | full-vault snapshot + G5 replacement path | shipped (ADR 0022) |
@@ -36,7 +36,7 @@ as G8 breaches.
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
 | Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
-| Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF-knee suffix drop (RRF untouched) | shipped (ADR 0023) |
+| Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF knee + source-champion veto (RRF untouched) | shipped (ADR 0023) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
@@ -74,4 +74,5 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - llama-cpp-2 engine (adds cmake) — fallback only if candle's Qwen3 support regresses.
 - Quantized-Gemma via custom-ONNX (a footprint lever for later).
 - ~~ANN vector backend~~ — **shipped** as embedded usearch HNSW ([ADR 0019](./adr/0019-usearch-ann-backend.md)),
-  adopted ahead of the >500k-chunk trajectory; exact brute-force remains as the `--exact` fallback.
+  adopted ahead of the >500k-chunk trajectory. Exact brute force is automatic below 10k because it
+  recovered a corpus answer HNSW missed; `--exact` forces the same oracle at every scale/mode.

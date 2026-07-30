@@ -36,6 +36,9 @@ const RRF_K: f32 = 60.0;
 // outlier relative to this result list's other adjacent log gaps. It only drops a suffix; RRF itself
 // and every survivor's order/score remain untouched.
 const TIDY_MIN_SIDE: usize = 3;
+/// Never let the adaptive suffix drop hide a top-N champion from either source list. This protects a
+/// strong exact-term hit when ANN misses its vector (and vice versa) without weighting either list.
+const TIDY_PROTECTED_CHANNEL_RANK: usize = 3;
 const TIDY_MIN_LOG_DROP: f64 = 0.105_360_515_657_826_3; // ln(10/9): at least a 10% score ratio gap
 const TIDY_MAD_SCALE: f64 = 1.4826; // normal-consistent median absolute deviation
 const TIDY_OUTLIER_SIGMA: f64 = 3.0;
@@ -51,8 +54,9 @@ fn median(values: &mut [f64]) -> f64 {
 }
 
 /// Length of the high-signal RRF prefix to retain. Invalid/short/smooth inputs fail open by returning
-/// `scores.len()`. Scale-invariant because it compares adjacent log ratios, not raw magnitudes.
-fn tidy_rrf_prefix_len(scores: &[f32]) -> usize {
+/// `scores.len()`. `protected_through` is the one-based position of the last top-channel champion; a
+/// score knee before it also fails open. Scale-invariant because adjacent log ratios are compared.
+fn tidy_rrf_prefix_len(scores: &[f32], protected_through: usize) -> usize {
     let n = scores.len();
     if n < TIDY_MIN_SIDE * 2 {
         return n;
@@ -89,7 +93,7 @@ fn tidy_rrf_prefix_len(scores: &[f32]) -> usize {
         }
     }
     match best {
-        Some((keep, gap)) if gap > threshold => keep,
+        Some((keep, gap)) if gap > threshold && protected_through <= keep => keep,
         _ => n,
     }
 }
@@ -188,6 +192,12 @@ pub struct Hit {
     /// Tantivy BM25 score from the lexical retriever, when computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bm25: Option<f32>,
+    /// Internal source-list ranks used only by the adaptive recall guard (ADR 0023). Never serialized:
+    /// exposing them would expand the stable Hit contract for implementation-only metadata.
+    #[serde(skip)]
+    bm25_rank: Option<usize>,
+    #[serde(skip)]
+    cosine_rank: Option<usize>,
     /// Raw cross-encoder rerank logit, when `--rerank` reordered this hit (ordering signal only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank: Option<f32>,
@@ -213,6 +223,17 @@ pub struct Hit {
     pub siblings: Option<usize>,
 }
 
+fn source_champion_through(hits: &[Hit]) -> usize {
+    hits.iter()
+        .rposition(|h| {
+            h.bm25_rank
+                .is_some_and(|r| r <= TIDY_PROTECTED_CHANNEL_RANK)
+                || h.cosine_rank
+                    .is_some_and(|r| r <= TIDY_PROTECTED_CHANNEL_RANK)
+        })
+        .map_or(0, |i| i + 1)
+}
+
 /// Ranked id + component scores, before joining SQLite for the display fields.
 struct Scored {
     id: String,
@@ -220,6 +241,8 @@ struct Scored {
     rrf: Option<f32>,
     cosine: Option<f32>,
     bm25: Option<f32>,
+    bm25_rank: Option<usize>,
+    cosine_rank: Option<usize>,
 }
 
 fn snippet(body: &str, n: usize) -> String {
@@ -283,7 +306,10 @@ fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
         }
     }
     let mut fused: Vec<(String, f32)> = score.into_iter().collect();
-    fused.sort_by(|a, b| b.1.total_cmp(&a.1));
+    // HashMap iteration is randomized. Equal RRF sums are common for mirrored rank pairs, so use the
+    // opaque stable chunk id as a modality-neutral final tie-break instead of leaking process entropy
+    // into note selection and full-body context. Scores/formula remain exactly G8 RRF k=60.
+    fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     fused.truncate(limit);
     fused
 }
@@ -306,6 +332,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
                 rrf: s.rrf,
                 cosine: s.cosine,
                 bm25: s.bm25,
+                bm25_rank: s.bm25_rank,
+                cosine_rank: s.cosine_rank,
                 rerank: None,
                 snippet,
                 body: keep_body.then_some(body),
@@ -355,23 +383,29 @@ pub fn query(
             let lex = Lex::open(&cfg.tantivy_dir())?;
             lex.search(q, pool)?
                 .into_iter()
-                .map(|(id, bm25)| Scored {
+                .enumerate()
+                .map(|(i, (id, bm25))| Scored {
                     id,
                     score: bm25,
                     rrf: None,
                     cosine: None,
                     bm25: Some(bm25),
+                    bm25_rank: Some(i + 1),
+                    cosine_rank: None,
                 })
                 .collect()
         }
         Mode::Vec => vec_search(cfg, &db, q, pool, exact)?
             .into_iter()
-            .map(|(id, cosine)| Scored {
+            .enumerate()
+            .map(|(i, (id, cosine))| Scored {
                 id,
                 score: cosine,
                 rrf: None,
                 cosine: Some(cosine),
                 bm25: None,
+                bm25_rank: None,
+                cosine_rank: Some(i + 1),
             })
             .collect(),
         Mode::Hybrid => {
@@ -383,6 +417,16 @@ pub fn query(
             let ve = vec_search(cfg, &db, q, cand, exact)?; // (id, cosine), cosine rank order
             let bm25_of: HashMap<&str, f32> = bm.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            let bm_rank_of: HashMap<&str, usize> = bm
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.as_str(), i + 1))
+                .collect();
+            let cos_rank_of: HashMap<&str, usize> = ve
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.as_str(), i + 1))
+                .collect();
             let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
             let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
             rrf(&[bm_ids, ve_ids], pool)
@@ -390,6 +434,8 @@ pub fn query(
                 .map(|(id, r)| Scored {
                     cosine: cos_of.get(id.as_str()).copied(),
                     bm25: bm25_of.get(id.as_str()).copied(),
+                    bm25_rank: bm_rank_of.get(id.as_str()).copied(),
+                    cosine_rank: cos_rank_of.get(id.as_str()).copied(),
                     rrf: Some(r),
                     score: r,
                     id,
@@ -476,11 +522,26 @@ fn apply_filters(hits: Vec<Hit>, since: Option<i64>, source: Option<&str>) -> Ve
 /// surviving chunk) and before truncation, where `--limit` then counts distinct notes. `--chunks`
 /// skips this stage entirely.
 fn dedupe_notes(hits: Vec<Hit>) -> Vec<Hit> {
+    fn best_rank(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     let mut kept: Vec<Hit> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
     for h in hits {
         match index_of.get(&h.path) {
-            Some(&i) => kept[i].siblings = Some(kept[i].siblings.unwrap_or(0) + 1),
+            Some(&i) => {
+                // The selected chunk remains the note's display/ranking representative (G9c), but a
+                // folded sibling can be the note's top lexical/vector source champion. Preserve each
+                // note's best private source ranks so the later G9d cutoff veto cannot lose that
+                // evidence during dedup. Scores, selected body, and order remain unchanged.
+                kept[i].siblings = Some(kept[i].siblings.unwrap_or(0) + 1);
+                kept[i].bm25_rank = best_rank(kept[i].bm25_rank, h.bm25_rank);
+                kept[i].cosine_rank = best_rank(kept[i].cosine_rank, h.cosine_rank);
+            }
             None => {
                 index_of.insert(h.path.clone(), kept.len());
                 kept.push(h);
@@ -533,6 +594,7 @@ fn smart_query(
     full: bool,
     since: Option<i64>,
     source: Option<&str>,
+    exact: bool,
     timings: bool,
     chunks: bool,
     score_floor: bool,
@@ -611,9 +673,9 @@ fn smart_query(
                     None => Embedder::new(&cfg.cache_dir)?,
                 };
                 emb = Some(e);
-                // `--smart` is a tier-1 quality path; honor `--exact` only via the plain path. Here the
-                // approximate HNSW backend is fine (the rerank stage re-scores the fused pool anyway).
-                vindex = Some(crate::vector::open_for_search(cfg, &db, false)?);
+                // Forward the explicit oracle flag in every tier. Automatic exact selection still
+                // handles personal-scale corpora; `--smart --exact` must also force it above cutoff.
+                vindex = Some(crate::vector::open_for_search(cfg, &db, exact)?);
                 t.embed_load_ms += ms_since(t0);
             }
             let t0 = Instant::now();
@@ -648,6 +710,8 @@ fn smart_query(
             rrf: Some(r),
             cosine: None,
             bm25: None,
+            bm25_rank: None,
+            cosine_rank: None,
         })
         .collect();
     let mut hits = hydrate(&db, ranked, true)?;
@@ -738,6 +802,7 @@ fn run_query(
             full,
             since,
             source,
+            exact,
             timings,
             chunks,
             score_floor,
@@ -849,8 +914,9 @@ pub fn run(
         && hits.len() == limit
     {
         let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
+        let protected_through = source_champion_through(&hits);
         let keep = if scores.len() == hits.len() {
-            tidy_rrf_prefix_len(&scores)
+            tidy_rrf_prefix_len(&scores, protected_through)
         } else {
             hits.len()
         };
@@ -1108,6 +1174,8 @@ mod scope_filter_tests {
             rrf: None,
             cosine: None,
             bm25: None,
+            bm25_rank: None,
+            cosine_rank: None,
             rerank: None,
             snippet: String::new(),
             body: None,
@@ -1183,10 +1251,14 @@ mod scope_filter_tests {
         h2.rerank = Some(1.5);
         h2.body = Some("full text".into());
         h2.siblings = Some(2);
+        h2.bm25_rank = Some(1);
+        h2.cosine_rank = Some(2);
         let j2 = serde_json::to_string(&h2).unwrap();
         assert!(j2.contains("\"rerank\":1.5"));
         assert!(j2.contains("\"body\":\"full text\""));
         assert!(j2.contains("\"siblings\":2"));
+        assert!(!j2.contains("bm25_rank"));
+        assert!(!j2.contains("cosine_rank"));
     }
 
     #[test]
@@ -1204,7 +1276,34 @@ mod scope_filter_tests {
         assert!((0.0..=1.0).contains(&sigmoid(10.0)));
     }
 
+    #[test]
+    fn rrf_equal_scores_have_a_deterministic_modality_neutral_tie_break() {
+        // Mirrored ranks produce exactly equal G8 RRF sums. HashMap iteration is process-random, so
+        // the opaque chunk id is the final tie-break; no source list receives extra weight.
+        let lists = vec![
+            vec!["b".to_string(), "a".to_string()],
+            vec!["a".to_string(), "b".to_string()],
+        ];
+        let got = rrf(&lists, 10);
+        assert_eq!(got[0].0, "a");
+        assert_eq!(got[1].0, "b");
+        assert_eq!(got[0].1, got[1].1);
+        let expected = 1.0 / (RRF_K + 1.0) + 1.0 / (RRF_K + 2.0);
+        assert_eq!(got[0].1, expected);
+        assert_eq!(rrf(&lists, 10), got, "same input must be repeatable");
+    }
+
     // --- adaptive context tidiness (ADR 0023) -----------------------------------------------------
+
+    #[test]
+    fn source_champion_guard_tracks_only_top_three_channel_ranks() {
+        let mut hits = vec![hit("a"), hit("b"), hit("c"), hit("d"), hit("e")];
+        hits[1].bm25_rank = Some(3);
+        hits[3].cosine_rank = Some(4); // not protected
+        assert_eq!(source_champion_through(&hits), 2);
+        hits[4].cosine_rank = Some(1);
+        assert_eq!(source_champion_through(&hits), 5);
+    }
 
     #[test]
     fn tidy_hunter_fixture_keeps_signal_prefix_and_cuts_context() {
@@ -1224,8 +1323,12 @@ mod scope_filter_tests {
             0.018332252,
             0.017220989,
         ];
-        assert_eq!(tidy_rrf_prefix_len(&scores), 7);
-        assert_eq!(tidy_rrf_prefix_len(&scores[..7]), 7, "cutoff is idempotent");
+        assert_eq!(tidy_rrf_prefix_len(&scores, 0), 7);
+        assert_eq!(
+            tidy_rrf_prefix_len(&scores[..7], 0),
+            7,
+            "cutoff is idempotent"
+        );
 
         let body_chars = [125, 272, 264, 2842, 944, 3124, 2905, 1027, 2814, 2786];
         let body_words = [22, 42, 35, 564, 182, 581, 577, 150, 416, 550];
@@ -1248,26 +1351,29 @@ mod scope_filter_tests {
     #[test]
     fn tidy_detects_only_a_guarded_internal_cliff() {
         let clear_head = [1.0, 0.99, 0.98, 0.50, 0.49, 0.48, 0.47, 0.46];
-        assert_eq!(tidy_rrf_prefix_len(&clear_head), 3);
+        assert_eq!(tidy_rrf_prefix_len(&clear_head, 0), 3);
+        // A top-three source-list champion beyond the knee makes the cutoff fail open rather than
+        // hiding evidence that RRF can rank low when only one retriever found it.
+        assert_eq!(tidy_rrf_prefix_len(&clear_head, 7), clear_head.len());
 
         // A smooth geometric decay has no outlier relative to its own adjacent gaps.
         let smooth = [1.0, 0.9, 0.81, 0.729, 0.6561, 0.59049, 0.531441, 0.4782969];
-        assert_eq!(tidy_rrf_prefix_len(&smooth), smooth.len());
+        assert_eq!(tidy_rrf_prefix_len(&smooth, 0), smooth.len());
 
         // Dramatic endpoint cliffs are not enough: both retained head and omitted tail need 3 hits.
         let endpoint_only = [1.0, 0.50, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.01];
-        assert_eq!(tidy_rrf_prefix_len(&endpoint_only), endpoint_only.len());
+        assert_eq!(tidy_rrf_prefix_len(&endpoint_only, 0), endpoint_only.len());
     }
 
     #[test]
     fn tidy_fails_open_on_invalid_short_or_unordered_scores() {
-        assert_eq!(tidy_rrf_prefix_len(&[1.0, 0.5, 0.25]), 3);
+        assert_eq!(tidy_rrf_prefix_len(&[1.0, 0.5, 0.25], 0), 3);
         for invalid in [
             vec![1.0, 0.9, f32::NAN, 0.7, 0.6, 0.5],
             vec![1.0, 0.9, 0.0, 0.7, 0.6, 0.5],
             vec![1.0, 0.9, 0.8, 0.85, 0.7, 0.6],
         ] {
-            assert_eq!(tidy_rrf_prefix_len(&invalid), invalid.len());
+            assert_eq!(tidy_rrf_prefix_len(&invalid, 0), invalid.len());
         }
     }
 
@@ -1275,7 +1381,10 @@ mod scope_filter_tests {
     fn tidy_cutoff_is_scale_invariant() {
         let scores = [1.0, 0.99, 0.98, 0.50, 0.49, 0.48, 0.47, 0.46];
         let scaled: Vec<f32> = scores.iter().map(|s| s * 0.03125).collect();
-        assert_eq!(tidy_rrf_prefix_len(&scores), tidy_rrf_prefix_len(&scaled));
+        assert_eq!(
+            tidy_rrf_prefix_len(&scores, 0),
+            tidy_rrf_prefix_len(&scaled, 0)
+        );
     }
 
     // --- --since / --source filters (ADR 0017) ----------------------------------------------------
@@ -1383,6 +1492,51 @@ mod scope_filter_tests {
         // Folded chunks are counted on the keeper; a single-chunk note stays None so its JSON is
         // indistinguishable from chunk-mode output (G9a).
         assert_eq!(siblings, [Some(1), Some(1), None]);
+    }
+
+    #[test]
+    fn folded_source_champion_survives_dedup_and_vetoes_knee() {
+        // The robust knee is after rank 3. The displayed chunk for f.md is rank 6 and is not itself a
+        // source champion; a later sibling is BM25 rank 1. Dedup must fold that private rank into the
+        // keeper so the composed G9c→G9d pipeline fails open instead of dropping the note.
+        let specs = [
+            ("a.md", 0, 1.00),
+            ("b.md", 0, 0.99),
+            ("c.md", 0, 0.98),
+            ("d.md", 0, 0.50),
+            ("e.md", 0, 0.49),
+            ("f.md", 0, 0.48),
+            ("g.md", 0, 0.47),
+            ("f.md", 1, 0.46),
+        ];
+        let mut hits: Vec<Hit> = specs
+            .into_iter()
+            .map(|(path, ord, score)| Hit {
+                score,
+                rrf: Some(score),
+                ..hit_chunk(path, ord)
+            })
+            .collect();
+        hits.last_mut().unwrap().bm25_rank = Some(1);
+
+        let kept = dedupe_notes(hits);
+        assert_eq!(kept.len(), 7);
+        assert_eq!(kept[5].path, "f.md");
+        assert_eq!(kept[5].bm25_rank, Some(1));
+        assert_eq!(kept[5].siblings, Some(1));
+        let scores: Vec<f32> = kept.iter().map(|hit| hit.rrf.unwrap()).collect();
+        assert_eq!(
+            tidy_rrf_prefix_len(&scores, 0),
+            3,
+            "fixture has a real knee"
+        );
+        let protected_through = source_champion_through(&kept);
+        assert_eq!(protected_through, 6);
+        assert_eq!(
+            tidy_rrf_prefix_len(&scores, protected_through),
+            scores.len(),
+            "folded champion vetoes the lossy cutoff"
+        );
     }
 
     #[test]
