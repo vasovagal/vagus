@@ -152,6 +152,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Apply ADR 0025's fixed statistical gate to baseline/candidate eval JSON reports.
+    EvalGate {
+        /// Baseline report from unmodified RRF k=60 on the frozen held-out qrels/index.
+        baseline: PathBuf,
+        /// Candidate report from the alternate-fusion binary on the identical qrels/index/config.
+        candidate: PathBuf,
+        /// Emit a stable gate report as JSON. Rejected candidates still exit nonzero.
+        #[arg(long)]
+        json: bool,
+    },
     /// Expand a query into typed lex:/vec:/hyde: variants with the local model (tier-1 rewriter).
     Rewrite {
         /// The query to expand.
@@ -302,6 +312,15 @@ enum VectorsAction {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Pure report comparison: no vault/config/model/index is needed or touched.
+    if let Command::EvalGate {
+        baseline,
+        candidate,
+        json,
+    } = &cli.command
+    {
+        return eval::run_gate(baseline, candidate, *json);
+    }
     let cfg = Config::load()?;
     // Every command that may open/create meta.db or a model cache enforces G1 first. Doctor performs
     // the same validation itself so it can print a diagnostic instead of failing before its report.
@@ -360,6 +379,7 @@ fn main() -> Result<()> {
             exact,
             json,
         } => eval::run(&cfg, &labels, k, mode, rerank, exact, json)?,
+        Command::EvalGate { .. } => unreachable!("eval-gate returned before loading config"),
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]
             {
@@ -1047,6 +1067,28 @@ mod eval_cli_tests {
                 json: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn eval_gate_requires_two_reports_and_accepts_json_flag() {
+        assert!(Cli::try_parse_from(["vagus", "eval-gate", "baseline.json"]).is_err());
+        let cli = Cli::try_parse_from([
+            "vagus",
+            "eval-gate",
+            "baseline.json",
+            "candidate.json",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::EvalGate {
+                baseline,
+                candidate,
+                json: true,
+            } if baseline.as_path() == Path::new("baseline.json")
+                && candidate.as_path() == Path::new("candidate.json")
         ));
     }
 }

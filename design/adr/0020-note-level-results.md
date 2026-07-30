@@ -21,8 +21,9 @@ nothing may perturb the deterministic RRF floor (G7/G8).
 
 - **Keep display-only grouping** (status quo). Rejected: it fixes the *rendering* but not the
   semantics — `--limit`, `--json`, and the skill still count chunks.
-- **Per-note capping inside fusion / cosine-MMR.** Rejected: edits ranking itself, a G8 breach
-  (same family as qmd's weighted-RRF). MMR stays deferred.
+- **Per-note capping inside fusion / cosine-MMR.** Rejected for this decision: it edits ranking rather
+  than adding note-level presentation semantics. ADR 0025's later experiment gate does not reopen this
+  feature without its own same-pool evidence/ADR; MMR stays deferred.
 - **Post-rank dedup stage** (chosen). Exactly the `apply_scope` / `apply_filters` shape: a
   drop-only, order-preserving stage *around* fusion. `rrf()` and the reranker are untouched.
 

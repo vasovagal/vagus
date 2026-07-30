@@ -1,14 +1,15 @@
 # ADR 0023 — Adaptive context-tidy result ceiling
 
-- **Status:** Accepted (2026-07-29); **amended 2026-07-30** — veto a knee that would hide any
-  top-three BM25/cosine source champion, including one represented by a folded sibling chunk.
+- **Status:** Accepted (2026-07-29); **amended 2026-07-30** — source-champion veto; ADR 0025
+  restricts this score-knee to standard `rrf_k60` and makes alternate-fusion experiments fail open.
 
 ## Context
 
 `vagus search --limit 10` historically treated ten as a quota whenever retrieval could fill it. That
 is convenient for exhaustive browsing, but wasteful for an LLM consumer: a clear high-signal head can
 be followed by a long, low-signal tail whose full chunk bodies consume context only to be rejected.
-The default tier-0 path cannot use an LLM to judge relevance, and G8 forbids changing or weighting RRF.
+The default tier-0 path cannot use an LLM to judge relevance, and G8 fixes its production fusion at
+RRF k=60 (ADR 0025's later explicit experiments cannot reuse this cutoff).
 
 The motivating query was:
 
@@ -46,7 +47,8 @@ For **plain tier-0 hybrid note results only**, make `--limit` an adaptive ceilin
 
 1. Build today's ranked, filtered, note-deduplicated, scope-filtered list and truncate to `--limit`
    exactly as before.
-2. Consider tidying only when the list filled `--limit`, has at least six hits, `--chunks` is off,
+2. Consider tidying only for the standard `rrf_k60` fusion policy when the list filled `--limit`,
+   has at least six hits, `--chunks` is off,
    `--rerank`/`--smart` are off, no explicit `--min-score` was supplied, and `--exhaustive` is off.
    BM25-only, vector-only, reranked, smart, chunk, under-filled, and explicit-floor searches retain
    their previous behavior.
@@ -134,3 +136,5 @@ source outlier, but false negatives are more costly here; `--exhaustive` remains
 - Corpus/index changes can move a score knee. Behavior is deterministic for a fixed result list, and
   `--exhaustive` is the stable recall/debug escape hatch.
 - No index schema, embedding identity, chunk format, or `CHUNK_VERSION` change is required.
+- ADR 0025 experiments cannot reuse this cutoff: different fusion scores fail open to the full prefix
+  until a separate ADR supplies compatible score/context evidence. Today's runtime has no alternate.

@@ -47,10 +47,10 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   tier-0.** The local rewriter is opt-in and offline ([ADR 0016](./0016-local-generative-rewriter.md)).
   The skill does not routinely fan out expansion/HyDE because every extra full-body retrieval consumes
   agent context; its one retry is selected by query shape only after the initial judge finds nothing.
-- **RRF is untouched** (G8): `Σ 1/(k+rank)`, k=60, no normalization. Reranking is a *separate
-  post-fusion stage*, not an edit to fusion. qmd's weighted-RRF / top-rank bonus / position-blend are
-  **rejected** (they would breach G8). Likewise, ADR 0023's tier-0 context gate is a separate
-  order-preserving suffix drop over the finished RRF list; it never edits fusion.
+- **Production RRF is untouched** (G8): `Σ 1/(60+rank)`, no normalization; reranking remains a
+  separate stage. ADR 0025 permits a same-pool alternate only as explicit, fixed-gate experiment—not
+  in any default tier—and default promotion needs another ADR. Likewise, ADR 0023's tier-0 context
+  gate consumes only standard RRF scores and never edits fusion.
 
 ## 2026-07-29 bounded-skill evidence
 

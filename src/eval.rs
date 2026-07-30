@@ -8,7 +8,8 @@
 //! never calibrated probabilities.
 //!
 //! This is a batch/offline command. Vector and reranked modes currently load their local model(s) per
-//! query through the shared search API; no network or background process is introduced.
+//! query through the shared search API; no network or background process is introduced. The sibling
+//! `eval-gate` command implements ADR 0025's fixed, paired fusion-promotion contract.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -24,7 +25,9 @@ use crate::search::{self, Mode};
 use crate::util::sha256_hex;
 use crate::vector;
 
-const REPORT_SCHEMA_VERSION: u32 = 1;
+mod gate;
+
+const REPORT_SCHEMA_VERSION: u32 = 2;
 const MAX_EVAL_K: usize = 1_000;
 const RESULT_POLICY: &str = "note_level_exhaustive_pre_tidy";
 
@@ -34,6 +37,7 @@ const RESULT_POLICY: &str = "note_level_exhaustive_pre_tidy";
 /// entries so a stale/typoed path is never silently treated as a retrieval miss.
 struct Label {
     query: String,
+    cohort: Option<String>,
     relevant: HashMap<String, u8>,
     judged_paths: Vec<String>,
     /// True when this positive query used the graded-object form; only those lines define nDCG.
@@ -50,6 +54,9 @@ impl Label {
 #[serde(deny_unknown_fields)]
 struct RawLabel {
     query: String,
+    /// Optional for exploratory eval; ADR 0025's promotion gate requires a non-empty cohort on every
+    /// positive query so one query family cannot hide another's regression.
+    cohort: Option<String>,
     // Missing/misspelled `relevant` is a hard error. A negative probe must explicitly use `[]`.
     relevant: Vec<RawRelevant>,
 }
@@ -89,6 +96,19 @@ fn parse_label(line: &str) -> Result<Label> {
         bail!("query must not be empty");
     }
 
+    let cohort = raw
+        .cohort
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if cohort.as_ref().is_some_and(|value| {
+        value.len() > 64
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    }) {
+        bail!("cohort must be 1-64 ASCII letters/digits/'-'/ '_' characters");
+    }
+
     let mut relevant = HashMap::new();
     let mut judged_paths = Vec::new();
     let mut seen = HashSet::new();
@@ -116,6 +136,7 @@ fn parse_label(line: &str) -> Result<Label> {
 
     Ok(Label {
         query: query.to_owned(),
+        cohort,
         has_grades: used_graded_form && !relevant.is_empty(),
         relevant,
         judged_paths,
@@ -235,8 +256,10 @@ fn ndcg_at_k(ranked: &[String], relevant: &HashMap<String, u8>, k: usize) -> f64
 // --- stable report -----------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct QueryReport {
     query: String,
+    cohort: Option<String>,
     is_negative: bool,
     /// `null` on a negative probe: no positive relevant set exists, so P/R/RR/nDCG are undefined.
     precision_at_k: Option<f64>,
@@ -252,6 +275,7 @@ struct QueryReport {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Aggregate {
     mean_precision_at_k: Option<f64>,
     mean_recall_at_k: Option<f64>,
@@ -268,10 +292,13 @@ struct Aggregate {
     top_score_delta: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EvalConfig {
     k: usize,
     mode: String,
+    fusion_policy: String,
+    fusion_candidate_pool: String,
     rerank: bool,
     rerank_policy: String,
     score_floor: bool,
@@ -287,6 +314,7 @@ struct EvalConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct IndexSnapshot {
     corpus_sha256: String,
     indexed_files: usize,
@@ -301,6 +329,7 @@ struct IndexSnapshot {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Provenance {
     vagus_version: String,
     binary_sha256: String,
@@ -309,6 +338,7 @@ struct Provenance {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EvalReport {
     schema_version: u32,
     config: EvalConfig,
@@ -374,6 +404,7 @@ fn score_query(
     let positive = !label.is_negative();
     QueryReport {
         query: label.query.clone(),
+        cohort: label.cohort.clone(),
         is_negative: !positive,
         precision_at_k: positive.then(|| precision_at_k(&ranked, &label.relevant, k)),
         recall_at_k: positive.then(|| recall_at_k(&ranked, &label.relevant, k)),
@@ -500,6 +531,18 @@ fn evaluate(
     let config = EvalConfig {
         k,
         mode: mode_label(mode).to_owned(),
+        fusion_policy: if matches!(mode, Mode::Hybrid) {
+            search::FUSION_POLICY
+        } else {
+            "none"
+        }
+        .to_owned(),
+        fusion_candidate_pool: if matches!(mode, Mode::Hybrid) {
+            "bm25_cosine_union"
+        } else {
+            "single_retriever"
+        }
+        .to_owned(),
         rerank,
         rerank_policy: if rerank { "capped_prefix" } else { "none" }.to_owned(),
         score_floor: false,
@@ -590,6 +633,11 @@ pub fn run(
         print_table(&report, labels);
     }
     Ok(())
+}
+
+/// Compare two schema-compatible `vagus eval --json` reports under ADR 0025's fixed promotion gate.
+pub fn run_gate(baseline: &Path, candidate: &Path, json: bool) -> Result<()> {
+    gate::run(baseline, candidate, json)
 }
 
 pub(crate) fn parse_positive_k(raw: &str) -> std::result::Result<usize, String> {

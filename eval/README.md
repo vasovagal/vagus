@@ -14,8 +14,8 @@ more precise merely by returning fewer notes.
 JSONL contains one object per nonblank line:
 
 ```jsonl
-{"query":"grpc server streaming headers hang","relevant":["30-Resources/gRPC/headers-hang.md","10-Projects/edge/streaming.md"]}
-{"query":"which coffee grinder did I pick","relevant":[{"path":"30-Resources/Coffee/grinder.md","grade":3},{"path":"00-Inbox/grinder-notes.md","grade":1}]}
+{"query":"grpc server streaming headers hang","cohort":"lexical","relevant":["30-Resources/gRPC/headers-hang.md","10-Projects/edge/streaming.md"]}
+{"query":"which coffee grinder did I pick","cohort":"semantic","relevant":[{"path":"30-Resources/Coffee/grinder.md","grade":3},{"path":"00-Inbox/grinder-notes.md","grade":1}]}
 {"query":"xilofrangiate the borogoves","relevant":[]}
 ```
 
@@ -24,7 +24,8 @@ path—including grade 0—must exist with at least one retrievable chunk in the
 the placeholders in
 [`example.labels.jsonl`](./example.labels.jsonl) before running it.
 
-`relevant` supports:
+`cohort` is optional for ordinary eval (1–64 ASCII letters/digits/`-`/`_`) and mandatory for ADR
+0025's fusion gate. `relevant` supports:
 
 - a path string, equivalent to grade 1;
 - `{"path":"...","grade":0..3}` where 1–3 are increasingly relevant and 0 is judged non-relevant;
@@ -55,12 +56,30 @@ vagus eval eval/my.labels.jsonl --mode bm25 --k 20      # lexical-only P/R/RR/nD
 vagus eval eval/my.labels.jsonl --rerank --json > run.json
 ```
 
-`--json` schema version 1 pins the label and corpus SHA-256s, index/model identities and counts,
-binary version + executable SHA-256, result policy, score kind, explicit-exact request, and effective
-exact/usearch backend.
+`--json` schema version 2 pins the label and corpus SHA-256s, index/model identities and counts,
+binary version + executable SHA-256, result policy, cohort, fusion policy/candidate pool, score kind,
+explicit-exact request, and effective exact/usearch backend.
 Only compare reports whose fingerprints and evaluation config match, unless the changed field is the
 variable being deliberately tested. If another process changes the index during a run, eval detects
 the final fingerprint mismatch and exits without publishing a mixed-generation report.
+
+## Fusion evidence gate (ADR 0025)
+
+Freeze fully graded held-out qrels and an RRF baseline **before** tuning a candidate. The gate requires
+at least 20 positive queries across at least four cohorts (three per cohort), then compares identical
+exact-hybrid k=10 pre-tidy reports:
+
+```sh
+vagus eval test.labels.jsonl --mode hybrid --exact --k 10 --json > baseline.json
+# produce candidate.json with the alternate fusion policy, same command/index/labels
+vagus eval-gate baseline.json candidate.json --json > gate.json
+```
+
+It requires ≥+0.010 mean nDCG@10, a positive deterministic paired-bootstrap 95% lower bound, no mean
+or per-query recall loss, bounded MRR/P/cohort regressions, and matching labels/corpus/index/config
+provenance. Rejection exits nonzero. Passing permits only an explicit experiment; replacing default
+RRF or reusing ADR 0023's score-knee needs a separate ADR and context/latency evidence. See
+[ADR 0025](../design/adr/0025-evidence-gated-fusion.md) for the binding anti-overfit protocol.
 
 Vector/reranked evaluation is a batch operation and currently constructs its local model(s) once per
 query through the shared search API. It may be slow, but remains fully offline.

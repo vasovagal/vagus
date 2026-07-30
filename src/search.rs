@@ -30,6 +30,13 @@ use crate::util::since_cutoff;
 
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
+/// Stable eval provenance for the default fusion policy (ADRs 0003/0025). A future opt-in
+/// experiment must report a different policy id without changing this default silently.
+pub const FUSION_POLICY: &str = "rrf_k60";
+
+fn fusion_supports_adaptive_tidy(policy: &str) -> bool {
+    policy == "rrf_k60"
+}
 
 // Adaptive context-tidiness gate (ADR 0023/G9d). The cutoff is deliberately conservative: a score
 // cliff must leave a real head and tail, exceed a fixed 10% prominence floor, and be a 3-sigma robust
@@ -906,6 +913,7 @@ pub fn run(
     // not a quota. If a robust RRF score knee separates a high-signal prefix from a real tail, drop
     // only that suffix. Unsupported/mixed-score modes fail open; --exhaustive restores the old fill.
     let tidy_omitted = if !exhaustive
+        && fusion_supports_adaptive_tidy(FUSION_POLICY)
         && min_score.is_none()
         && matches!(mode, Mode::Hybrid)
         && !rerank
@@ -1294,6 +1302,12 @@ mod scope_filter_tests {
     }
 
     // --- adaptive context tidiness (ADR 0023) -----------------------------------------------------
+
+    #[test]
+    fn alternate_fusion_cannot_reuse_the_rrf_score_knee() {
+        assert!(fusion_supports_adaptive_tidy("rrf_k60"));
+        assert!(!fusion_supports_adaptive_tidy("weighted_rrf_v1"));
+    }
 
     #[test]
     fn source_champion_guard_tracks_only_top_three_channel_ranks() {

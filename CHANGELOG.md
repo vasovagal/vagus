@@ -11,11 +11,12 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
-- **Reproducible retrieval evaluation.** `vagus eval <labels.jsonl>` scores a fixed current index with
-  standard fixed-denominator P@k, R@k, MRR@k, and optional nDCG@k over vault-specific qrels. Stable
-  schema-versioned JSON includes complete rankings plus label/corpus/index/model/backend/config
-  provenance; stale qrel paths and ambiguous labels fail closed, undefined cohorts stay `null`, and
-  evaluation is always note-level exhaustive pre-tidy with no implicit index refresh. (ADR 0024/G27)
+- **Reproducible retrieval evaluation and a fixed fusion gate.** `vagus eval <labels.jsonl>` scores a
+  fixed index with P@k/R@k/MRR@k/nDCG@k; schema-2 JSON adds full rankings plus label/corpus/index/model/
+  backend/fusion/cohort provenance. `vagus eval-gate BASELINE CANDIDATE` enforces ADR 0025's held-out
+  exact-hybrid k=10 sample/cohort floors, ≥.010 nDCG gain, positive paired-bootstrap lower bound, and
+  recall/MRR/P/cohort nonregressions, exiting nonzero on rejection. RRF k=60 remains the only default;
+  passing permits only an explicit same-pool experiment. (ADRs 0024/0025; G8/G27)
 - **Fail-closed first-run setup.** `vagus init` creates the fixed PARA layout; `--icloud` uses the
   standard iCloud Drive `Brain` directory and a friendly vault symlink. It resolves aliases and
   missing paths, preflights equality/overlap/occupancy/traversal before mutation, initializes a direct

@@ -65,11 +65,14 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 ## Search behavior
 
-- **G8 — RRF k=60.** Fuse BM25 and cosine ranks with `score = Σ 1/(k + rank)`; no score normalization,
-  **no per-list weighting**. Equal sums use ascending opaque `chunk_id` only (deterministic and
-  modality-neutral, never randomized `HashMap` iteration). Cross-encoder **reranking is a separate post-fusion stage** (`--rerank`,
-  G19) and must **not** modify `rrf()`. qmd's weighted-RRF / top-rank bonus / position-blend are
-  **rejected** (they'd breach this). ([ADR 0003](./adr/0003-search-stack.md), [ADR 0015](./adr/0015-cross-encoder-rerank.md))
+- **G8 — RRF k=60 is the production floor; experiments are evidence-gated.** Bare hybrid search uses
+  unweighted `score = Σ 1/(60 + rank)` over BM25/cosine; equal sums use ascending opaque `chunk_id`.
+  Never blend raw BM25 + cosine or fit normalization to live result scores. An alternate may reorder
+  only the same candidate union and may land only as explicit opt-in after ADR 0025's fixed held-out
+  `eval-gate` passes; passing does **not** authorize default replacement. Cross-encoder reranking stays
+  separate. Default promotion and any G9d reuse require a new ADR plus context/latency evidence.
+  ([ADR 0003](./adr/0003-search-stack.md), [ADR 0015](./adr/0015-cross-encoder-rerank.md),
+  [ADR 0025](./adr/0025-evidence-gated-fusion.md))
 - **G9 — embedder prefixes.** Apply the model's prompt template, query- vs document-side, and **don't
   double-prefix** (respect what the lib already applies). EmbeddingGemma (fastembed does *not*
   auto-template it): query `task: search result | query: {text}`, document `title: none | text: {text}`
@@ -84,7 +87,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G9b — Frontmatter filters are a separate post-rank stage.** `search --since`/`--source` filter on
   per-chunk `created_at`/`source` denormalized into SQLite at index time (**no tantivy schema change**);
   the filter is a drop-only stage **around** fusion (mirrors `apply_scope`), **never** touching `rrf()`
-  (G7/G8) and **never** reordering survivors. Bumping `CHUNK_VERSION` (now **4**) back-fills the columns
+  (G7/G8) and **never** reordering survivors. `CHUNK_VERSION` (now **5**) back-fills the columns
   via a one-time auto-reindex (G4). ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G9c — Note-level results are a separate post-rank dedup stage.** By default `--limit` counts
   **distinct notes**: `dedupe_notes` keeps each note's best-ranked chunk (folding later chunks into its
@@ -99,8 +102,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   mutates scores, normalizes components, or touches `rrf()` (G8); a proposed knee before any note with
   a top-three BM25/cosine source chunk is vetoed, including a folded sibling champion.
   Malformed/short/smooth/champion-crossing lists and BM25/vec/rerank/smart/chunk/explicit-`--min-score`
-  modes fail open. `--exhaustive` bypasses only this
-  stage and restores legacy fill-up-to-`--limit` results. JSON remains a pure unchanged-shape Hit array.
+  modes fail open. The rule consumes only standard `rrf_k60` scores; an alternate fusion must bypass
+  it and return the full prefix unless a later ADR validates compatible semantics. `--exhaustive`
+  restores legacy fill-up-to-`--limit` results. JSON remains a pure unchanged-shape Hit array.
   ([ADR 0023](./adr/0023-adaptive-context-tidy-results.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
@@ -110,11 +114,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   *channel* picks the tier — no escalation prompts or routine tier-2 fan-out.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
-  fixed-denominator P@k, explicitly truncated MRR@k, and `null` for undefined cohorts. Its stable JSON
-  pins labels/corpus/index/backend/config identity and includes ranked paths. Runs are note-level and
-  exhaustive pre-tidy, with no implicit index refresh/scope/filter/floor; raw top scores are diagnostic,
-  never calibrated probabilities. Changing metric meaning requires a schema-version and ADR update.
-  ([ADR 0024](./adr/0024-retrieval-eval-harness.md))
+  fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins
+  labels/corpus/index/backend/config/fusion identity, cohorts, and complete rankings; runs are
+  note-level exhaustive pre-tidy with no implicit refresh/scope/filter/floor. Raw scores are diagnostic.
+  Fusion claims use only ADR 0025's non-configurable paired gate; metric/gate changes require an ADR
+  and schema/contract-version update. ([ADR 0024](./adr/0024-retrieval-eval-harness.md),
+  [ADR 0025](./adr/0025-evidence-gated-fusion.md))
 
 ## Build & dependencies
 

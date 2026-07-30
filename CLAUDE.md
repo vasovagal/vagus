@@ -38,9 +38,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
    `FASTEMBED_CACHE_DIR`). Plain `vagus doctor` is filesystem-presence-only and must never instantiate
    a possibly partial model cache; only explicit `doctor --fetch-models` may download and validate both
    ONNX models, failing nonzero if either fails.
-7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`; no
-   weighting/normalization. Equal sums use stable opaque `chunk_id` order only—never randomized map
-   iteration. The cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
+7. **Hybrid search = RRF (k=60).** Bare hybrid search uses unweighted
+   `score = Σ 1/(60 + rank)`; equal sums use stable `chunk_id`. Never blend raw BM25+cosine or fit
+   transforms to live scores. Same-pool alternate fusion may land only as explicit opt-in after the
+   fixed ADR 0025 `eval-gate`; passing does not authorize a new default or G9d score semantics. The
+   cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
    and must not touch `rrf()` — as is note-level dedup, the default where `--limit` counts distinct
    notes (`--chunks` opts out; ADR 0020/G9c). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
@@ -93,10 +95,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
     A proposed knee before a note with any top-three BM25/cosine source chunk is vetoed (folded sibling
     ranks survive dedup); unsupported/smooth inputs fail open. `--exhaustive` restores legacy results;
     JSON keeps the same pure Hit-array shape.
-18. **Eval evidence must be self-describing and honest** (ADR 0024/G27). `vagus eval` uses
-    fixed-denominator P@k, MRR@k, `null` undefined cohorts, and schema-versioned label/corpus/index/
-    backend provenance. It evaluates note-level exhaustive pre-tidy rankings without implicit index
-    refresh/scope/filter/floor. Raw top scores are diagnostics, never calibrated probabilities.
+18. **Eval evidence must be self-describing and honest** (ADRs 0024/0025, G27). `vagus eval` uses
+    fixed-denominator P@k, MRR@k, `null` undefined cohorts, full rankings, and schema-2 label/corpus/
+    index/backend/fusion/cohort provenance. It is note-level exhaustive pre-tidy without implicit
+    refresh/scope/filter/floor. Fusion claims must pass the non-configurable paired `vagus eval-gate`;
+    raw scores remain diagnostics, never calibrated probabilities.
 
 ## Layout
 

@@ -24,7 +24,8 @@ local rewriter. Engine/model feasibility was verified by research workflows (see
    typed `lex:/vec:/hyde:` protocol ([ADR 0016](./adr/0016-local-generative-rewriter.md)) — milestone 2.
 4. **EmbeddingGemma-300M** (768-dim, 2048-ctx) + token-budgeted chunking
    ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md), [ADR 0013](./adr/0013-chunk-budget.md)).
-5. RRF untouched (G8); reranking is a separate post-fusion stage; qmd's RRF extras rejected.
+5. Production RRF untouched (G8); reranking separate. ADR 0025 later added a fixed gate for explicit
+   same-pool fusion experiments, without accepting an alternate or changing any tier default.
 
 ## Shipped this round (M0 + M1)
 
