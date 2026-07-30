@@ -2,8 +2,9 @@
 
 - **Status:** Accepted (2026-05-30); **amended 2026-07-25** — the tier-2 Agent Skill supports both
   Claude Code and pi; **amended 2026-07-29** — tier-0 `--limit` is an adaptive context ceiling via
-  [ADR 0023](./0023-adaptive-context-tidy-results.md), and tier-2 uses a bounded 10-candidate exact+
-  reranked judge with a grade-2 presentation floor. Supersedes the planned (never-written)
+  [ADR 0023](./0023-adaptive-context-tidy-results.md), tier-2 uses a bounded 10-candidate exact+
+  reranked judge with a grade-2 presentation floor, and ADR 0026 adds orthogonal opt-in semantic
+  reporting without changing any tier pipeline. Supersedes the planned (never-written)
   "two-tier" ADR; the earlier framing lives in
   [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
@@ -52,6 +53,10 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   separate stage. ADR 0025 permits a same-pool alternate only as explicit, fixed-gate experiment—not
   in any default tier—and default promotion needs another ADR. Likewise, ADR 0023's tier-0 context
   gate consumes only standard RRF scores and never edits fusion.
+- **ADR 0026 relevance is orthogonal to tier selection.** Plain/ordinary-reranked search may opt into
+  a bounded original-query cosine heuristic and post-truncation floor; `--smart` rejects it because
+  typed multi-query fusion does not retain that signal. The tier-2 skill keeps its stronger 0–3
+  full-body judgment and does not reinterpret local cosine as agent confidence.
 
 ## 2026-07-29 bounded-skill evidence
 
@@ -84,11 +89,13 @@ when the initial ten contain no useful evidence.
 - Recorded as guardrail **G19**. The old "G17 = no LLM in the binary" becomes a *tiered* statement
   (see G17): tier-0 has no generation; tier-1 may compile a local generative model into `vagus`
   (feature-gated, lazily downloaded); tier-2 uses Opus. No cloud, no daemon in any tier (G14).
-- `vagus search` gains `--rerank`, `--full`, `--min-score` (shipped) and later `--rewrite`/`--smart`
-  (tier-1 generation, [ADR 0016](./0016-local-generative-rewriter.md)).
+- `vagus search` gains `--rerank`, `--full`, `--min-score`, opt-in `--relevance`/
+  `--min-relevance` (shipped), and later `--rewrite`/`--smart` (tier-1 generation,
+  [ADR 0016](./0016-local-generative-rewriter.md)); relevance remains unavailable to smart fusion.
 - The default bare `vagus search` (tier 0) keeps the same retrieval/ranking and <1s model path, but
   its result **count** may now be lower than `--limit` when ADR 0023 finds a guarded RRF knee.
-  `--exhaustive` restores the legacy fill/count/content; the Hit JSON schema remains unchanged.
+  `--exhaustive` restores the legacy fill/count/content; the default Hit JSON schema remains unchanged
+  unless ADR 0026 reporting is explicit.
 - Tier-2 retrieval is deliberately bounded: ten candidate bodies, only grade 2–3 evidence presented,
   at most six nonredundant notes, and no quota padding. A single shape-selected retry is the only
   expansion path when the first pass has no useful evidence.

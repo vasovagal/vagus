@@ -355,8 +355,10 @@ fn mode_label(mode: Mode) -> &'static str {
     }
 }
 
-fn score_kind(mode: Mode, rerank: bool) -> &'static str {
-    if rerank {
+fn score_kind(mode: Mode, rerank: bool, relevance: bool) -> &'static str {
+    if relevance {
+        crate::relevance::POLICY
+    } else if rerank {
         "rerank_sigmoid"
     } else {
         match mode {
@@ -503,6 +505,7 @@ fn index_snapshot(db: &Db, files: &HashMap<String, (f64, String)>) -> Result<Ind
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate(
     cfg: &Config,
     label_content: &str,
@@ -511,6 +514,7 @@ fn evaluate(
     rerank: bool,
     rerank_context: usize,
     exact: bool,
+    relevance: bool,
 ) -> Result<EvalReport> {
     if !(1..=MAX_EVAL_K).contains(&k) {
         bail!("--k must be between 1 and {MAX_EVAL_K}");
@@ -520,6 +524,9 @@ fn evaluate(
     }
     if rerank_context > 0 && !rerank {
         bail!("--rerank-context requires --rerank");
+    }
+    if relevance && matches!(mode, Mode::Bm25) {
+        bail!("--relevance requires --mode hybrid or --mode vec");
     }
 
     let labels = parse_labels(label_content)?;
@@ -559,7 +566,7 @@ fn evaluate(
         exact_requested: exact,
         vector_backend: vector_backend.to_owned(),
         automatic_exact_cutoff: vector::EXACT_SCAN_CUTOFF,
-        score_kind: score_kind(mode, rerank).to_owned(),
+        score_kind: score_kind(mode, rerank, relevance).to_owned(),
         result_policy: RESULT_POLICY.to_owned(),
         note_level: true,
         adaptive_cutoff: false,
@@ -597,7 +604,11 @@ fn evaluate(
         if unique.len() != ranked.len() {
             bail!("internal eval error: note-level search returned duplicate paths");
         }
-        let top_score = hits.first().map(|h| h.score as f64);
+        let top_score = if relevance {
+            hits.first().and_then(|hit| hit.relevance).map(f64::from)
+        } else {
+            hits.first().map(|hit| f64::from(hit.score))
+        };
         if top_score.is_some_and(|score| !score.is_finite()) {
             bail!(
                 "search returned a non-finite top score for query {:?}",
@@ -635,11 +646,21 @@ pub fn run(
     rerank: bool,
     rerank_context: usize,
     exact: bool,
+    relevance: bool,
     json: bool,
 ) -> Result<()> {
     let content = std::fs::read_to_string(labels)
         .with_context(|| format!("reading label file {}", labels.display()))?;
-    let report = evaluate(cfg, &content, k, mode, rerank, rerank_context, exact)?;
+    let report = evaluate(
+        cfg,
+        &content,
+        k,
+        mode,
+        rerank,
+        rerank_context,
+        exact,
+        relevance,
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -733,7 +754,11 @@ fn print_table(report: &EvalReport, labels: &Path) {
         display_metric(a.top_score_delta),
         c.score_kind
     );
-    println!("  top scores are mode-specific diagnostics, not calibrated probabilities");
+    if c.score_kind == crate::relevance::POLICY {
+        println!("  relevance is a bounded cosine heuristic, not a calibrated probability");
+    } else {
+        println!("  top scores are mode-specific diagnostics, not calibrated probabilities");
+    }
 }
 
 fn truncate(s: &str, width: usize) -> String {

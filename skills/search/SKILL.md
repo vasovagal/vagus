@@ -28,7 +28,8 @@ for exact passages or every occurrence.
 Each Hit may contain `{chunk_id, path, heading, score, snippet, rrf, cosine, bm25, rerank, body,
 siblings}`. Optional fields can be absent. `siblings > 0` means other chunks in that note also matched.
 Do not add `--min-score`: your judgment is the quality floor, and that flag makes the local reranker
-score a much deeper pool.
+score a much deeper pool. Do not add `--relevance` or `--min-relevance`: bounded cosine is a local
+heuristic, while your grade from the full body is this tier's final relevance decision.
 
 ## 2. Grade every candidate
 

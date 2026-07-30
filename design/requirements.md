@@ -37,8 +37,12 @@ coding harness (Claude Code and pi).
   vault-specific JSONL qrels with standard P@k/R@k/MRR@k/nDCG@k semantics, explicit undefined values,
   complete ranked paths, and schema-versioned label/corpus/index/backend/fusion/cohort provenance;
   rerank provenance identifies its exact context/tokenizer policy. `vagus eval-gate` enforces ADR
-  0025's non-configurable held-out fusion thresholds (ADRs 0024/0025,
-  G27).
+  0025's non-configurable held-out fusion thresholds (ADRs 0024/0025, G27).
+- **F9 — Honest opt-in semantic relevance.** Search may report only finite original-query
+  EmbeddingGemma cosine clamped to `[0,1]` under a model/chunk-named policy, explicitly as a heuristic
+  rather than probability. An explicit floor filters the already-truncated prefix without reorder or
+  backfill; positive floors drop unknown/BM25-only hits. Ranking and default human/JSON output remain
+  unchanged, and eval exposes the same policy for private-corpus evidence (ADR 0026, G9e).
 
 ## Non-functional requirements
 

@@ -1,7 +1,8 @@
 # ADR 0023 — Adaptive context-tidy result ceiling
 
 - **Status:** Accepted (2026-07-29); **amended 2026-07-30** — source-champion veto; ADR 0025
-  restricts this score-knee to standard `rrf_k60` and makes alternate-fusion experiments fail open.
+  restricts this score-knee to standard `rrf_k60` and makes alternate-fusion experiments fail open;
+  ADR 0026 makes an explicit relevance floor bypass tidy before its own post-truncation filtering.
 
 ## Context
 
@@ -49,9 +50,9 @@ For **plain tier-0 hybrid note results only**, make `--limit` an adaptive ceilin
    exactly as before.
 2. Consider tidying only for the standard `rrf_k60` fusion policy when the list filled `--limit`,
    has at least six hits, `--chunks` is off,
-   `--rerank`/`--smart` are off, no explicit `--min-score` was supplied, and `--exhaustive` is off.
-   BM25-only, vector-only, reranked, smart, chunk, under-filled, and explicit-floor searches retain
-   their previous behavior.
+   `--rerank`/`--smart` are off, no explicit `--min-score` or `--min-relevance` was supplied, and
+   `--exhaustive` is off. BM25-only, vector-only, reranked, smart, chunk, under-filled, and
+   explicit-floor searches retain their previous behavior.
 3. Let positive, finite, non-increasing RRF scores be `s1..sn`; compute adjacent log gaps
    `g_i = ln(s_i / s_{i+1})`.
 4. Compute `m = median(g)` and `MAD = median(|g-m|)`. The prominence threshold is:
@@ -70,8 +71,9 @@ For **plain tier-0 hybrid note results only**, make `--limit` an adaptive ceilin
 7. Invalid, missing, non-positive, non-monotone, short, smooth, threshold-free, or champion-crossing
    inputs **fail open** and retain the full list.
 8. The stage may only drop a suffix. It never reorders, backfills, mutates a score, normalizes a
-   component, or calls/modifies `rrf()` (G8). `--json` remains the same pure Hit array; an omission
-   notice goes to stderr. Human output gets the same notice inline.
+   component, or calls/modifies `rrf()` (G8). This stage leaves `--json` as the same pure Hit array and
+   adds no fields (ADR 0026's explicit reporting is separate); an omission notice goes to stderr.
+   Human output gets the same notice inline.
 9. `--exhaustive` bypasses only this adaptive stage and restores the legacy fill-up-to-`--limit`
    count/order/Hit objects. It composes with `--exact` for maximum-recall retrieval.
 

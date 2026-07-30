@@ -16,6 +16,9 @@ straight from a Claude Code or pi session).
 - **Context-tidy by default.** For plain hybrid note search, `--limit` is a ceiling: when the finished
   RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix—
   but never across a top-three BM25/cosine source hit. `--exhaustive` restores legacy fill.
+- **Honest opt-in relevance.** `--relevance` reports finite original-query cosine clamped to `[0,1]`
+  as a named semantic heuristic — never confidence or probability. `--min-relevance` can apply an
+  explicit post-rank floor without reordering or backfill; default output and ranking stay unchanged.
 - **Measure retrieval, don't guess.** `vagus eval` emits schema-2 metrics and full corpus/index/
   backend/fusion/cohort provenance; `vagus eval-gate` applies a fixed held-out paired contract before
   any same-pool alternate fusion can even land as opt-in. RRF k=60 remains the only default.
@@ -141,6 +144,9 @@ vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by 
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
 vagus search "<query>" --rerank --rerank-context 1  # score with adjacent in-note context
+vagus search "<query>" --relevance     # show bounded semantic heuristic (not probability)
+vagus search "<query>" --min-relevance 0.30  # explicit post-rank floor; no backfill
+vagus eval labels.jsonl --exact --relevance --json  # inspect current-corpus relevance evidence
 vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankings against qrels
 vagus eval labels.jsonl --exact --rerank --rerank-context 1 --json  # evaluate that input policy
 vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
@@ -167,6 +173,17 @@ neighbors only when the model's actual pair tokenizer can retain the query, spec
 matched center. This changes only rerank ordering: returned `body`/`snippet`, retrieval, RRF, capped
 prefix, and unscored RRF tail are unchanged. Use it selectively; wider attention is expensive and can
 help or hurt an individual query.
+
+`--relevance` exposes the hit's finite original-query EmbeddingGemma cosine clamped to `[0,1]`;
+JSON also names the exact `relevance_policy`. It is an opt-in semantic heuristic tied to the current
+model/chunk identity, **not** calibrated confidence. RRF and reranking still determine order. A
+BM25-only survivor is marked unknown rather than assigned a
+fake value. `--min-relevance 0..=1` implies reporting and filters only after truncation, with no
+backfill: a positive floor drops unknowns, while zero retains them. Any relevance floor disables the
+adaptive RRF tidy stage. BM25-only and `--smart` reject these flags because they do not retain an
+original-query cosine. Use `vagus eval --relevance` over your own fixed positive and negative probes
+before adopting a floor. `0.30` was a development starting point and one untouched plain-search
+negative scored `0.300044`; it is not a universal boundary, even for this vault.
 
 `vagus eval` never refreshes the index: run `vagus index` first, then hold the index and JSONL labels
 fixed across A/B runs. Its P@k denominator is always k, MRR is explicitly MRR@k, undefined cohorts are

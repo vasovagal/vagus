@@ -108,8 +108,19 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   Malformed/short/smooth/champion-crossing lists and BM25/vec/rerank/smart/chunk/explicit-`--min-score`
   modes fail open. The rule consumes only standard `rrf_k60` scores; an alternate fusion must bypass
   it and return the full prefix unless a later ADR validates compatible semantics. `--exhaustive`
-  restores legacy fill-up-to-`--limit` results. JSON remains a pure unchanged-shape Hit array.
+  restores legacy fill-up-to-`--limit` results. This stage adds no JSON fields; absent explicit G9e
+  reporting, JSON remains a pure unchanged-shape Hit array.
   ([ADR 0023](./adr/0023-adaptive-context-tidy-results.md))
+- **G9e — Semantic relevance is opt-in bounded cosine, never confidence.** The v1 policy is finite
+  original-query EmbeddingGemma cosine clamped to `[0,1]`, named with its model/chunk identity and
+  described as a heuristic — not a probability or cross-vault calibration. Reporting and a finite
+  `--min-relevance 0..=1` floor never alter retrieval, RRF k=60, source ranks, ordering,
+  rerank-prefix eligibility, or default human/JSON output. Filtering is post-truncation with no
+  backfill and disables G9d; a positive floor drops unknown/BM25-only hits, while zero retains them.
+  BM25-only and `--smart` reject relevance because they lack retained original-query cosine.
+  Reranking carries the original cosine unchanged and never substitutes its sigmoid/logit; eval may
+  report the named policy as a schema-2 score diagnostic without changing ranking metrics.
+  ([ADR 0026](./adr/0026-bounded-semantic-relevance.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
@@ -122,8 +133,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
   fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins
   labels/corpus/index/backend/config/fusion identity, cohorts, and complete rankings; runs are
-  note-level exhaustive pre-tidy with no implicit refresh/scope/filter/floor. Raw scores are diagnostic.
-  Reranked reports encode the context radius + tokenizer limit in `rerank_policy`, so unlike inputs
+  note-level exhaustive pre-tidy with no implicit refresh/scope/filter/floor. Raw scores and explicit
+  G9e relevance are diagnostics, never probabilities. Reranked reports encode the context radius +
+  tokenizer limit in `rerank_policy`, so unlike inputs
   cannot be compared as one configuration. Fusion claims use only ADR 0025's non-configurable paired
   gate; metric/gate changes require an ADR
   and schema/contract-version update. ([ADR 0024](./adr/0024-retrieval-eval-harness.md),

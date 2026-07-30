@@ -1,6 +1,7 @@
 # Plan — Three-tier retrieval ("qmd-class" search as a self-contained Rust universe)
 
-> **Status:** M0–M3 **shipped**; M3's agent context budget was tightened 2026-07-29 (ADR 0012).
+> **Status:** M0–M3 **shipped**; M3's agent context budget was tightened 2026-07-29 (ADR 0012),
+> and opt-in bounded semantic relevance shipped 2026-07-30 (ADR 0026).
 > Supersedes
 > [`plan-two-tier-search-and-embedding-upgrade.md`](./plan-two-tier-search-and-embedding-upgrade.md).
 > The durable map is [`roadmap.md`](./roadmap.md); the *why* is in ADRs 0012–0016.
@@ -26,6 +27,9 @@ local rewriter. Engine/model feasibility was verified by research workflows (see
    ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md), [ADR 0013](./adr/0013-chunk-budget.md)).
 5. Production RRF untouched (G8); reranking separate. ADR 0025 later added a fixed gate for explicit
    same-pool fusion experiments, without accepting an alternate or changing any tier default.
+6. **Relevance is reporting/filtering, not fusion:** only finite original-query cosine clamped to
+   `[0,1]`, opt-in and named by model/chunk identity. It never substitutes reranker confidence or
+   changes ranking/default output; positive floors are post-truncation/no-backfill (ADR 0026/G9e).
 
 ## Shipped this round (M0 + M1)
 
@@ -54,6 +58,8 @@ multiple chunks; oversize code stays in one chunk; `--rerank` reorders by cross-
   --smart` (typed-variant routing → multi-query fuse → rerank). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
 - **M3 — Opus skill:** bounded full-body judge over `vagus search --json --full --rerank --exact
   --limit 10` at rerank-context radius 0; present only grade≥2 evidence (max 6, never pad), with one
-  modality-selected retry only
-  when none survive. The original routine expansion/HyDE/`--min-score` plan was superseded by the
-  2026-07-29 measured context budget in ADR 0012.
+  modality-selected retry only when none survive. The original routine expansion/HyDE/`--min-score`
+  plan was superseded by the 2026-07-29 measured context budget in ADR 0012.
+- **Post-M3 relevance diagnostic:** `search --relevance`/`--min-relevance` and
+  `eval --relevance` expose the ADR 0026 cosine heuristic. The skill deliberately keeps its separate
+  grade-0–3 body judgment contract; it does not turn the local heuristic into an agent confidence.

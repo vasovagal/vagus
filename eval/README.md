@@ -44,7 +44,10 @@ grades fail the run. This prevents typos and deleted notes from masquerading as 
 
 The report also carries mode-specific top-score means (`rrf`, `bm25`, `cosine`, or
 `rerank_sigmoid`). They are diagnostics only—not calibrated probabilities and not comparable across
-different modes/configurations.
+different modes/configurations. With explicit `--relevance`, `score_kind` instead names
+`embeddinggemma300m_chunk5_cosine_clamped_v1`: finite original-query cosine clamped to `[0,1]`.
+This remains a semantic heuristic, not confidence. A BM25-only top hit can make it `null`; cohort
+means remain undefined unless every member has a finite top value.
 
 ## Usage
 
@@ -52,6 +55,7 @@ different modes/configurations.
 vagus index
 vagus eval eval/my.labels.jsonl                         # hybrid, k=10, normal backend policy
 vagus eval eval/my.labels.jsonl --exact                 # force the cosine oracle
+vagus eval eval/my.labels.jsonl --exact --relevance --json > relevance.json
 vagus eval eval/my.labels.jsonl --mode bm25 --k 20      # lexical-only P/R/RR/nDCG @20
 vagus eval eval/my.labels.jsonl --rerank --json > run.json
 vagus eval eval/my.labels.jsonl --rerank --rerank-context 1 --json > context-1.json
@@ -62,7 +66,10 @@ binary version + executable SHA-256, result policy, cohort, fusion policy/candid
 explicit-exact request, effective exact/usearch backend, and (inside `rerank_policy`) the exact
 rerank-context radius + tokenizer maximum.
 Only compare reports whose fingerprints and evaluation config match, unless the changed field is the
-variable being deliberately tested. If another process changes the index during a run, eval detects
+variable being deliberately tested. Use fixed, preselected positive and out-of-corpus negative cohorts
+when inspecting relevance, and validate any proposed floor on untouched holdouts. A corpus-specific
+separation is not universal calibration; `--relevance` is unsupported with `--mode bm25`.
+If another process changes the index during a run, eval detects
 the final fingerprint mismatch and exits without publishing a mixed-generation report.
 
 ## Fusion evidence gate (ADR 0025)

@@ -46,8 +46,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
    and must not touch `rrf()`. `--rerank-context` is input-only, bounded 0–2, and defaults to the exact
    legacy 512-token center-only path; widened input must use actual pair-tokenizer budgeting, retain
    the matched center, and preserve the capped prefix plus unscored RRF tail — as is note-level dedup,
-   the default where `--limit` counts distinct
-   notes (`--chunks` opts out; ADR 0020/G9c). Apply the embedder's prompt template (EmbeddingGemma:
+   the default where `--limit` counts distinct notes (`--chunks` opts out; ADR 0020/G9c). Opt-in
+   relevance is only finite original-query cosine clamped to `[0,1]`, explicitly a heuristic — never
+   confidence; a positive floor drops unknown hits post-truncation with no backfill and never changes
+   ranking/default output (ADR 0026/G9e). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
    now) and **don't double-prefix**.
 8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
@@ -97,12 +99,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
     after ranking/filtering/dedup/scope; it never reorders, backfills, normalizes, or touches `rrf()`.
     A proposed knee before a note with any top-three BM25/cosine source chunk is vetoed (folded sibling
     ranks survive dedup); unsupported/smooth inputs fail open. `--exhaustive` restores legacy results;
-    JSON keeps the same pure Hit-array shape.
-18. **Eval evidence must be self-describing and honest** (ADRs 0024/0025, G27). `vagus eval` uses
+    this stage adds no JSON fields (only explicit G9e reporting changes the Hit shape).
+18. **Eval evidence must be self-describing and honest** (ADRs 0024–0026, G27). `vagus eval` uses
     fixed-denominator P@k, MRR@k, `null` undefined cohorts, full rankings, and schema-2 label/corpus/
     index/backend/fusion/cohort provenance. It is note-level exhaustive pre-tidy without implicit
     refresh/scope/filter/floor. Fusion claims must pass the non-configurable paired `vagus eval-gate`;
-    raw scores remain diagnostics, never calibrated probabilities.
+    raw scores and explicit named relevance remain diagnostics, never calibrated probabilities.
 
 ## Layout
 

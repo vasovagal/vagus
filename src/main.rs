@@ -16,6 +16,7 @@ mod lex;
 mod notes;
 mod path_safety;
 mod plugin;
+mod relevance;
 mod rerank;
 #[cfg(feature = "generate")]
 mod rewrite;
@@ -36,6 +37,19 @@ use clap::{CommandFactory, Parser, Subcommand};
 use config::Config;
 use db::Db;
 use search::Mode;
+
+/// clap parser for an explicit bounded relevance floor. `NaN` and infinities are rejected alongside
+/// ordinary out-of-range values so a malformed threshold cannot silently retain/drop everything.
+fn unit_interval(raw: &str) -> std::result::Result<f32, String> {
+    let value: f32 = raw
+        .parse()
+        .map_err(|_| format!("`{raw}` is not a number"))?;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("must be a finite number in 0.0..=1.0 (got {raw})"))
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -105,6 +119,16 @@ enum Command {
         /// Drop hits scoring below this percent of the top hit (relative-to-top; mode-dependent feel).
         #[arg(long)]
         min_score: Option<f32>,
+        /// Show each hit's bounded semantic relevance: finite EmbeddingGemma cosine clamped to
+        /// [0,1]. A heuristic, not a probability; JSON names the policy. Opt-in so default
+        /// human/JSON output stays stable. Unsupported with --mode bm25 or --smart, which has no
+        /// retained original-query cosine.
+        #[arg(long)]
+        relevance: bool,
+        /// Drop hits below this bounded semantic relevance floor (0.0..=1.0); implies --relevance.
+        /// A positive floor drops hits without an original-query cosine and disables adaptive tidy.
+        #[arg(long, value_parser = unit_interval)]
+        min_relevance: Option<f32>,
         /// Tier-1 "smart" search: a local model expands the query (lex/vec/HyDE variants), each is
         /// retrieved and fused, then reranked. Offline, no coding agent. Implies --rerank. Requires the
         /// `generate` build feature (falls back to --rerank if absent).
@@ -155,6 +179,10 @@ enum Command {
         /// Force the exact cosine oracle; otherwise the normal scale-selected backend is recorded.
         #[arg(long)]
         exact: bool,
+        /// Report the top hit's bounded semantic relevance diagnostic instead of its mode score.
+        /// Unsupported with --mode bm25; ranking and metrics are unchanged (ADR 0026).
+        #[arg(long)]
+        relevance: bool,
         /// Emit stable schema-versioned JSON rather than the human table.
         #[arg(long)]
         json: bool,
@@ -352,6 +380,8 @@ fn main() -> Result<()> {
             rerank_context,
             full,
             min_score,
+            relevance,
+            min_relevance,
             smart,
             since,
             source,
@@ -372,6 +402,8 @@ fn main() -> Result<()> {
             rerank,
             rerank_context,
             min_score,
+            relevance,
+            min_relevance,
             smart,
             since.as_deref(),
             source.as_deref(),
@@ -387,8 +419,19 @@ fn main() -> Result<()> {
             rerank,
             rerank_context,
             exact,
+            relevance,
             json,
-        } => eval::run(&cfg, &labels, k, mode, rerank, rerank_context, exact, json)?,
+        } => eval::run(
+            &cfg,
+            &labels,
+            k,
+            mode,
+            rerank,
+            rerank_context,
+            exact,
+            relevance,
+            json,
+        )?,
         Command::EvalGate { .. } => unreachable!("eval-gate returned before loading config"),
         Command::Rewrite { query } => {
             #[cfg(feature = "generate")]
@@ -1077,6 +1120,26 @@ mod eval_cli_tests {
                 json: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn relevance_floor_is_finite_and_bounded_during_cli_parsing() {
+        for invalid in ["-0.1", "1.1", "NaN", "inf", "nope"] {
+            assert!(
+                Cli::try_parse_from(["vagus", "search", "query", "--min-relevance", invalid])
+                    .is_err(),
+                "accepted {invalid}"
+            );
+        }
+        let cli =
+            Cli::try_parse_from(["vagus", "search", "query", "--min-relevance", "0.3"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Search {
+                min_relevance: Some(value),
+                ..
+            } if value == 0.3
         ));
     }
 
