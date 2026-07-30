@@ -39,14 +39,16 @@ canonical invariant list and is **binding** — the summary below must stay in s
    a possibly partial model cache; only explicit `doctor --fetch-models` may download and validate both
    ONNX models, failing nonzero if either fails.
 7. **Hybrid search = RRF (k=60).** Fuse BM25 ranks and cosine ranks with `score = Σ 1/(k + rank)`; no
-   weighting/normalization. The cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
+   weighting/normalization. Equal sums use stable opaque `chunk_id` order only—never randomized map
+   iteration. The cross-encoder reranker (`--rerank`) is a **separate post-fusion stage**
    and must not touch `rrf()` — as is note-level dedup, the default where `--limit` counts distinct
    notes (`--chunks` opts out; ADR 0020/G9c). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
    now) and **don't double-prefix**.
 8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
-   cosine component is an embedded **usearch HNSW** vector index, statically linked and pinned, with an
-   exact brute-force fallback (`--exact`) — see `design/adr/0019-usearch-ann-backend.md`. `rrf()` and
+   cosine component uses exact brute force automatically below 10,000 embedded chunks and the embedded,
+   statically linked **usearch HNSW** index above that; `--exact` forces the oracle in every mode—see
+   `design/adr/0019-usearch-ann-backend.md`. `rrf()` and
    rerank are untouched by the backend (G7/G8). `frankensearch`/`qmd` are design references, **not
    dependencies** (see `design/adr/0007-lean-on-frankensearch.md`). Don't add another heavyweight
    search-engine dependency without an ADR.
@@ -88,7 +90,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
 17. **Plain hybrid note search treats `--limit` as a context ceiling** (ADR 0023/G9d). A guarded
     robust knee over unchanged RRF scores may drop only a statistically distinct low-signal suffix
     after ranking/filtering/dedup/scope; it never reorders, backfills, normalizes, or touches `rrf()`.
-    Unsupported/smooth inputs fail open. `--exhaustive` restores legacy fill-up-to-limit results;
+    A proposed knee before a note with any top-three BM25/cosine source chunk is vetoed (folded sibling
+    ranks survive dedup); unsupported/smooth inputs fail open. `--exhaustive` restores legacy results;
     JSON keeps the same pure Hit-array shape.
 
 ## Layout

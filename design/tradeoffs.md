@@ -57,14 +57,15 @@ table's fastembed row, larger cache (~1.23 GB). See ADR 0006.)*
 
 ## E. Vector store
 
-Re-evaluated 2026-06-07 ([ADR 0019](./adr/0019-usearch-ann-backend.md)) on **popular / technical /
-speed** under the hard static-single-binary constraint, given a >500k-chunk growth trajectory. Scored
+Re-evaluated 2026-06-07 and amended 2026-07-30
+([ADR 0019](./adr/0019-usearch-ann-backend.md)) on **popular / technical / speed** under the hard
+static-single-binary constraint, given a >500k-chunk growth trajectory. Scored
 1–5 (5 best); `total` weights the static-link constraint:
 
 | Option | Kind | Popular | Technical | Speed | Static-link | SQLite-fit | Total | Verdict |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|---|
 | **usearch** | C++ HNSW (cxx-build) | 4 | 5 | 5 | 4 | 1 | 19 | **chosen** (ADR 0019) |
-| tuned brute-force | pure Rust | 4 | 4 | 4 | 5 | 5 | 22 | kept as exact `--exact`/oracle fallback |
+| tuned brute-force | pure Rust | 4 | 4 | 4 | 5 | 5 | 22 | automatic <10k; all-mode `--exact` oracle |
 | sqlite-vec | C ext (`-DSQLITE_CORE`) | 5 | 4 | 3 | 5 | 5 | 22 | stable release still brute-force — no ANN |
 | hnsw_rs | pure Rust HNSW | 3 | 3 | 4 | 5 | 1 | 16 | ✗ no delete API → breaks G5 |
 | lancedb / lance | Rust + Arrow | 5 | 4 | 5 | 1 | 1 | 16 | ✗ needs system `protoc`/cmake; heavy |
@@ -73,12 +74,12 @@ speed** under the hard static-single-binary constraint, given a >500k-chunk grow
 | faiss-rs | C++ + BLAS | 3 | 4 | 5 | 1 | 1 | 14 | ✗ `static` still links `gomp/blas/lapack` |
 | hora | pure Rust | 2 | 1 | 3 | 5 | 1 | 12 | ✗ cosine NaN-panics; abandoned |
 
-**Chosen:** embedded **usearch HNSW** statically linked (cxx-build, `openmp` off → OS + `libc++` only,
-verified `otool`-clean), with the tuned brute-force scan retained as the exact fallback/oracle. The f32
-BLOBs stay authoritative; the `.usearch` sidecar is a rebuildable derived cache (no re-embed on
-backfill). The crossover where HNSW clearly beats a *tuned* brute-force SIMD scan is ~500k–1M vectors;
-the >500k trajectory puts vagus in ANN territory. `frankensearch` (brute-force-f16-SIMD + RRF) stays a
-design reference, not a dependency.
+**Chosen:** a scale-selected pair. Tuned exact scan is automatic below 10,000 embedded chunks because
+it recovered a live answer HNSW omitted from 120 candidates; a 10k×768 load+search fixture is ~26.6 ms.
+Embedded **usearch HNSW** takes over at/above 10k and supplies the >500k trajectory, statically linked
+(cxx-build, `openmp` off → OS + `libc++` only, verified `otool`-clean). Explicit `--exact` forces the
+oracle in every mode. The f32 BLOBs remain authoritative and `.usearch` remains a rebuildable cache.
+`frankensearch` (brute-force-f16-SIMD + RRF) stays a design reference, not a dependency.
 
 ## F. Filing inbox → PARA
 

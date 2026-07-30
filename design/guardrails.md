@@ -66,7 +66,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 ## Search behavior
 
 - **G8 — RRF k=60.** Fuse BM25 and cosine ranks with `score = Σ 1/(k + rank)`; no score normalization,
-  **no per-list weighting**. Cross-encoder **reranking is a separate post-fusion stage** (`--rerank`,
+  **no per-list weighting**. Equal sums use ascending opaque `chunk_id` only (deterministic and
+  modality-neutral, never randomized `HashMap` iteration). Cross-encoder **reranking is a separate post-fusion stage** (`--rerank`,
   G19) and must **not** modify `rrf()`. qmd's weighted-RRF / top-rank bonus / position-blend are
   **rejected** (they'd breach this). ([ADR 0003](./adr/0003-search-stack.md), [ADR 0015](./adr/0015-cross-encoder-rerank.md))
 - **G9 — embedder prefixes.** Apply the model's prompt template, query- vs document-side, and **don't
@@ -87,15 +88,18 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   via a one-time auto-reindex (G4). ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G9c — Note-level results are a separate post-rank dedup stage.** By default `--limit` counts
   **distinct notes**: `dedupe_notes` keeps each note's best-ranked chunk (folding later chunks into its
-  `siblings` count) — a drop-only, order-preserving stage run **after** rerank and the G9b filters,
+  `siblings` count and privately retaining their best source ranks for G9d) — a drop-only,
+  order-preserving stage run **after** rerank and the G9b filters,
   **before** truncation, **never** touching `rrf()` (G7/G8). `--chunks` skips the stage (raw chunk
   hits, pre-0.7 output byte-identical); filing `--suggest` stays chunk-level.
   ([ADR 0020](./adr/0020-note-level-results.md))
 - **G9d — Plain hybrid note `--limit` is an adaptive context ceiling.** After all existing rank/filter/
   dedup/scope stages and legacy truncation, a guarded robust knee over the unchanged positive RRF
   scores may drop only a statistically distinct low-signal **suffix**. It never reorders/backfills,
-  mutates scores, normalizes components, or touches `rrf()` (G8); malformed/short/smooth lists and
-  BM25/vec/rerank/smart/chunk/explicit-`--min-score` modes fail open. `--exhaustive` bypasses only this
+  mutates scores, normalizes components, or touches `rrf()` (G8); a proposed knee before any note with
+  a top-three BM25/cosine source chunk is vetoed, including a folded sibling champion.
+  Malformed/short/smooth/champion-crossing lists and BM25/vec/rerank/smart/chunk/explicit-`--min-score`
+  modes fail open. `--exhaustive` bypasses only this
   stage and restores legacy fill-up-to-`--limit` results. JSON remains a pure unchanged-shape Hit array.
   ([ADR 0023](./adr/0023-adaptive-context-tidy-results.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
@@ -116,9 +120,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   validates each with inference and exits nonzero if either fails. ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md),
   [ADR 0015](./adr/0015-cross-encoder-rerank.md))
 - **G11 — Retrieval fusion is hand-rolled** (tantivy BM25 + RRF k=60; [ADR 0003](./adr/0003-search-stack.md)).
-  The cosine component is the embedded **usearch HNSW** vector index, statically linked and pinned
-  ([ADR 0019](./adr/0019-usearch-ann-backend.md)) — with an exact brute-force fallback (`--exact`). The
-  *fusion* (`rrf()`) and rerank stages are still hand-rolled and untouched by the backend (G7/G8).
+  The cosine component uses automatic exact brute force below 10,000 embedded chunks and the embedded,
+  statically linked **usearch HNSW** index at/above that cutoff
+  ([ADR 0019](./adr/0019-usearch-ann-backend.md)); explicit `--exact` forces the oracle in **every**
+  mode, including `--smart`. The *fusion* (`rrf()`) and rerank stages remain untouched (G7/G8).
   `frankensearch`/`qmd` remain **design references, not dependencies**
   ([ADR 0007](./adr/0007-lean-on-frankensearch.md)). Don't add another heavyweight search-engine
   dependency without an ADR; if you do, pin/vendor it (usearch is pinned `=2.25.3`, `Cargo.lock` committed).

@@ -30,6 +30,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Changed
 
+- **Personal-scale semantic retrieval is exact by default below 10,000 embedded chunks.** A five-query
+  corpus audit found HNSW omitted a transcript answer from 120 vector candidates; exact cosine moved
+  it from fused rank 10 to rank 3. Adaptive primary-answer recall improved 4/5→5/5, MRR .800→.867,
+  and estimated full-body context fell 18,942→17,923 tokens. At the current 4,023-chunk corpus, exact
+  added 42.7 ms median to an approximately one-second command; a committed synthetic 10k×768 release
+  fixture measures a 20.5 ms median SQLite load plus 6.1 ms search@120 (~26.6 ms total, ~30 MiB).
+  usearch remains automatic at/above 10k and `--exact` forces the oracle in every mode. (ADR 0019/G11)
 - **Agent search uses a measured context budget instead of quota padding.** The bundled Claude Code/pi
   search skill now retrieves 10 exact+cross-encoded full-body candidates (down from 20), presents only
   nonredundant grade≥2 evidence (at most 6 notes), and never fills with tangential hits. It permits one
@@ -41,6 +48,11 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Fixed
 
+- Adaptive context trimming now fails open rather than crossing any note with a top-three BM25 or
+  cosine source hit, including when that champion rank belongs to a folded sibling chunk. Exact
+  cosine and RRF ties use stable opaque keys instead of randomized map iteration, and `--smart
+  --exact` now honors the exact-oracle flag above the automatic cutoff. Scores, `rrf()`, survivor
+  order, and serialized Hit fields are unchanged. (ADRs 0003/0023; G8/G9d)
 - Derived data and model-cache paths are now checked with shared alias-aware resolution before any
   command can create state, closing relative/missing/`..`/symlink spellings of a G1 violation.
   `doctor` also rejects regular files as vaults and distinguishes complete, partial, and missing

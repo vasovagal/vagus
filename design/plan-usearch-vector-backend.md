@@ -26,9 +26,11 @@ meta.db) but its stable release is still brute-force — not the ANN the maintai
 no prebuilt download), and with `openmp` OFF the binary links only the platform C++ runtime + OS libs —
 exactly the verified `ort`/onnxruntime precedent. A static C++ inference/index lib is in-character.
 
-**Outcome:** `--mode vec` / `--mode hybrid` query an embedded HNSW index instead of a brute-force scan,
-with equal-or-better results; the f32 BLOBs remain the authoritative, rebuildable source of truth; the
-binary stays self-contained and offline; `vagus doctor` reports the new index healthy.
+**Outcome (amended 2026-07-30):** vector/hybrid search automatically uses exact cosine below 10,000
+embedded chunks and HNSW at/above that cutoff. A live audit disproved the original “equal-or-better”
+claim: HNSW omitted one known answer from 120 candidates at 4,023 chunks. Exact recovered it cheaply;
+a 10k×768 release fixture measures ~26.6 ms for SQLite load+search. Explicit `--exact` forces the
+oracle in every mode. BLOB authority, offline operation, and doctor health checks remain unchanged.
 
 ## Decision (scored)
 
@@ -40,8 +42,8 @@ binary stays self-contained and offline; `vagus doctor` reports the new index he
 
 usearch wins on the maintainer's stated priorities **for the >500k trajectory**: true HNSW headroom,
 f16/i8 quantization, mmap `view()` for instant cold-start, incremental add+remove. The tuned exact
-brute-force is **retained** as the test oracle, the small-corpus / missing-sidecar fallback, and the
-`--exact` escape hatch — so we keep exact recall available and never regress.
+brute-force is **retained** as the test oracle, the automatic <10k / missing-sidecar path, and the
+all-mode `--exact` escape hatch. HNSW remains the growth backend rather than a recall oracle.
 
 ## Architecture
 
@@ -69,7 +71,8 @@ pub fn open(cfg: &Config, db: &Db, exact: bool) -> Result<Box<dyn VectorIndex>>;
   `dot == cosine` — G7). Getting this sign right is load-bearing.
 - **`BruteForceIndex`** (exact fallback/oracle): contiguous f32 matrix from `all_embeddings()` +
   bounded top-k via `select_nth_unstable_by` over the existing `dot` (`search.rs:188`). Used when the
-  sidecar is missing, the corpus is tiny (~<2,000 embedded chunks), or `--exact` is passed.
+  sidecar is missing, the corpus is below 10,000 embedded chunks, or `--exact` is passed (including
+  through `--smart`). Equal scores use ascending stable `vec_key`.
 
 **Key mapping (u64 ↔ chunk_id):** `chunk.id` is `sha256(path + '#' + ord)` hex (`chunk.rs:235`,
 `util.rs:9`). `vec_key = u64::from_str_radix(&id[..16], 16)` — deterministic, recomputable from any id we
@@ -111,7 +114,8 @@ already hold (so removals need no lookup), collision prob ≈ 1.4e-8 at 1M. A pe
 5. **`src/search.rs`** — `vec_search` (`~208`) and the `--smart` matrix path (the `cosine_topk` call at
    `~499`) call `vindex.search(qv, k)`, map `(u64,cosine)` → chunk_ids via the reverse lookup, drop
    misses, feed `hydrate`. **`rrf()` (`~215`) and the rerank stage (`~339`, `~533`) are untouched.**
-   The `--smart` path no longer calls `all_embeddings()` at `~493` (BruteForce/`--exact` still can).
+   `--smart` uses the same scale selector and must forward explicit `--exact`; below 10k or when
+   forced, its `BruteForceIndex` necessarily loads the authoritative BLOB matrix.
 
 6. **`src/config.rs`** — `vector_path()` → `data_dir.join("vectors.usearch")` (next to
    `db_path`/`tantivy_dir`, `~67-73`); a `VEC_INDEX_VERSION` const for G4 pinning.
@@ -162,8 +166,9 @@ The sidecar is a pure derived cache (G2): rebuilt when missing, on `vec_backend`
 
 - **IP distance is `1 - dot`, not raw dot** — wrong sign inverts relevance. Covered by the cosine test.
 - usearch `Index` is **not `Send + Sync`** — never move it into the `--smart` prewarm threads.
-- Approximate recall: at <500k with `expansion_search=64–128` it's near-exact; the recall test + the
-  `--exact` fallback guard the "equal-or-better" acceptance criterion. Re-baseline nothing in `rrf()`.
+- Approximate recall: aggregate synthetic recall is not a per-query guarantee. Exact is automatic
+  below 10k, `--exact` is the all-mode oracle above it, and corpus qrels supplement recall@10. Never
+  claim HNSW is equal-or-better from aggregate recall alone; re-baseline nothing in `rrf()`.
 - Young transitive SIMD crate — pin via `Cargo.lock`; `default-features=false` keeps the surface minimal.
 - `[..16]` assumes ≥16 hex chars (always true for sha256) — `debug_assert!` it.
 - file-backed mmap can SIGBUS on truncation — safe only because the sidecar lives under

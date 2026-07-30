@@ -29,8 +29,8 @@ silently breaking an invariant.
 
 - `0001-build-vs-adopt.md` — build the second-brain layer fresh; lean on `frankensearch` for retrieval.
 - `0002-language-rust.md` — Rust over Python.
-- `0003-search-stack.md` — tantivy + fastembed/ort + brute-force cosine + RRF(k=60). *(vector component
-  superseded by 0019.)*
+- `0003-search-stack.md` — tantivy + fastembed/ort + RRF(k=60), with stable modality-neutral ties.
+  *(vector component superseded by 0019.)*
 - `0004-icloud-markdown-only.md` — iCloud holds Markdown only; index/DB/cache stay outside via
   alias-aware path checks; `init --icloud` uses fail-closed, no-note-migration setup.
 - `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
@@ -52,14 +52,15 @@ silently breaking an invariant.
   `created_at`/`source` (no tantivy schema change); adds G9b.
 - `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
   worktree janitor, soft breadcrumb nudge; adds G21–G24.
-- `0019-usearch-ann-backend.md` — embedded usearch HNSW vector index (statically linked), exact
-  brute-force fallback; supersedes 0003's vector component; updates G5/G11/G13.
+- `0019-usearch-ann-backend.md` — automatic exact cosine below 10k chunks, embedded static usearch
+  HNSW above it, and an all-mode `--exact` oracle; supersedes 0003's vector component; updates G5/G11/G13.
 - `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
-  a post-rank dedup stage; `--chunks` opts out; adds G9c.
+  post-rank dedup; folded source ranks preserve the G9d champion guard; `--chunks` opts out; adds G9c.
 - `0021-usage-ticks.md` — usage ticks (`vagus tick`/`fame`): local user data in meta.db, survives
   reindex, re-keyed on `vagus file` moves; adds G25, amends G2/G5.
 - `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault and
   force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.
 - `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,
-  dropping only a statistically distinct low-signal RRF suffix; `--exhaustive` restores legacy fill;
+  dropping only a distinct low-signal RRF suffix without crossing a top-three source champion;
+  `--exhaustive` restores legacy fill;
   adds G9d and amends 0012/0020.
