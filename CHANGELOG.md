@@ -4,10 +4,12 @@ All notable, user-noticeable changes to `vagus` are recorded here. Internal refa
 changes are intentionally omitted (CLAUDE.md → Conventions).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.10.0`;
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.11.0`;
 entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
+
+## [0.11.0] — 2026-07-31
 
 ### Added
 
@@ -226,7 +228,8 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   (ADR 0017), and `vagus file --stats` per-step timing. See git history for detail; entries before this
   release predate the changelog.
 
-[Unreleased]: https://github.com/vasovagal/vagus/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/vasovagal/vagus/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/vasovagal/vagus/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/vasovagal/vagus/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/vasovagal/vagus/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/vasovagal/vagus/compare/v0.7.0...v0.8.0
