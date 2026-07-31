@@ -360,7 +360,7 @@ fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Re-key usage ticks to the new path (ADR 0021/G25) — user data follows the note. Fail-soft: the
+/// Re-key local usage counters and provenance paths (ADR 0021/G25) so user data follows the note. Fail-soft: the
 /// file has already moved, so a re-key failure warns on stderr and never fails the filing (`doctor`
 /// surfaces any resulting orphans).
 fn rekey_ticks(cfg: &Config, src: &Path, dest: &Path) {
@@ -368,7 +368,7 @@ fn rekey_ticks(cfg: &Config, src: &Path, dest: &Path) {
     let dest_rel = vault_rel(cfg, dest);
     if let Err(e) = Db::open(&cfg.db_path()).and_then(|mut db| db.tick_rename(&src_rel, &dest_rel))
     {
-        eprintln!("warning: could not move usage ticks {src_rel} -> {dest_rel}: {e}");
+        eprintln!("warning: could not move local usage data {src_rel} -> {dest_rel}: {e}");
     }
 }
 
@@ -394,7 +394,7 @@ fn enrich_frontmatter(src: &Path, to: &str) -> Result<()> {
 fn suggest_dest(cfg: &Config, src: &Path, json: bool, explain: bool) -> Result<()> {
     let self_rel = vault_rel(cfg, src);
     let query_text = note_text(src);
-    let (hits, _) = search::query(
+    let (hits, _, _) = search::query(
         cfg,
         &query_text,
         Mode::Hybrid,

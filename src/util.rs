@@ -1,8 +1,12 @@
 //! Small shared helpers.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::io::Read as _;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 /// Lowercase hex of the SHA-256 of `bytes`.
@@ -13,6 +17,53 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
     }
     s
+}
+
+/// Stable corpus identity over sorted `(vault-relative path, note-content hash)` pairs. Shared by
+/// `vagus eval` and explicit tick provenance so both name an identical index generation.
+pub fn corpus_fingerprint(files: &HashMap<String, (f64, String)>) -> String {
+    let mut rows: Vec<(&String, &String)> =
+        files.iter().map(|(path, (_, hash))| (path, hash)).collect();
+    rows.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let mut bytes = Vec::new();
+    for (path, hash) in rows {
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(hash.as_bytes());
+        bytes.push(b'\n');
+    }
+    sha256_hex(&bytes)
+}
+
+/// SHA-256 of the running executable, cached process-wide. Provenance must distinguish two
+/// unreleased builds that share the same semantic version but implement different ranking code.
+pub fn executable_fingerprint() -> Result<String> {
+    static HASH: OnceLock<String> = OnceLock::new();
+    if let Some(hash) = HASH.get() {
+        return Ok(hash.clone());
+    }
+    let executable =
+        std::env::current_exe().context("resolving current executable for provenance")?;
+    let mut file = std::fs::File::open(&executable)
+        .with_context(|| format!("opening executable {} for provenance", executable.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("hashing executable {}", executable.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut hash = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hash, "{byte:02x}");
+    }
+    let _ = HASH.set(hash.clone());
+    Ok(hash)
 }
 
 /// Seconds since the Unix epoch (for `indexed_at`).

@@ -17,9 +17,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
    fail-closed preflight; it never moves/deletes occupied notes. Never write a database or index into
    the iCloud vault: independently synced `.db`/`-wal`/`-shm` files corrupt it.
 2. **The index is a derived cache, never the source of truth.** It must be fully rebuildable from the
-   Markdown via `vagus reindex`. The Markdown files are authoritative. Sole exception: the `ticks`
-   usage counters (ADR 0021/G25) are local user data in `meta.db` — reindex preserves them and they
-   never enter the vault.
+   Markdown via `vagus reindex`. The Markdown files are authoritative. Sole exception:
+   `ticks`/`tick_runs`/`tick_events` (ADR 0021/G25) are local user data in `meta.db` — every reindex
+   preserves them and they never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
    or filename). Frontmatter is only added/enriched during an explicit, approved filing step.
@@ -75,7 +75,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
     `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
-    only, max 6 presented, one fallback only if none survive. Advanced search is **in core**,
+    only, max 6 presented, one fallback only if none survive; its fixed primary path atomically logs
+    provenance and counters for cited notes without query content. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the
@@ -91,7 +92,7 @@ canonical invariant list and is **binding** — the summary below must stay in s
 16. **Windowed reindex is forced incremental repair, not a partial index** (ADR 0022/G26). `vagus
     reindex --since <duration>` snapshots every Markdown path + filesystem mtime first, force-refreshes
     selected existing notes across SQLite/Tantivy/usearch even when cached metadata agrees, and still
-    reconciles all new/deleted files. It preserves older indexed notes and ticks; plain `reindex` is
+    reconciles all new/deleted files. It preserves older indexed notes and all G25 user data; plain `reindex` is
     the full rebuild, and a G4 identity mismatch still requires one (chunk-version auto-reindex may
     upgrade the windowed run; a direct embedding mismatch refuses it).
 17. **Plain hybrid note search treats `--limit` as a context ceiling** (ADR 0023/G9d). A guarded
@@ -99,12 +100,19 @@ canonical invariant list and is **binding** — the summary below must stay in s
     after ranking/filtering/dedup/scope; it never reorders, backfills, normalizes, or touches `rrf()`.
     A proposed knee before a note with any top-three BM25/cosine source chunk is vetoed (folded sibling
     ranks survive dedup); unsupported/smooth inputs fail open. `--exhaustive` restores legacy results;
-    this stage adds no JSON fields (only explicit G9e reporting changes the Hit shape).
+    this stage adds no JSON fields (only explicit G9e fields or G9f's wrapper change output).
 18. **Eval evidence must be self-describing and honest** (ADRs 0024–0026, G27). `vagus eval` uses
     fixed-denominator P@k, MRR@k, `null` undefined cohorts, full rankings, and schema-2 label/corpus/
     index/backend/fusion/cohort provenance. It is note-level exhaustive pre-tidy without implicit
     refresh/scope/filter/floor. Fusion claims must pass the non-configurable paired `vagus eval-gate`;
     raw scores and explicit named relevance remain diagnostics, never calibrated probabilities.
+19. **Presentation provenance is explicit and selection-biased** (ADR 0021/G9f/G25). Default search
+    JSON remains unchanged. Only the fixed exact+reranked full-body note-level RRF path may emit a
+    self-verifying run wrapper; path-bound event IDs reject mismatched copies and capped-tail hits have no
+    rerank rank. The skill copies only cited paths
+    and rank states into one atomic run/events/counter transaction. Runs pin executable, pipeline,
+    corpus, cap, context, scope, and result identity; reports group by pipeline+corpus and are never
+    eval evidence. Query storage is separate opt-in; bodies/snippets are never stored.
 
 ## Layout
 

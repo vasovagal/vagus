@@ -57,8 +57,10 @@ silently breaking an invariant.
   HNSW above it, and an all-mode `--exact` oracle; supersedes 0003's vector component; updates G5/G11/G13.
 - `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
   post-rank dedup; folded source ranks preserve the G9d champion guard; `--chunks` opts out; adds G9c.
-- `0021-usage-ticks.md` — usage ticks (`vagus tick`/`fame`): local user data in meta.db, survives
-  reindex, re-keyed on `vagus file` moves; adds G25, amends G2/G5.
+- `0021-usage-ticks.md` — local usage counters plus atomic, schema-versioned cited-note rank
+  provenance (`vagus tick`/`fame`/`ticks`): survives reindex, re-keys on file moves, pins pipeline +
+  corpus with path-bound event IDs, names capped tails honestly, and keeps default search JSON
+  unchanged; adds G25/G9f.
 - `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault and
   force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.
 - `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,

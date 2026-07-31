@@ -57,9 +57,13 @@ multiple chunks; oversize code stays in one chunk; `--rerank` reorders by cross-
 - **M2 — local rewriter:** `src/rewrite.rs` (feature-gated candle), `vagus rewrite`, `vagus search
   --smart` (typed-variant routing → multi-query fuse → rerank). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
 - **M3 — Opus skill:** bounded full-body judge over `vagus search --json --full --rerank --exact
-  --limit 10` at rerank-context radius 0; present only grade≥2 evidence (max 6, never pad), with one
+  --limit 10 --tick-provenance` at rerank-context radius 0; present only grade≥2 evidence (max 6,
+  never pad), atomically record cited-note counters/ranks without query content, with one
   modality-selected retry only when none survive. The original routine expansion/HyDE/`--min-score`
   plan was superseded by the 2026-07-29 measured context budget in ADR 0012.
 - **Post-M3 relevance diagnostic:** `search --relevance`/`--min-relevance` and
   `eval --relevance` expose the ADR 0026 cosine heuristic. The skill deliberately keeps its separate
   grade-0–3 body judgment contract; it does not turn the local heuristic into an agent confidence.
+- **Post-M3 presentation provenance:** ADR 0021's explicit wrapper pins binary/pipeline/corpus/cap/
+  context/scope identity and distinguishes the scored prefix from unscored RRF tail. `vagus ticks`
+  reports only selection-biased cited-note observations; ADR 0024 eval remains the ranking gate.

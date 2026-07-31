@@ -17,16 +17,18 @@ best evidence, and keep weak candidates out of the user's context.
 ## 1. Retrieve a bounded candidate set
 
 ```bash
-vagus search '<query>' --json --full --rerank --exact --limit 10
+vagus search '<query>' --json --full --rerank --exact --limit 10 --tick-provenance
 ```
 
 Shell-quote the query as one literal. `--exact` makes semantic candidates reproducible even on a
 large vault; `--rerank` is only a prior, not the final verdict. `--full` supplies the matching chunk
-body. Results are distinct notes by default (`path` is unique); use `--chunks` only when the user asks
-for exact passages or every occurrence.
+body. The response is `{run,hits}` with distinct note paths. Grade `hits`; retain `run` and each
+cited hit's `provenance` for step 5. For an explicit request for every passage, omit
+`--tick-provenance`, add `--chunks`, parse the ordinary Hit array, and use counter-only ticking.
 
-Each Hit may contain `{chunk_id, path, heading, score, snippet, rrf, cosine, bm25, rerank, body,
-siblings}`. Optional fields can be absent. `siblings > 0` means other chunks in that note also matched.
+Hits may contain `{path, heading, score, snippet, rrf, cosine, bm25, rerank, body, siblings,
+provenance}`. Fields may be absent; `siblings > 0` means more chunks matched. Provenance is bookkeeping,
+never a relevance verdict.
 Do not add `--min-score`: your judgment is the quality floor, and that flag makes the local reranker
 score a much deeper pool. Do not add `--relevance` or `--min-relevance`: bounded cosine is a local
 heuristic, while your grade from the full body is this tier's final relevance decision.
@@ -70,14 +72,15 @@ match was found and offer to broaden or ask for another clue. Do not tick on thi
 
 ## 5. Record only presented notes
 
-After answering, tick exactly the unique paths you actually cited, once:
+After answering, copy `run` verbatim and only cited `{path,provenance}` pairs into one compact object:
 
 ```bash
-vagus tick '<path1>' '<path2>'
+vagus tick --events '{"run":<complete run>,"events":[{"path":<cited path>,"provenance":<complete provenance>}]}'
 ```
 
-Single-quote every path; escape an embedded single quote as `'\''`. Never tick retrieved-but-dropped
-notes. Tick output is bookkeeping: do not relay it, retry it, or let failure block the answer.
+Do not include the query. Escape an embedded single quote as `'\''`; never include dropped notes. If
+For explicit `--chunks`, use one counter-only `vagus tick '<path1>' '<path2>'`; the step-4 retry
+remains unticked. Never relay/retry tick output or let failure block the answer.
 
 ## Scope
 

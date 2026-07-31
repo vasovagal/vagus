@@ -15,6 +15,8 @@ use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 /// `--rerank-context` is deliberately small: one or two adjacent chunks per side covers section
 /// seams without turning each capped candidate into a whole-note cross-encoder pass (ADR 0015).
 pub const MAX_CONTEXT_RADIUS: usize = 2;
+/// Stable model identity recorded with eval and presentation-tick provenance.
+pub const MODEL_ID: &str = "jinaai/jina-reranker-v1-turbo-en";
 
 /// fastembed 5.14 clamps this model to tokenizer_config.model_max_length=512. Keeping radius zero at
 /// that *effective* limit (rather than the previously requested-but-ignored 1024) preserves the

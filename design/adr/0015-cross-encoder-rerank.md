@@ -2,7 +2,8 @@
 
 - **Status:** Accepted (2026-05-30); **amended 2026-07-30** to make ordinary `doctor` presence-only,
   add explicit `doctor --fetch-models`, add bounded tokenizer-safe small-to-big rerank context, and
-  preserve original-query cosine for ADR 0026 relevance without changing the cap.
+  preserve original-query cosine for ADR 0026 relevance without changing the cap, and expose
+  capped-prefix versus unscored-tail state only through ADR 0021's explicit provenance contract.
   Amends [ADR 0003](./0003-search-stack.md) and guardrail G17.
 
 ## Context
@@ -58,6 +59,9 @@ Add an **in-core** reranker (`src/rerank.rs`, mirroring `src/embed.rs`):
     unchanged through prefix reordering and the unscored tail; it never repurposes sigmoid/logit as
     confidence. Unlike `--min-score`, `--min-relevance` does not lift the rerank cap: its semantic
     floor runs after truncation without backfill, and a positive floor drops BM25-only unknowns.
+  - **Observed by ADR 0021 without changing behavior:** explicit fixed-pipeline provenance assigns a
+    rerank rank only to actually scored prefix candidates. Tail candidates retain fusion/final ranks
+    but are marked unscored; they can never be reported as cross-encoder rescues.
 - Add **`--rerank-context N`**, bounded to `0..=2`, to `search --rerank`, `search --smart`, and
   `eval --rerank`. It reconstructs up to N ordinal neighbors per side from SQLite only for the
   cross-encoder input. It never changes indexed chunks, retrieval, RRF, filters, note dedup, the

@@ -536,9 +536,9 @@ mod tests {
     }
 
     // `vagus reindex` runs the REAL wipe path (clear_all + tantivy/usearch removal) and must
-    // preserve ticks — user data, not a derived cache (ADR 0021/G25). An empty vault keeps the
-    // embedder unloaded (it is lazy), so this stays a cheap unit test. The CHUNK_VERSION-mismatch
-    // auto-reindex calls the same clear_all, covered by db's `ticks_survive_clear_all`.
+    // preserve counters, provenance runs, and events — user data, not a derived cache
+    // (ADR 0021/G25). An empty vault keeps the embedder unloaded (it is lazy), so this stays a cheap
+    // unit test. CHUNK_VERSION auto-reindex calls the same clear_all.
     #[test]
     fn reindex_preserves_ticks() {
         let dir = crate::util::testdir::TempDir::new("reindex-ticks");
@@ -552,6 +552,22 @@ mod tests {
             let db = Db::open(&cfg.db_path()).unwrap();
             db.tick("20-Areas/foo.md").unwrap();
             db.tick("20-Areas/foo.md").unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO tick_runs(pipeline_id,corpus_sha256,provenance_json,query,ts)
+                     VALUES('pipeline','corpus','{}',NULL,1)",
+                    [],
+                )
+                .unwrap();
+            let run_id = db.conn.last_insert_rowid();
+            db.conn
+                .execute(
+                    "INSERT INTO tick_events(
+                       run_id,path,fusion_rank,rerank_rank,final_rank,rerank_scored
+                     ) VALUES(?1,'20-Areas/foo.md',12,2,1,1)",
+                    rusqlite::params![run_id],
+                )
+                .unwrap();
         }
 
         run(&cfg, IndexMode::Full).unwrap();
@@ -561,5 +577,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "20-Areas/foo.md");
         assert_eq!(rows[0].1, 2, "fame unchanged across reindex");
+        assert_eq!(db.count("SELECT count(*) FROM tick_runs").unwrap(), 1);
+        assert_eq!(db.count("SELECT count(*) FROM tick_events").unwrap(), 1);
     }
 }

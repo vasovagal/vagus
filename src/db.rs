@@ -2,16 +2,18 @@
 //!
 //! Holds `files` (for the mtime+sha256 incremental diff), `chunks` (text + heading + the embedding
 //! as a BLOB), and `meta` (pinned embed model/dims + schema/index versions — guardrail G4).
-//! This DB lives OUTSIDE iCloud (guardrail G1) and is a rebuildable cache (G2) — except the `ticks`
-//! table, which is local user data (usage counts, ADR 0021/G25) and survives reindex alongside `meta`.
+//! This DB lives OUTSIDE iCloud (guardrail G1) and is a rebuildable cache (G2) — except `ticks`,
+//! `tick_runs`, and `tick_events`, which are local user data (usage + explicit presentation
+//! provenance, ADR 0021/G25) and survive reindex.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::chunk::Chunk;
+use crate::provenance::{HitRankProvenance, SearchRunProvenance};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
@@ -50,8 +52,8 @@ CREATE TABLE IF NOT EXISTS expansion_cache(
   created_at INTEGER NOT NULL    -- unix secs
 );
 
--- Usage ticks (ADR 0021/G25): LOCAL USER DATA, not a derived cache — the one table in this DB
--- that is NOT rebuildable from the vault. Never wiped by clear_all(); deliberately NO foreign
+-- Usage ticks (ADR 0021/G25): LOCAL USER DATA, not a derived cache. Never wiped by clear_all();
+-- deliberately NO foreign
 -- key to files(path): foreign_keys=ON + ON DELETE CASCADE would wipe ticks on every reindex
 -- (clear_all deletes all files rows) and on delete_file().
 CREATE TABLE IF NOT EXISTS ticks(
@@ -60,10 +62,94 @@ CREATE TABLE IF NOT EXISTS ticks(
   first_used INTEGER NOT NULL,   -- unix secs
   last_used  INTEGER NOT NULL    -- unix secs
 );
+
+-- Explicit tier-2 presentation provenance (ADR 0021/G25). These two tables are LOCAL USER DATA,
+-- retained with `ticks` across every derived-cache wipe. `provenance_json` is the complete versioned
+-- run/config/index identity; the two indexed identities keep truthful fixed-pipeline/corpus grouping
+-- cheap. Query content is NULL unless the user explicitly opts into `tick --store-query`.
+CREATE TABLE IF NOT EXISTS tick_runs(
+  id              INTEGER PRIMARY KEY,
+  pipeline_id     TEXT NOT NULL,
+  corpus_sha256   TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  query           TEXT,
+  ts              INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tick_runs_pipeline_corpus ON tick_runs(pipeline_id, corpus_sha256);
+
+-- One row per note the tier-2 judge actually presented. Paths deliberately have no FK to `files`:
+-- reindex/delete must not erase local user data. `rerank_rank` is present iff that candidate was
+-- really inside the scored prefix; an unscored tail hit can never masquerade as a reranker rescue.
+CREATE TABLE IF NOT EXISTS tick_events(
+  run_id          INTEGER NOT NULL REFERENCES tick_runs(id),
+  path            TEXT NOT NULL,
+  fusion_rank     INTEGER NOT NULL CHECK(fusion_rank > 0),
+  bm25_rank       INTEGER CHECK(bm25_rank > 0),
+  cosine_rank     INTEGER CHECK(cosine_rank > 0),
+  rerank_rank     INTEGER CHECK(rerank_rank > 0),
+  final_rank      INTEGER NOT NULL CHECK(final_rank > 0),
+  rerank_scored   INTEGER NOT NULL CHECK(rerank_scored IN (0,1)),
+  CHECK((rerank_scored=1 AND rerank_rank IS NOT NULL)
+     OR (rerank_scored=0 AND rerank_rank IS NULL))
+);
+CREATE INDEX IF NOT EXISTS tick_events_path ON tick_events(path);
 "#;
 
 pub struct Db {
     pub conn: Connection,
+}
+
+/// One atomic counter update, optionally linked to the shared provenance run for this invocation.
+#[derive(Debug, Clone)]
+pub struct TickWrite {
+    pub path: String,
+    pub provenance: Option<HitRankProvenance>,
+}
+
+/// One fixed-pipeline/fixed-corpus aggregate row for `vagus ticks`. A note with only counter ticks has
+/// one row with no pipeline/corpus and null medians. `ticks` is the note's all-time counter and can be
+/// greater than this row's event count.
+#[derive(Debug, Clone)]
+pub struct RankReportRow {
+    pub path: String,
+    pub ticks: i64,
+    pub events: i64,
+    pub pipeline_id: Option<String>,
+    pub corpus_sha256: Option<String>,
+    pub median_fusion_rank: Option<f64>,
+    pub median_bm25_rank: Option<f64>,
+    pub median_cosine_rank: Option<f64>,
+    pub median_rerank_rank: Option<f64>,
+    pub median_final_rank: Option<f64>,
+    pub rerank_scored: i64,
+    pub unscored_tail: i64,
+    pub last_event: Option<i64>,
+    pub missing: bool,
+}
+
+#[derive(Default)]
+struct RankGroup {
+    fusion: Vec<i64>,
+    bm25: Vec<i64>,
+    cosine: Vec<i64>,
+    rerank: Vec<i64>,
+    final_rank: Vec<i64>,
+    scored: i64,
+    unscored: i64,
+    last_event: i64,
+}
+
+fn median(values: &mut [i64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let mid = values.len() / 2;
+    Some(if values.len().is_multiple_of(2) {
+        (values[mid - 1] as f64 + values[mid] as f64) / 2.0
+    } else {
+        values[mid] as f64
+    })
 }
 
 impl Db {
@@ -383,8 +469,9 @@ impl Db {
         Ok(())
     }
 
-    /// Wipe derived rows (for `reindex`). Keeps `meta`, `expansion_cache`, and `ticks` — `ticks` is
-    /// user data (ADR 0021/G25); never add it to this batch.
+    /// Wipe derived rows (for `reindex`). Keeps `meta`/`expansion_cache` plus the non-rebuildable
+    /// local user-data tables `ticks`/`tick_runs`/`tick_events` (ADR 0021/G25). Never add those
+    /// three user tables to this batch.
     pub fn clear_all(&self) -> Result<()> {
         self.conn
             .execute_batch("DELETE FROM chunks; DELETE FROM files;")?;
@@ -396,6 +483,7 @@ impl Db {
     /// Record one usage tick for `path` (vault-relative); returns the new total. Unconditional —
     /// never gated on a `files` row: the files table is a cache (transiently empty mid-reindex)
     /// and rejecting user data against a stale cache would lose it.
+    #[cfg(test)]
     pub fn tick(&self, path: &str) -> Result<i64> {
         let now = crate::util::now_unix();
         let count = self.conn.query_row(
@@ -408,10 +496,121 @@ impl Db {
         Ok(count)
     }
 
-    /// Re-key ticks from `old` to `new` (`vagus file` moves — user data follows the note),
-    /// merging counts when `new` already has a row. No-op when `old` has no row, and when
-    /// `old == new` (re-filing to the current folder): the upsert below would conflict with the
-    /// source row itself and the DELETE would then erase it.
+    /// Atomically increment every selected note and append the provenance events from the same
+    /// presentation. Any run/event insertion failure rolls back every counter increment (G25).
+    pub fn record_ticks_atomic(
+        &mut self,
+        records: &[TickWrite],
+        run: Option<&SearchRunProvenance>,
+        query: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        ensure!(!records.is_empty(), "tick batch must not be empty");
+        let event_count = records
+            .iter()
+            .filter(|record| record.provenance.is_some())
+            .count();
+        ensure!(
+            run.is_some() == (event_count > 0),
+            "a provenance run is required exactly when event rows are present"
+        );
+        ensure!(
+            query.is_none() || run.is_some(),
+            "stored query requires a provenance run"
+        );
+        let mut paths = HashSet::new();
+        let mut fusion_ranks = HashSet::new();
+        let mut bm25_ranks = HashSet::new();
+        let mut cosine_ranks = HashSet::new();
+        let mut rerank_ranks = HashSet::new();
+        let mut final_ranks = HashSet::new();
+        if let Some(run) = run {
+            run.validate()?;
+            for record in records {
+                if let Some(provenance) = &record.provenance {
+                    provenance.validate_for_path(run, &record.path)?;
+                    ensure!(
+                        fusion_ranks.insert(provenance.fusion_rank),
+                        "duplicate fusion rank in tick batch"
+                    );
+                    for (name, rank, ranks) in [
+                        ("BM25", provenance.bm25_rank, &mut bm25_ranks),
+                        ("cosine", provenance.cosine_rank, &mut cosine_ranks),
+                        ("rerank", provenance.rerank_rank, &mut rerank_ranks),
+                    ] {
+                        ensure!(
+                            rank.is_none_or(|rank| ranks.insert(rank)),
+                            "duplicate {name} rank in tick batch"
+                        );
+                    }
+                    ensure!(
+                        final_ranks.insert(provenance.final_rank),
+                        "duplicate final rank in tick batch"
+                    );
+                }
+            }
+        }
+        for record in records {
+            ensure!(!record.path.is_empty(), "tick path must not be empty");
+            ensure!(
+                paths.insert(record.path.as_str()),
+                "duplicate path in tick batch: {}",
+                record.path
+            );
+        }
+
+        let provenance_json = run.map(serde_json::to_string).transpose()?;
+        let now = crate::util::now_unix();
+        let tx = self.conn.transaction()?;
+        let run_id = if let (Some(run), Some(json)) = (run, provenance_json.as_deref()) {
+            tx.execute(
+                "INSERT INTO tick_runs(pipeline_id,corpus_sha256,provenance_json,query,ts)
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![run.pipeline_id, run.corpus_sha256, json, query, now],
+            )?;
+            Some(tx.last_insert_rowid())
+        } else {
+            None
+        };
+
+        let mut counts = Vec::with_capacity(records.len());
+        for record in records {
+            let count = tx.query_row(
+                "INSERT INTO ticks(path,count,first_used,last_used) VALUES(?1,1,?2,?2)
+                 ON CONFLICT(path) DO UPDATE SET count=count+1, last_used=excluded.last_used
+                 RETURNING count",
+                params![record.path, now],
+                |row| row.get::<_, i64>(0),
+            )?;
+            counts.push(count);
+            if let Some(provenance) = &record.provenance {
+                let run_id = run_id.expect("validated provenance run");
+                let rank = |value: usize| -> Result<i64> {
+                    i64::try_from(value).context("rank exceeds SQLite INTEGER")
+                };
+                tx.execute(
+                    "INSERT INTO tick_events(
+                       run_id,path,fusion_rank,bm25_rank,cosine_rank,rerank_rank,final_rank,
+                       rerank_scored
+                     ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        run_id,
+                        record.path,
+                        rank(provenance.fusion_rank)?,
+                        provenance.bm25_rank.map(rank).transpose()?,
+                        provenance.cosine_rank.map(rank).transpose()?,
+                        provenance.rerank_rank.map(rank).transpose()?,
+                        rank(provenance.final_rank)?,
+                        provenance.rerank_scored as i64,
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(counts)
+    }
+
+    /// Re-key all local usage data from `old` to `new` (`vagus file` moves). Counter conflicts merge;
+    /// append-only event rows simply repoint. The operation is one transaction so paths cannot split.
     pub fn tick_rename(&mut self, old: &str, new: &str) -> Result<()> {
         if old == new {
             return Ok(());
@@ -427,8 +626,130 @@ impl Db {
             params![old, new],
         )?;
         tx.execute("DELETE FROM ticks WHERE path=?1", params![old])?;
+        tx.execute(
+            "UPDATE tick_events SET path=?2 WHERE path=?1",
+            params![old, new],
+        )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Rank diagnostics grouped by note + exact pipeline + exact corpus. Never average unlike model,
+    /// cap/context, binary, or corpus generations into one median. The note limit follows `fame` and
+    /// counts distinct counter rows; a note may emit several grouped rows.
+    pub fn rank_report(&self, limit: usize, include_missing: bool) -> Result<Vec<RankReportRow>> {
+        let limit = i64::try_from(limit).context("rank report limit exceeds SQLite INTEGER")?;
+        // Hold one read transaction so a concurrent atomic tick cannot split counters/events across
+        // different snapshots in the report.
+        let tx = self.conn.unchecked_transaction()?;
+        let base_sql = format!(
+            "SELECT t.path, t.count, (f.path IS NULL)
+             FROM ticks t LEFT JOIN files f ON f.path=t.path
+             {}
+             ORDER BY t.count DESC, t.last_used DESC LIMIT ?1",
+            if include_missing {
+                ""
+            } else {
+                "WHERE f.path IS NOT NULL"
+            }
+        );
+        let base: Vec<(String, i64, bool)> = {
+            let mut stmt = tx.prepare(&base_sql)?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
+        let mut out = Vec::new();
+        for (path, ticks, missing) in base {
+            let mut groups: BTreeMap<(String, String), RankGroup> = BTreeMap::new();
+            let mut stmt = tx.prepare(
+                "SELECT r.pipeline_id, r.corpus_sha256,
+                        e.fusion_rank, e.bm25_rank, e.cosine_rank, e.rerank_rank,
+                        e.final_rank, e.rerank_scored, r.ts
+                 FROM tick_events e JOIN tick_runs r ON r.id=e.run_id
+                 WHERE e.path=?1 ORDER BY r.ts, e.rowid",
+            )?;
+            let rows = stmt.query_map(params![path], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (pipeline, corpus, fusion, bm25, cosine, rerank, final_rank, scored, ts) = row?;
+                let group = groups.entry((pipeline, corpus)).or_default();
+                group.fusion.push(fusion);
+                if let Some(rank) = bm25 {
+                    group.bm25.push(rank);
+                }
+                if let Some(rank) = cosine {
+                    group.cosine.push(rank);
+                }
+                if let Some(rank) = rerank {
+                    group.rerank.push(rank);
+                }
+                group.final_rank.push(final_rank);
+                if scored {
+                    group.scored += 1;
+                } else {
+                    group.unscored += 1;
+                }
+                group.last_event = group.last_event.max(ts);
+            }
+
+            if groups.is_empty() {
+                out.push(RankReportRow {
+                    path,
+                    ticks,
+                    events: 0,
+                    pipeline_id: None,
+                    corpus_sha256: None,
+                    median_fusion_rank: None,
+                    median_bm25_rank: None,
+                    median_cosine_rank: None,
+                    median_rerank_rank: None,
+                    median_final_rank: None,
+                    rerank_scored: 0,
+                    unscored_tail: 0,
+                    last_event: None,
+                    missing,
+                });
+                continue;
+            }
+
+            let mut rows: Vec<RankReportRow> = groups
+                .into_iter()
+                .map(|((pipeline_id, corpus_sha256), mut group)| RankReportRow {
+                    path: path.clone(),
+                    ticks,
+                    events: group.fusion.len() as i64,
+                    pipeline_id: Some(pipeline_id),
+                    corpus_sha256: Some(corpus_sha256),
+                    median_fusion_rank: median(&mut group.fusion),
+                    median_bm25_rank: median(&mut group.bm25),
+                    median_cosine_rank: median(&mut group.cosine),
+                    median_rerank_rank: median(&mut group.rerank),
+                    median_final_rank: median(&mut group.final_rank),
+                    rerank_scored: group.scored,
+                    unscored_tail: group.unscored,
+                    last_event: Some(group.last_event),
+                    missing,
+                })
+                .collect();
+            rows.sort_by_key(|row| std::cmp::Reverse(row.last_event));
+            out.extend(rows);
+        }
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Most-ticked notes as (path, count, first_used, last_used, missing). `missing` = no `files`
@@ -461,6 +782,15 @@ impl Db {
     pub fn orphan_tick_count(&self) -> Result<i64> {
         self.count(
             "SELECT COUNT(*) FROM ticks t LEFT JOIN files f ON f.path=t.path WHERE f.path IS NULL",
+        )
+    }
+
+    /// Presentation events whose path no longer has an indexed note. Informational only; user data is
+    /// never auto-deleted (same external-move limitation as counter orphans).
+    pub fn orphan_tick_event_count(&self) -> Result<i64> {
+        self.count(
+            "SELECT COUNT(*) FROM tick_events e LEFT JOIN files f ON f.path=e.path
+             WHERE f.path IS NULL",
         )
     }
 

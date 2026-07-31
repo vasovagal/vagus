@@ -224,8 +224,16 @@ mod tests {
         // SKILL.md update fails here at build time.
         let search = BUNDLED.iter().find(|s| s.name == "search").unwrap();
         assert!(
-            search.body.contains("vagus tick "),
-            "search skill no longer invokes `vagus tick`"
+            search.body.contains("--tick-provenance"),
+            "search skill lost explicit provenance retrieval"
+        );
+        assert!(
+            search.body.contains("vagus tick --events"),
+            "search skill no longer atomically records cited events"
+        );
+        assert!(
+            !search.body.contains("--store-query"),
+            "search skill must not opt into query-content storage"
         );
     }
 }

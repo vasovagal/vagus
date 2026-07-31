@@ -2,7 +2,8 @@
 //!
 //! See `design/` and `CLAUDE.md` for the hard invariants. In particular: only Markdown lives in the
 //! iCloud vault; the index/DB/model-cache live outside iCloud and are a rebuildable cache — except
-//! the `ticks` usage counters in meta.db, which are local user data (ADR 0021/G25).
+//! the `ticks` counters and explicit `tick_runs`/`tick_events` presentation provenance in meta.db,
+//! which are local user data (ADR 0021/G25).
 
 mod chunk;
 mod config;
@@ -16,6 +17,7 @@ mod lex;
 mod notes;
 mod path_safety;
 mod plugin;
+mod provenance;
 mod relevance;
 mod rerank;
 #[cfg(feature = "generate")]
@@ -88,9 +90,13 @@ enum Command {
         /// Which retriever(s) to use.
         #[arg(long, value_enum, default_value_t = Mode::Hybrid)]
         mode: Mode,
-        /// Emit machine-readable JSON (stable shape for the bundled agent skill).
+        /// Emit machine-readable JSON (stable shape unless explicit --tick-provenance wraps it).
         #[arg(long)]
         json: bool,
+        /// Emit a versioned `{run,hits}` wrapper with truthful fused/source/rerank/final ranks for
+        /// presentation ticks. Requires the exact+reranked full-body tier-2 pipeline (ADR 0021/G25).
+        #[arg(long)]
+        tick_provenance: bool,
         /// Max results: distinct notes by default; individual chunks with --chunks.
         #[arg(long, default_value_t = 10)]
         limit: usize,
@@ -278,9 +284,21 @@ enum Command {
     Plugins,
     /// Record a usage tick for one or more notes (used by the /search skill after presenting results).
     Tick {
-        /// Vault-relative note paths (as printed in search hits); absolute paths under the vault are accepted.
-        #[arg(num_args(1..), required = true)]
+        /// Vault-relative note paths (as printed in search hits); absolute paths inside the vault are
+        /// accepted. Optional when --events carries the presented paths and rank provenance.
+        #[arg(num_args(0..))]
         paths: Vec<String>,
+        /// Versioned JSON `{run,events}` copied from an explicit search --tick-provenance response.
+        /// Counter, run, and event rows commit atomically (ADR 0021/G25).
+        #[arg(long, value_name = "JSON")]
+        events: Option<String>,
+        /// Persist the explicit --query alongside the run. Off by default because query text is user
+        /// content; rank/config provenance itself contains no query or body text.
+        #[arg(long)]
+        store_query: bool,
+        /// Query text to persist; valid only with --store-query and --events.
+        #[arg(long, value_name = "TEXT")]
+        query: Option<String>,
         /// Emit the new totals as stable JSON.
         #[arg(long)]
         json: bool,
@@ -294,6 +312,18 @@ enum Command {
         #[arg(long)]
         all: bool,
         /// Emit stable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Presentation-rank diagnostics grouped by exact pipeline and corpus (selection-biased; ADR 0021).
+    Ticks {
+        /// Max distinct ticked notes to include (a note can have several pipeline/corpus rows).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Include ticked notes no longer in the index (deleted or renamed outside vagus).
+        #[arg(long)]
+        all: bool,
+        /// Emit a stable schema-versioned report.
         #[arg(long)]
         json: bool,
     },
@@ -372,6 +402,7 @@ fn main() -> Result<()> {
             query,
             mode,
             json,
+            tick_provenance,
             limit,
             no_index,
             verbose,
@@ -394,6 +425,7 @@ fn main() -> Result<()> {
             &query,
             mode,
             json,
+            tick_provenance,
             limit,
             no_index,
             verbose,
@@ -501,8 +533,22 @@ fn main() -> Result<()> {
                 .collect();
             plugin::list(&builtins)?;
         }
-        Command::Tick { paths, json } => ticks::tick(&cfg, &paths, json)?,
+        Command::Tick {
+            paths,
+            events,
+            store_query,
+            query,
+            json,
+        } => ticks::tick(
+            &cfg,
+            &paths,
+            events.as_deref(),
+            store_query,
+            query.as_deref(),
+            json,
+        )?,
         Command::Fame { limit, all, json } => ticks::fame(&cfg, limit, all, json)?,
+        Command::Ticks { limit, all, json } => ticks::ticks_report(&cfg, limit, all, json)?,
         Command::External(argv) => plugin::dispatch(&cfg, &argv)?,
     }
     Ok(())
@@ -654,8 +700,9 @@ fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
         "ticks",
         true,
         &format!(
-            "{} orphaned path(s) (notes moved/deleted outside vagus)",
-            db.orphan_tick_count()?
+            "{} orphaned counter path(s), {} orphaned event(s) (notes moved/deleted outside vagus)",
+            db.orphan_tick_count()?,
+            db.orphan_tick_event_count()?
         ),
     );
 
@@ -990,7 +1037,11 @@ fn cmd_status(cfg: &Config) -> Result<()> {
     println!("  chunks      : {chunks} ({embedded} embedded)");
     let tick_notes = db.count("SELECT count(*) FROM ticks")?;
     let tick_total = db.count("SELECT COALESCE(SUM(count),0) FROM ticks")?;
-    println!("  ticks       : {tick_notes} notes / {tick_total} total");
+    let tick_runs = db.count("SELECT count(*) FROM tick_runs")?;
+    let tick_events = db.count("SELECT count(*) FROM tick_events")?;
+    println!(
+        "  ticks       : {tick_notes} notes / {tick_total} total / {tick_runs} provenance runs / {tick_events} events"
+    );
     println!();
     println!("New here? `vagus tutorial` walks through capture → search → file.");
     Ok(())
@@ -1167,6 +1218,51 @@ mod eval_cli_tests {
                 rerank: true,
                 rerank_context: 2,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn presentation_provenance_commands_parse_only_explicit_flags() {
+        let search =
+            Cli::try_parse_from(["vagus", "search", "query", "--tick-provenance"]).unwrap();
+        assert!(matches!(
+            search.command,
+            Command::Search {
+                tick_provenance: true,
+                ..
+            }
+        ));
+
+        let tick = Cli::try_parse_from([
+            "vagus",
+            "tick",
+            "a.md",
+            "--events",
+            "{}",
+            "--query",
+            "private",
+            "--store-query",
+        ])
+        .unwrap();
+        assert!(matches!(
+            tick.command,
+            Command::Tick {
+                events: Some(_),
+                store_query: true,
+                query: Some(_),
+                ..
+            }
+        ));
+
+        let report =
+            Cli::try_parse_from(["vagus", "ticks", "--limit", "7", "--all", "--json"]).unwrap();
+        assert!(matches!(
+            report.command,
+            Command::Ticks {
+                limit: 7,
+                all: true,
+                json: true
             }
         ));
     }

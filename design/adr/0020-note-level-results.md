@@ -1,7 +1,8 @@
 # ADR 0020 — Note-level results by default: `--limit` counts distinct notes
 
 - **Status:** Accepted (2026-06-09); **amended 2026-07-29/30** — `--limit` remains note-counted but
-  is now an adaptive ceiling; folded chunks retain internal source ranks for ADR 0023's recall guard.
+  is now an adaptive ceiling; folded chunks retain internal source ranks for ADR 0023's recall guard
+  and the best fusion rank for ADR 0021's explicit presentation provenance.
 
 ## Context
 
@@ -35,8 +36,9 @@ nothing may perturb the deterministic RRF floor (G7/G8).
   was dropped by `--since`/`--source` is represented by its next surviving chunk. **Amendment
   (ADR 0023):** for plain hybrid note results, a later drop-only context gate may shorten that final
   list, so `--limit` is a maximum; `--exhaustive` restores the legacy fill behavior. Dedup also folds
-  each note's best internal BM25/cosine rank across every sibling chunk. Those ranks are not scored or
-  serialized; they only stop ADR 0023 from cutting before a note with a top-three source champion.
+  each note's best internal BM25/cosine rank across every sibling chunk and its best pre-rerank
+  fusion rank. These fields remain absent from default Hit JSON. Source ranks stop ADR 0023 from
+  cutting before a champion; only ADR 0021's explicit wrapper may expose the folded ranks.
 - **`--chunks` opts out**, restoring raw chunk-level hits (`--limit` counts chunks) —
   byte-identical to pre-0.7 output, since `siblings` is never set on that path.
 - **`siblings` is an additive optional Hit field** (`skip_serializing_if`, like

@@ -18,17 +18,22 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G2 — The index is a derived cache.** The index and derived tables (`files`/`chunks`/`meta`/
   `expansion_cache`, the tantivy dir, the usearch sidecar) must be 100% rebuildable from the Markdown
   via `vagus reindex`. Markdown files are the source of truth; the DB never is. **Sole exception:**
-  the `ticks` table is local user data, not a derived cache — see G25
+  `ticks`/`tick_runs`/`tick_events` are local user data, not derived caches — see G25
   ([ADR 0021](./adr/0021-usage-ticks.md)).
 - **G3 — Never auto-edit the user's note.** Frontmatter is optional; a frontmatter-free note must index
   correctly (title ← first `# heading` or filename). Frontmatter is written/enriched only during an
   explicit, user-approved filing step. ([ADR 0005](./adr/0005-assisted-filing.md)) A bare note must
   also stay **filterable by `search --since`**: when `created` frontmatter is absent/unparseable, the
   filter falls back to the file's **filesystem mtime**. ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
-- **G25 — Ticks are local user data in meta.db.** Never in the vault or frontmatter, never touched by
-  `clear_all`/`reindex`/`delete_file`, no FK onto `files`, re-keyed by `vagus file` on move
-  ([ADR 0021](./adr/0021-usage-ticks.md)). Any future non-rebuildable table must be named in
-  `clear_all`'s keep-list comment and covered by an ADR.
+- **G25 — Ticks and presentation provenance are local user data in meta.db.** `ticks`, `tick_runs`,
+  and `tick_events` never enter the vault/frontmatter and survive `clear_all`/every reindex/file
+  deletion; event paths re-key with counters on `vagus file`. Default search output cannot expose
+  provenance. Explicit schema-1 provenance is restricted to one exact+reranked, full-body, note-level
+  RRF path; runs pin executable/pipeline/corpus/cap/context/scope/result identity, and unscored tails
+  never receive fabricated rerank ranks. Selected event paths and counters commit in one transaction
+  or all roll back. Query storage is separate opt-in; bodies/snippets are never stored. Reports group
+  by pipeline + corpus and must label agent-selection bias. ([ADR 0021](./adr/0021-usage-ticks.md))
+  Any future non-rebuildable table must be named in `clear_all`'s keep-list comment and ADR-covered.
 
 ## Index correctness
 
@@ -42,8 +47,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
   usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
   rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
-  The `ticks` table is intentionally **outside** this three-store hash-diff (user data, not derived —
-  ADR 0021/G25); `doctor` cross-checks orphaned tick paths informationally.
+  The G25 user-data tables are intentionally **outside** this three-store hash-diff; `doctor`
+  cross-checks orphaned counter and event paths informationally.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
   the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
   many adds + one commit.
@@ -58,7 +63,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   --since <duration>` first snapshots every Markdown path + **filesystem mtime** in the vault, then
   force-refreshes selected existing notes through all three G5 stores even when mtime/hash metadata
   agrees. Older notes keep normal incremental behavior; new files and deletions are reconciled across
-  the whole snapshot. It never clears older rows or ticks. Plain `reindex` remains the full rebuild;
+  the whole snapshot. It never clears older rows or G25 user data. Plain `reindex` remains the full rebuild;
   an incompatible G4 identity still requires a full rebuild (a chunk-version auto-reindex may upgrade
   the windowed run; a direct embedding mismatch refuses it).
   ([ADR 0022](./adr/0022-mtime-windowed-reindex.md))
@@ -86,8 +91,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `.vagus/config.json` exclude word found by walking up from the CWD (code dirs only, never the
   vault); `--all` bypasses it and the `--json` Hit-array shape is unchanged.
   ([ADR 0009](./adr/0009-cwd-scoped-search.md)) The **default `--json` shape is stable**: new optional
-  fields (`rerank`, `body`, `created`, `source`, `siblings`) are omitted unless relevant, so the skill
-  keeps parsing it.
+  fields (`rerank`, `body`, `created`, `source`, `siblings`, `relevance`) are omitted unless relevant,
+  while G25 rank bookkeeping is always skipped, so existing consumers keep parsing it.
 - **G9b — Frontmatter filters are a separate post-rank stage.** `search --since`/`--source` filter on
   per-chunk `created_at`/`source` denormalized into SQLite at index time (**no tantivy schema change**);
   the filter is a drop-only stage **around** fusion (mirrors `apply_scope`), **never** touching `rrf()`
@@ -121,14 +126,21 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   Reranking carries the original cosine unchanged and never substitutes its sigmoid/logit; eval may
   report the named policy as a schema-2 score diagnostic without changing ranking metrics.
   ([ADR 0026](./adr/0026-bounded-semantic-relevance.md))
+- **G9f — Presentation provenance is explicit, strict, and non-ranking.** Only G25's fixed
+  `--tick-provenance` path may wrap JSON Hits with self-verifying run identity and real source/fusion/
+  rerank/final ranks. It cannot alter retrieval, scores, ordering, caps, filtering, or default output.
+  Capped-tail hits are explicitly unscored; path-bound event IDs and all ranks are validated before
+  atomically writing the run, cited-note events, and counters. Diagnostics group by pipeline + corpus and are
+  selection-biased, never eval evidence. ([ADR 0021](./adr/0021-usage-ticks.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
-  *channel* picks the tier — no escalation prompts or routine tier-2 fan-out. The skill keeps
-  rerank-context radius 0; optional wider model input never expands the ten matched bodies shown to
-  the agent.
+  fixed primary path emits G9f provenance, and the skill atomically records only cited notes without
+  query content; retries remain counter-only. The *channel* picks the tier — no escalation prompts or
+  routine tier-2 fan-out. The skill keeps rerank-context radius 0; optional wider model input never
+  expands the ten matched bodies shown to the agent.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
   fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins

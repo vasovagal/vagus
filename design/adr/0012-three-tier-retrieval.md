@@ -4,7 +4,8 @@
   Claude Code and pi; **amended 2026-07-29** — tier-0 `--limit` is an adaptive context ceiling via
   [ADR 0023](./0023-adaptive-context-tidy-results.md), tier-2 uses a bounded 10-candidate exact+
   reranked judge with a grade-2 presentation floor, and ADR 0026 adds orthogonal opt-in semantic
-  reporting without changing any tier pipeline. Supersedes the planned (never-written)
+  reporting without changing any tier pipeline; **amended 2026-07-30** — ADR 0021 adds strict,
+  query-free-by-default presentation provenance to the fixed tier-2 primary path. Supersedes the planned (never-written)
   "two-tier" ADR; the earlier framing lives in
   [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
@@ -29,7 +30,7 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank**; optional tokenizer-safe radius 1/2 context | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6; one modality-selected fallback only if none survive | Opus |
+| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 + strict run/rank provenance → agent 0–3 judge → grade ≥2, max 6 + atomic cited-note tick; one counter-only fallback if none survive | Opus |
 
 The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
 standards-compatible `SKILL.md` is embedded once and installed by
@@ -57,6 +58,10 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   a bounded original-query cosine heuristic and post-truncation floor; `--smart` rejects it because
   typed multi-query fusion does not retain that signal. The tier-2 skill keeps its stronger 0–3
   full-body judgment and does not reinterpret local cosine as agent confidence.
+- **ADR 0021 provenance observes tier 2; it does not rank.** The fixed primary command emits a
+  self-verifying run plus honest capped-prefix/tail rank states without changing any result. The skill
+  atomically records only cited notes; query text is off, and fallback searches remain counter-only.
+  Result reports are selection-biased diagnostics, never ADR 0024 evaluation evidence.
 
 ## 2026-07-29 bounded-skill evidence
 
@@ -74,10 +79,13 @@ false-positive and redundancy drops it leaves too little room for corroborating 
 maximum and keeps a modest judging buffer. Twenty was pure over-retrieval because the old skill then
 presented only 5–10.
 
-The skill text itself shrank 5,316 → 3,790 characters (estimated 1,329 → 948 tokens, **−28.67%**) while
-retaining JSON semantics, note/chunk guidance, safe ticking, fallback, and scope behavior. Combining
-skill text plus candidate bodies over five invocations gives 45,741 → 25,007 estimated tokens
-(**−45.33%**), before the additional output saving from the new “grade ≥2, max 6, never pad” rule.
+The bounded-skill change itself shrank text 5,316 → 3,790 characters (estimated 1,329 → 948 tokens,
+**−28.67%**). ADR 0026 guidance and ADR 0021's strict run/event copying bring the current skill to
+4,344 characters (~1,086 tokens): still **−18.28%** from the old prompt. The compact, path-bound
+run/rank wrapper adds 11,584 characters (~2,896 tokens) across the same five queries on the current
+496-note/4,381-chunk generation (`corpus_sha256=46269684…`). Applying that schema-dominated overhead
+to the frozen candidate-body budget gives ~28,593 estimated tokens (**−37.49%** versus 45,741), before
+the output saving from “grade ≥2, max 6, never pad.” Default JSON syntax is excluded from both sides.
 
 `--min-score` was rejected for the default skill command: with rerank it intentionally lifts the
 cross-encoder cap and scores the whole pool (ADR 0015), adding latency while duplicating the agent's

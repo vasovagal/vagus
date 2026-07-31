@@ -30,7 +30,8 @@ coding harness (Claude Code and pi).
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
   `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
-  10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), and never pads.
+  10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), never pads, and
+  atomically records only cited-note counters/provenance from its fixed primary path.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 - **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against
@@ -43,15 +44,23 @@ coding harness (Claude Code and pi).
   rather than probability. An explicit floor filters the already-truncated prefix without reorder or
   backfill; positive floors drop unknown/BM25-only hits. Ranking and default human/JSON output remain
   unchanged, and eval exposes the same policy for private-corpus evidence (ADR 0026, G9e).
+- **F10 — Honest local presentation provenance.** An explicit fixed search path may return a
+  self-verifying binary/pipeline/corpus wrapper plus path-bound source/fusion/rerank/final ranks
+  without changing ranking or default JSON. Capped-tail hits are unscored, never assigned rerank ranks. The
+  skill writes only cited paths, one run, events, and counters atomically. Reports group by pipeline
+  and corpus and label agent-selection bias; they never substitute for qrel evaluation (ADR 0021,
+  G9f/G25).
 
 ## Non-functional requirements
 
 - **N1 — Local-first & private.** Works fully offline after first run; no note text leaves the machine
-  by default. Plain `doctor` is network-incapable; model downloads occur only on first model use or the
-  explicit `doctor --fetch-models` consent path.
+  by default. Presentation logs omit query text by default and never store bodies/snippets; query
+  storage requires separate explicit opt-in. Plain `doctor` is network-incapable; model downloads
+  occur only on first model use or explicit `doctor --fetch-models` consent.
 - **N2 — No background daemon** in the default path; indexing is on-demand (a watcher is opt-in, later).
 - **N3 — Durable & recoverable.** Markdown is the source of truth; the index is a rebuildable cache.
-  iCloud holds *only* Markdown (see [ADR 0004](./adr/0004-icloud-markdown-only.md)).
+  Local usage counters and presentation runs/events are the named non-rebuildable exception and every
+  reindex preserves them. iCloud holds *only* Markdown (ADRs 0004/0021).
 - **N4 — Fast enough.** Backend retrieval stays comfortably interactive at personal scale: exact
   cosine is automatic below 10,000 chunks (a 10k×768 fixture is ~30 MiB and measures ~26.6 ms including
   SQLite load), then usearch HNSW supplies growth headroom. One-shot end-to-end search may be about one
