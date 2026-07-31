@@ -47,7 +47,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
   usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
   rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
-  The G25 user-data tables are intentionally **outside** this three-store hash-diff; `doctor`
+  A file with NULL chunk embeddings bypasses mtime/hash shortcuts and retries the full replacement;
+  forced-refresh mutations must count when deciding to save usearch. The G25 user-data tables are
+  intentionally **outside** this three-store hash-diff; `doctor`
   cross-checks orphaned counter and event paths informationally.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
   the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
@@ -62,8 +64,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G26 — Windowed reindex is a forced incremental repair, never a partial index.** `vagus reindex
   --since <duration>` first snapshots every Markdown path + **filesystem mtime** in the vault, then
   force-refreshes selected existing notes through all three G5 stores even when mtime/hash metadata
-  agrees. Older notes keep normal incremental behavior; new files and deletions are reconciled across
-  the whole snapshot. It never clears older rows or G25 user data. Plain `reindex` remains the full rebuild;
+  agrees, and its in-memory usearch mutations are persisted even if every mutation is classified
+  `refreshed`. Older notes keep normal incremental behavior; new files and deletions are reconciled
+  across the whole snapshot. It never clears older rows or G25 user data. Plain `reindex` remains the full rebuild;
   an incompatible G4 identity still requires a full rebuild (a chunk-version auto-reindex may upgrade
   the windowed run; a direct embedding mismatch refuses it).
   ([ADR 0022](./adr/0022-mtime-windowed-reindex.md))

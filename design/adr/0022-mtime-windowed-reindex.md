@@ -1,6 +1,7 @@
 # ADR 0022 — Mtime-windowed forced reindex
 
-- **Status:** Accepted (2026-07-29)
+- **Status:** Accepted (2026-07-29); **amended 2026-07-31** to persist forced usearch mutations and
+  make incomplete embedding rows an implicit incremental repair set.
 
 ## Context
 
@@ -40,12 +41,14 @@ Add `vagus reindex --since <duration>` with these semantics:
   notes into apparent deletions.
 - A selected existing note bypasses both the unchanged-mtime and identical-hash shortcuts. Its chunks,
   embeddings, Tantivy documents, and usearch vectors are replaced through the normal G5 path even if
-  cached metadata claims it is unchanged.
+  cached metadata claims it is unchanged. Independently of `--since`, any file with a NULL chunk
+  embedding is an implicit repair selection: an interrupted run cannot permanently bless partial
+  rows merely because its file mtime/hash were written first.
 - Older existing notes retain normal incremental behavior. New notes are indexed even when their mtime
   is older than the window, and missing paths are deleted globally. Thus `--since` augments normal
   reconciliation; it never creates an intentionally partial local index.
-- The command does **not** clear SQLite/Tantivy/usearch and never touches G25 usage/provenance user data. Plain
-  `vagus reindex` without `--since` keeps its existing full-wipe/rebuild behavior.
+- The command does **not** clear SQLite/Tantivy/usearch and never touches G25 usage/provenance user
+  data. Plain `vagus reindex` without `--since` keeps its existing full-wipe/rebuild behavior.
 - An incompatible identity cannot be repaired by a time window. The existing chunk-version
   auto-rebuild upgrades the run to a full reindex and reports it; a direct embedding-identity
   mismatch refuses the partial run and requires plain `vagus reindex` (G4).
@@ -57,7 +60,8 @@ Add `vagus reindex --since <duration>` with these semantics:
   older healthy embeddings are reused.
 - Cost is O(all vault files) for the path+mtime snapshot and proportional to selected/actually changed
   notes for reading, chunking, and embedding. Under ADR 0019's current write path, any vector mutation
-  still saves the usearch sidecar once at the end.
+  still saves the usearch sidecar once at the end. `refreshed` files count as mutations: omitting them
+  reproduced a successful 4,381-embedding/4,361-vector run whose in-memory repairs were discarded.
 - Filesystem mtimes come from iCloud/filesystem metadata and can be affected by clock skew or metadata
   preservation. A conservative wider window is safe because selection only causes redundant derived
   work; it never edits Markdown.

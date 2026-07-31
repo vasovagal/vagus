@@ -257,6 +257,7 @@ pub fn run_timed(
     let mut embedder: Option<Embedder> = None;
 
     let existing = db.existing_files()?;
+    let incomplete_files = db.files_with_unembedded_chunks()?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut stats = IndexStats {
         scanned: vault_files.len(),
@@ -270,12 +271,18 @@ pub fn run_timed(
 
         // `reindex --since` is normal incremental reconciliation plus a forced refresh set. The
         // mtime is filesystem metadata from the complete pre-write snapshot — never frontmatter.
-        let force_refresh = mode.force_refresh(mtime);
-        if force_refresh {
+        // An interrupted run can leave replacement chunk rows with NULL embeddings while the file
+        // mtime/hash already look current; treat that as an implicit repair selection so ordinary
+        // incremental indexing retries every G5 store instead of blessing the partial state forever.
+        let prior = existing.get(&rel);
+        let window_selected = mode.force_refresh(mtime);
+        let incomplete = prior.is_some() && incomplete_files.contains(&rel);
+        let force_refresh = window_selected || incomplete;
+        if window_selected {
             stats.selected += 1;
         }
         if !force_refresh
-            && let Some((old_mtime, _)) = existing.get(&rel)
+            && let Some((old_mtime, _)) = prior
             && (*old_mtime - mtime).abs() < f64::EPSILON
         {
             stats.unchanged += 1;
@@ -284,7 +291,6 @@ pub fn run_timed(
 
         let bytes = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
         let sha = sha256_hex(&bytes);
-        let prior = existing.get(&rel);
         if !force_refresh
             && let Some((_, old_sha)) = prior
             && *old_sha == sha
@@ -393,7 +399,10 @@ pub fn run_timed(
     // save the incrementally-mutated index, or do the one-time full rebuild from the now-current f32
     // BLOBs (no re-embed). A no-op incremental run skips the save (the sidecar is already current).
     let t0 = Instant::now();
-    let changed_any = stats.new + stats.changed + stats.removed > 0;
+    // Forced repairs mutate the in-memory usearch index just like new/changed/deleted files. Omitting
+    // `refreshed` here used to discard those mutations at process exit, leaving the sidecar stale even
+    // though SQLite/Tantivy were repaired (ADR 0022/G5).
+    let changed_any = stats.new + stats.changed + stats.refreshed + stats.removed > 0;
     match &vindex {
         Some(vi) if changed_any => vi.save(&sidecar)?,
         Some(_) => {}
@@ -483,6 +492,19 @@ mod tests {
                     rusqlite::params![bogus, key_for(&bogus) as i64],
                 )
                 .unwrap();
+            let mut vector = vec![0.0; EMBED_DIMS];
+            vector[0] = 1.0;
+            db.set_embedding(&bogus, &vector).unwrap();
+            UsearchIndex::rebuild_from_db(&db, EMBED_DIMS)
+                .unwrap()
+                .save(&cfg.vector_path())
+                .unwrap();
+            assert_eq!(
+                UsearchIndex::view(&cfg.vector_path(), EMBED_DIMS)
+                    .unwrap()
+                    .len(),
+                1
+            );
             db.tick("recent.md").unwrap();
         }
 
@@ -507,6 +529,40 @@ mod tests {
             "selected file was really rebuilt rather than mtime/hash-skipped"
         );
         assert_eq!(db.fame(10, true).unwrap()[0].1, 1, "ticks are preserved");
+        assert_eq!(
+            UsearchIndex::view(&cfg.vector_path(), EMBED_DIMS)
+                .unwrap()
+                .len(),
+            0,
+            "forced-refresh vector removals were persisted"
+        );
+    }
+
+    #[test]
+    fn incremental_retries_incomplete_embedding_rows_despite_matching_mtime() {
+        // Model-free interrupted-run fixture: an empty note should have no chunks, but the prior run
+        // blessed its current file metadata before dying with one replacement row still unembedded.
+        let (_dir, cfg) = empty_note_cfg("index-incomplete-repair");
+        fs::write(cfg.vault.join("partial.md"), "").unwrap();
+        run(&cfg, IndexMode::Full).unwrap();
+        {
+            let db = Db::open(&cfg.db_path()).unwrap();
+            let bogus = sha256_hex(b"partial chunk");
+            db.conn
+                .execute(
+                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
+                     VALUES(?1,'partial.md',0,'','partial',NULL,NULL,NULL,?2)",
+                    rusqlite::params![bogus, key_for(&bogus) as i64],
+                )
+                .unwrap();
+        }
+
+        let stats = run(&cfg, IndexMode::Incremental).unwrap();
+        assert_eq!(stats.selected, 0, "not a user-selected time window");
+        assert_eq!(stats.refreshed, 1, "partial file retried as a repair");
+        assert_eq!(stats.unchanged, 0);
+        let db = Db::open(&cfg.db_path()).unwrap();
+        assert_eq!(db.count("SELECT count(*) FROM chunks").unwrap(), 0);
     }
 
     #[test]

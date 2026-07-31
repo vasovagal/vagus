@@ -216,8 +216,10 @@ See [`eval/README.md`](eval/README.md) for labels and the complete gate contract
 
 For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault
 and force-reindexes notes whose **filesystem mtime** is within the window, even if local cached
-metadata says they are unchanged. Older indexed notes and all local usage/provenance rows are preserved; new/deleted files
-are still reconciled globally. Use plain `vagus reindex` when the suspect period is unknown or the
+metadata says they are unchanged, including persisted usearch repairs. Older indexed notes and all
+local usage/provenance rows are preserved; new/deleted files are still reconciled globally. Ordinary
+`vagus index` also retries a file if an interrupted run left any chunk embedding missing. Use plain
+`vagus reindex` when the suspect period is unknown or the
 embedding/chunk identity changed. (`search --since` is different: it filters results by note creation
 time.)
 

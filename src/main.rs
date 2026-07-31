@@ -959,8 +959,8 @@ fn human_size(bytes: u64) -> String {
 fn cmd_index(cfg: &Config) -> Result<()> {
     let stats = index::run(cfg, index::IndexMode::Incremental)?;
     println!(
-        "index: {} new, {} changed, {} unchanged, {} removed",
-        stats.new, stats.changed, stats.unchanged, stats.removed
+        "index: {} new, {} changed, {} repaired, {} unchanged, {} removed",
+        stats.new, stats.changed, stats.refreshed, stats.unchanged, stats.removed
     );
     Ok(())
 }

@@ -87,6 +87,11 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Fixed
 
+- Index repair no longer stops at SQLite/Tantivy. Forced `reindex --since` refreshes now persist their
+  in-memory usearch additions/removals even when no file was classified new/changed/deleted, fixing a
+  reproduced 4,381-embedding/4,361-vector divergence. Ordinary incremental indexing also bypasses
+  matching mtime/hash shortcuts for chunk rows left without embeddings by an interrupted prior run,
+  retrying the complete replacement path automatically. (ADRs 0019/0022; G5/G26)
 - Adaptive context trimming now fails open rather than crossing any note with a top-three BM25 or
   cosine source hit, including when that champion rank belongs to a folded sibling chunk. Exact
   cosine and RRF ties use stable opaque keys instead of randomized map iteration, and `--smart

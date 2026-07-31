@@ -378,6 +378,17 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Files whose prior replacement was interrupted with one or more chunk embeddings still NULL.
+    /// Loaded once per index run so the mtime hot path remains one hash lookup per file, not N SQL
+    /// queries.
+    pub fn files_with_unembedded_chunks(&self) -> Result<HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT path FROM chunks WHERE embedding IS NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Replace all chunks for a file (delete-then-insert). Embeddings are left NULL here; the embed
     /// step fills them. `created_at` (unix secs) and `source` are **note-level** values (parsed from
     /// frontmatter, with a mtime fallback for `created_at` — G3/ADR 0017) attached to every chunk of

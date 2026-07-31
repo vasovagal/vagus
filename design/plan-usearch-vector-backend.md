@@ -106,7 +106,8 @@ already hold (so removals need no lookup), collision prob ≈ 1.4e-8 at 1M. A pe
    - per changed/new file: after `replace_chunks` (`~207`, returns OLD ids) `remove(key_for(old))` for
      every old id, then `add(key_for(c.id), &v)` inside the existing `set_embedding` loop (`~232-234`).
    - deletions loop (`~247-253`): `for id in db.delete_file(path) { vindex.remove(key_for(&id)) }`.
-   - single `vindex.save()` right after `writer.commit()` / `wait_merging_threads()` (`~256-259`).
+   - single `vindex.save()` right after `writer.commit()` / `wait_merging_threads()` (`~256-259`);
+     the save predicate includes forced `refreshed` files, not only new/changed/deleted paths.
    - pin meta after the identity pin (`~152-155`): `vec_backend=usearch`, `vec_index_version`,
      `vec_dims`. **Do NOT bump `CHUNK_VERSION`** — that forces a 1.23 GB re-embed.
    - if you add a `vector_save_ms` timing field, update the stable-keys test (`~288-300`) in lockstep.

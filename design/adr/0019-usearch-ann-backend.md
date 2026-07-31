@@ -1,7 +1,8 @@
 # ADR 0019 — Vector backend: embedded usearch HNSW (statically linked)
 
 - **Status:** Accepted (2026-06-07); **amended 2026-07-30** — exact scan is automatic below
-  10,000 embedded chunks after a corpus-grounded HNSW miss, and `--exact` is enforced in every mode.
+  10,000 embedded chunks after a corpus-grounded HNSW miss, and `--exact` is enforced in every mode;
+  **amended 2026-07-31** — forced-refresh mutations count toward the one end-of-run sidecar save.
   Supersedes the "brute-force exact cosine; no ANN crate yet" stance of
   [ADR 0003](./0003-search-stack.md) for the *vector* component (BM25 + RRF remain unchanged).
 
@@ -66,7 +67,8 @@ cold-start, and a genuinely clean static link.
   indexed `chunks.vec_key` column carries the reverse `key → id` map for search-result resolution.
 - **Consistency (G5):** the indexer mutates the sidecar in lockstep with SQLite + tantivy — per changed
   file, remove the old keys then add the new; per deleted file, remove its keys; one `save()` after the
-  single tantivy `commit()`. A `reindex`, a missing/identity-mismatched sidecar, or a size drift
+  single tantivy `commit()`. New, changed, deleted, **and forced-refreshed** files all trigger that
+  save. A `reindex`, a missing/identity-mismatched sidecar, or a size drift
   triggers a full rebuild-from-BLOBs instead.
 - **Identity pinning (G4):** `vec_backend` / `vec_index_version` / `vec_dims` in `meta`. A mismatch
   rebuilds the sidecar from the BLOBs — **no re-embed, no `CHUNK_VERSION` bump** (the vectors are

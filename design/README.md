@@ -54,15 +54,17 @@ silently breaking an invariant.
 - `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
   worktree janitor, soft breadcrumb nudge; adds G21–G24.
 - `0019-usearch-ann-backend.md` — automatic exact cosine below 10k chunks, embedded static usearch
-  HNSW above it, and an all-mode `--exact` oracle; supersedes 0003's vector component; updates G5/G11/G13.
+  HNSW above it, an all-mode `--exact` oracle, and persisted forced-refresh mutations; supersedes
+  0003's vector component; updates G5/G11/G13.
 - `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
   post-rank dedup; folded source ranks preserve the G9d champion guard; `--chunks` opts out; adds G9c.
 - `0021-usage-ticks.md` — local usage counters plus atomic, schema-versioned cited-note rank
   provenance (`vagus tick`/`fame`/`ticks`): survives reindex, re-keys on file moves, pins pipeline +
   corpus with path-bound event IDs, names capped tails honestly, and keeps default search JSON
   unchanged; adds G25/G9f.
-- `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault and
-  force-refreshes the recent filesystem-mtime window without wiping older indexed notes; adds G26.
+- `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault,
+  force-refreshes and persists the recent filesystem-mtime window without wiping older notes, and
+  treats interrupted NULL embeddings as implicit repairs; adds G26.
 - `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,
   dropping only a distinct low-signal RRF suffix without crossing a top-three source champion;
   `--exhaustive` restores legacy fill; adds G9d and amends 0012/0020.
