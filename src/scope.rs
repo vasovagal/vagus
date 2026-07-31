@@ -90,6 +90,19 @@ impl Scope {
         self.words.is_empty()
     }
 
+    /// Opaque behavior identity for provenance grouping. Raw code-directory exclusion words are not
+    /// stored, while unlike scopes cannot be mixed into one rank diagnostic.
+    pub fn policy_id(&self) -> String {
+        let mut words = self.words.clone();
+        words.sort_unstable();
+        let mut bytes = Vec::new();
+        for word in words {
+            bytes.extend_from_slice(word.as_bytes());
+            bytes.push(0);
+        }
+        crate::util::sha256_hex(&bytes)
+    }
+
     /// True when `vault_rel` contains any excluded word (case-insensitive substring on the path).
     pub fn is_excluded(&self, vault_rel: &str) -> bool {
         if self.words.is_empty() {
@@ -178,6 +191,17 @@ mod tests {
         let s = scope(&["viasat", "VIASAT", " Viasat "]);
         assert_eq!(s.words, vec!["viasat".to_string()]);
         assert!(s.is_excluded("10-Projects/viasat/x.md"));
+    }
+
+    #[test]
+    fn provenance_policy_identifies_behavior_without_exposing_words() {
+        let a = scope(&["viasat", "scientist"]);
+        let b = scope(&["scientist", "viasat"]);
+        let c = scope(&["different"]);
+        assert_eq!(a.policy_id(), b.policy_id());
+        assert_ne!(a.policy_id(), c.policy_id());
+        assert_eq!(a.policy_id().len(), 64);
+        assert!(!a.policy_id().contains("viasat"));
     }
 
     // --- discovery tests (real temp dirs, never the real CWD/$HOME) ------------------------------

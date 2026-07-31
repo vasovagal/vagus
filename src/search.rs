@@ -14,7 +14,7 @@ use std::io::IsTerminal;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::Serialize;
 
@@ -23,6 +23,10 @@ use crate::db::Db;
 use crate::embed::Embedder;
 use crate::index;
 use crate::lex::Lex;
+use crate::provenance::{
+    FUSION_CANDIDATE_POOL, HitRankProvenance, MAX_PROVENANCE_LIMIT, RESULT_POLICY, SCHEMA_VERSION,
+    SearchRunProvenance,
+};
 use crate::rerank::{Reranker, sigmoid};
 use crate::scope::Scope;
 #[cfg(test)]
@@ -108,7 +112,7 @@ fn tidy_rrf_prefix_len(scores: &[f32], protected_through: usize) -> usize {
 
 /// Minimum candidate pool the cross-encoder reranks (the deeper fused set, before truncating to the
 /// requested `limit`). Scales with `limit` but never drops below this.
-const RERANK_POOL_MIN: usize = 30;
+pub(crate) const RERANK_POOL_MIN: usize = 30;
 
 /// Cap on how many top RRF-ordered candidates the cross-encoder actually *scores*, as a multiple of
 /// `limit` (floored at 16). The forward pass dominates `--rerank` wall time, and note-dedup/truncate
@@ -122,7 +126,7 @@ const RERANK_CAP_PER_LIMIT: usize = 2;
 /// pool. The floor is relative-to-top and the reranked head carries sigmoid scores (~0–1) while an
 /// un-scored tail keeps raw RRF scores (~0.01) — comparing the two would floor the whole tail out and
 /// silently drop tail-filled slots the full-pool rerank would have kept, so a floor disables the cap.
-fn rerank_cap(limit: usize, pool_len: usize, score_floor: bool) -> usize {
+pub(crate) fn rerank_cap(limit: usize, pool_len: usize, score_floor: bool) -> usize {
     if score_floor {
         pool_len
     } else {
@@ -214,6 +218,12 @@ pub struct Hit {
     bm25_rank: Option<usize>,
     #[serde(skip)]
     cosine_rank: Option<usize>,
+    /// Internal rank before/after the capped cross-encoder. Serialized only inside the explicit
+    /// `--tick-provenance` wrapper, never in the stable default Hit array (ADR 0021/G9a).
+    #[serde(skip)]
+    fusion_rank: Option<usize>,
+    #[serde(skip)]
+    rerank_rank: Option<usize>,
     /// Raw cross-encoder rerank logit, when `--rerank` reordered this hit (ordering signal only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank: Option<f32>,
@@ -259,6 +269,154 @@ struct Scored {
     bm25: Option<f32>,
     bm25_rank: Option<usize>,
     cosine_rank: Option<usize>,
+    fusion_rank: Option<usize>,
+}
+
+/// Candidate-stage counts needed to make explicit presentation provenance truthful even when every
+/// candidate is later filtered or scope-elided.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct QueryMeta {
+    /// Requested depth for each BM25/cosine source and for the post-RRF fused list.
+    pub source_limit: usize,
+    pub fusion_limit: usize,
+    /// Actual hydrated fused pool and actually scored prefix.
+    pub candidate_pool: usize,
+    pub rerank_cap: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProvenanceIndexSnapshot {
+    corpus_sha256: String,
+    indexed_files: usize,
+    indexed_chunks: usize,
+    embedded_chunks: usize,
+    embed_model: String,
+    embed_dims: usize,
+    chunk_version: String,
+    tantivy_version: String,
+}
+
+fn provenance_index_snapshot(cfg: &Config) -> Result<ProvenanceIndexSnapshot> {
+    let db = Db::open(&cfg.db_path())?;
+    // One read transaction prevents a concurrent index writer from mixing file hashes, counts, and
+    // identity rows inside either side of the before/after comparison.
+    let tx = db.conn.unchecked_transaction()?;
+    let files = db.existing_files()?;
+    let snapshot = ProvenanceIndexSnapshot {
+        corpus_sha256: crate::util::corpus_fingerprint(&files),
+        indexed_files: files.len(),
+        indexed_chunks: db.count("SELECT count(*) FROM chunks")? as usize,
+        embedded_chunks: db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")?
+            as usize,
+        embed_model: db
+            .meta_get("embed_model")?
+            .context("index lacks embed_model provenance; run vagus reindex")?,
+        embed_dims: db
+            .meta_get("embed_dims")?
+            .context("index lacks embed_dims provenance; run vagus reindex")?
+            .parse()
+            .context("index embed_dims provenance is invalid; run vagus reindex")?,
+        chunk_version: db
+            .meta_get("chunk_version")?
+            .context("index lacks chunk_version provenance; run vagus reindex")?,
+        tantivy_version: db
+            .meta_get("tantivy_version")?
+            .context("index lacks tantivy_version provenance; run vagus reindex")?,
+    };
+    tx.commit()?;
+    Ok(snapshot)
+}
+
+#[derive(Serialize)]
+struct ProvenanceHit<'a> {
+    #[serde(flatten)]
+    hit: &'a Hit,
+    provenance: HitRankProvenance,
+}
+
+#[derive(Serialize)]
+struct ProvenanceResponse<'a> {
+    run: SearchRunProvenance,
+    hits: Vec<ProvenanceHit<'a>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_tick_provenance(
+    hits: &[Hit],
+    query_meta: QueryMeta,
+    snapshot: ProvenanceIndexSnapshot,
+    limit: usize,
+    rerank_context: usize,
+    metadata_filters: bool,
+    cwd_scope: bool,
+    scope_policy: String,
+    scope_elided: usize,
+    index_refresh_requested: bool,
+    index_refresh_succeeded: bool,
+    binary_sha256: String,
+) -> Result<()> {
+    let mut run = SearchRunProvenance {
+        schema_version: SCHEMA_VERSION,
+        pipeline_id: String::new(),
+        binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+        binary_sha256,
+        corpus_sha256: snapshot.corpus_sha256,
+        indexed_files: snapshot.indexed_files,
+        indexed_chunks: snapshot.indexed_chunks,
+        embedded_chunks: snapshot.embedded_chunks,
+        embed_model: snapshot.embed_model,
+        embed_dims: snapshot.embed_dims,
+        chunk_version: snapshot.chunk_version,
+        tantivy_version: snapshot.tantivy_version,
+        fusion_policy: FUSION_POLICY.to_owned(),
+        fusion_candidate_pool: FUSION_CANDIDATE_POOL.to_owned(),
+        vector_backend: "exact".to_owned(),
+        exact_requested: true,
+        automatic_exact_cutoff: crate::vector::EXACT_SCAN_CUTOFF,
+        rerank_model: crate::rerank::MODEL_ID.to_owned(),
+        rerank_policy: crate::rerank::policy_id(rerank_context)?,
+        relevance_policy: crate::relevance::POLICY.to_owned(),
+        source_limit: query_meta.source_limit,
+        fusion_limit: query_meta.fusion_limit,
+        candidate_pool: query_meta.candidate_pool,
+        rerank_cap: query_meta.rerank_cap,
+        limit,
+        returned: hits.len(),
+        full_body: true,
+        note_level: true,
+        metadata_filters,
+        cwd_scope,
+        scope_policy,
+        scope_elided,
+        index_refresh_requested,
+        index_refresh_succeeded,
+        result_policy: RESULT_POLICY.to_owned(),
+    };
+    run.set_pipeline_id();
+    run.validate()?;
+
+    let mut wrapped = Vec::with_capacity(hits.len());
+    for (i, hit) in hits.iter().enumerate() {
+        let mut provenance = HitRankProvenance {
+            event_id: String::new(),
+            fusion_rank: hit.fusion_rank.ok_or_else(|| {
+                anyhow::anyhow!("missing internal fusion rank for tick provenance")
+            })?,
+            bm25_rank: hit.bm25_rank,
+            cosine_rank: hit.cosine_rank,
+            rerank_rank: hit.rerank_rank,
+            final_rank: i + 1,
+            rerank_scored: hit.rerank_rank.is_some(),
+        };
+        provenance.bind_to(&run, &hit.path);
+        provenance.validate_for_path(&run, &hit.path)?;
+        wrapped.push(ProvenanceHit { hit, provenance });
+    }
+    let response = ProvenanceResponse { run, hits: wrapped };
+    // This payload enters the agent context on every tier-2 search. Keep the explicit wrapper compact;
+    // ordinary/default JSON formatting remains byte-identical.
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
 }
 
 fn snippet(body: &str, n: usize) -> String {
@@ -367,6 +525,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
                 bm25: s.bm25,
                 bm25_rank: s.bm25_rank,
                 cosine_rank: s.cosine_rank,
+                fusion_rank: s.fusion_rank,
+                rerank_rank: None,
                 rerank: None,
                 snippet,
                 body: keep_body.then_some(body),
@@ -445,7 +605,7 @@ pub fn query(
     timings: bool,
     chunks: bool,
     score_floor: bool,
-) -> Result<(Vec<Hit>, usize)> {
+) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
@@ -457,6 +617,11 @@ pub fn query(
         (limit * 4).max(RERANK_POOL_MIN)
     } else {
         limit
+    };
+    let source_limit = if matches!(mode, Mode::Hybrid) {
+        (pool * 3).max(30)
+    } else {
+        pool
     };
     let t0 = Instant::now();
     let ranked: Vec<Scored> = match mode {
@@ -473,6 +638,7 @@ pub fn query(
                     bm25: Some(bm25),
                     bm25_rank: Some(i + 1),
                     cosine_rank: None,
+                    fusion_rank: None,
                 })
                 .collect()
         }
@@ -487,15 +653,15 @@ pub fn query(
                 bm25: None,
                 bm25_rank: None,
                 cosine_rank: Some(i + 1),
+                fusion_rank: None,
             })
             .collect(),
         Mode::Hybrid => {
             // Pull a deeper candidate set from each retriever, then fuse — keeping each retriever's
             // raw score so the fused hit can report its cosine + BM25 components.
-            let cand = (pool * 3).max(30);
             let lex = Lex::open(&cfg.tantivy_dir())?;
-            let bm = lex.search(q, cand)?; // (id, bm25), BM25 rank order
-            let ve = vec_search(cfg, &db, q, cand, exact)?; // (id, cosine), cosine rank order
+            let bm = lex.search(q, source_limit)?; // (id, bm25), BM25 rank order
+            let ve = vec_search(cfg, &db, q, source_limit, exact)?; // (id, cosine), rank order
             let bm25_of: HashMap<&str, f32> = bm.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
             let bm_rank_of: HashMap<&str, usize> = bm
@@ -512,11 +678,13 @@ pub fn query(
             let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
             rrf(&[bm_ids, ve_ids], pool)
                 .into_iter()
-                .map(|(id, r)| Scored {
+                .enumerate()
+                .map(|(i, (id, r))| Scored {
                     cosine: cos_of.get(id.as_str()).copied(),
                     bm25: bm25_of.get(id.as_str()).copied(),
                     bm25_rank: bm_rank_of.get(id.as_str()).copied(),
                     cosine_rank: cos_rank_of.get(id.as_str()).copied(),
+                    fusion_rank: Some(i + 1),
                     rrf: Some(r),
                     score: r,
                     id,
@@ -529,6 +697,8 @@ pub fn query(
     let keep_body = full || rerank;
     let t0 = Instant::now();
     let mut hits = hydrate(&db, ranked, keep_body)?;
+    let candidate_pool = hits.len();
+    let mut actual_rerank_cap = 0;
     t.fuse_ms = ms_since(t0);
 
     // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF — G8 — untouched).
@@ -537,6 +707,7 @@ pub fn query(
         let mut rr = Reranker::new(&cfg.cache_dir, rerank_context)?;
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
+        actual_rerank_cap = cap;
         let t0 = Instant::now();
         let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
         let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
@@ -568,7 +739,17 @@ pub fn query(
     if timings {
         t.print(if rerank { "rerank" } else { "plain" });
     }
-    Ok(apply_scope(hits, scope))
+    let (hits, elided) = apply_scope(hits, scope);
+    Ok((
+        hits,
+        elided,
+        QueryMeta {
+            source_limit,
+            fusion_limit: pool,
+            candidate_pool,
+            rerank_cap: actual_rerank_cap,
+        },
+    ))
 }
 
 /// Post-rank `--since`/`--source` filter (ADR 0017). Mirrors `apply_scope`: prunes already-ranked
@@ -619,6 +800,10 @@ fn dedupe_notes(hits: Vec<Hit>) -> Vec<Hit> {
                 kept[i].siblings = Some(kept[i].siblings.unwrap_or(0) + 1);
                 kept[i].bm25_rank = best_rank(kept[i].bm25_rank, h.bm25_rank);
                 kept[i].cosine_rank = best_rank(kept[i].cosine_rank, h.cosine_rank);
+                // Presentation provenance compares note-level ranks. Fold the note's best original
+                // fusion rank just like source ranks, while rerank_rank remains the selected/scored
+                // representative's actual cross-encoder-prefix rank.
+                kept[i].fusion_rank = best_rank(kept[i].fusion_rank, h.fusion_rank);
             }
             None => {
                 index_of.insert(h.path.clone(), kept.len());
@@ -647,9 +832,10 @@ fn apply_rerank_prefix(hits: Vec<Hit>, cap: usize, order: Vec<(usize, f32)>) -> 
         order.len()
     );
     let mut reordered = Vec::with_capacity(hits.len());
-    for (idx, score) in order {
+    for (rank, (idx, score)) in order.into_iter().enumerate() {
         let mut h = hits[idx].clone();
         h.rerank = Some(score);
+        h.rerank_rank = Some(rank + 1);
         h.score = sigmoid(score); // display-/floor-friendly primary score for the rerank mode
         reordered.push(h);
     }
@@ -677,7 +863,7 @@ fn smart_query(
     timings: bool,
     chunks: bool,
     score_floor: bool,
-) -> Result<(Vec<Hit>, usize)> {
+) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
     let t_total = Instant::now();
@@ -788,7 +974,8 @@ fn smart_query(
     let t0 = Instant::now();
     let ranked: Vec<Scored> = rrf(&lists, pool)
         .into_iter()
-        .map(|(id, r)| Scored {
+        .enumerate()
+        .map(|(i, (id, r))| Scored {
             id,
             score: r,
             rrf: Some(r),
@@ -796,9 +983,12 @@ fn smart_query(
             bm25: None,
             bm25_rank: None,
             cosine_rank: None,
+            fusion_rank: Some(i + 1),
         })
         .collect();
     let mut hits = hydrate(&db, ranked, true)?;
+    let candidate_pool = hits.len();
+    let mut actual_rerank_cap = 0;
     t.fuse_ms = ms_since(t0);
 
     // 4) Rerank against the ORIGINAL query on full bodies, then reorder.
@@ -811,6 +1001,7 @@ fn smart_query(
         };
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
+        actual_rerank_cap = cap;
         let t0 = Instant::now();
         let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
         let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
@@ -835,7 +1026,17 @@ fn smart_query(
     if timings {
         t.print("smart");
     }
-    Ok(apply_scope(hits, scope))
+    let (hits, elided) = apply_scope(hits, scope);
+    Ok((
+        hits,
+        elided,
+        QueryMeta {
+            source_limit: pool,
+            fusion_limit: pool,
+            candidate_pool,
+            rerank_cap: actual_rerank_cap,
+        },
+    ))
 }
 
 /// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
@@ -873,7 +1074,7 @@ fn run_query(
     timings: bool,
     chunks: bool,
     score_floor: bool,
-) -> Result<(Vec<Hit>, usize)> {
+) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     #[cfg(feature = "generate")]
     if smart {
         match smart_query(
@@ -926,6 +1127,7 @@ pub fn run(
     q: &str,
     mode: Mode,
     json: bool,
+    tick_provenance: bool,
     limit: usize,
     no_index: bool,
     verbose: bool,
@@ -947,6 +1149,25 @@ pub fn run(
     if rerank_context > 0 && !rerank && !smart {
         bail!("--rerank-context requires --rerank or --smart");
     }
+    if tick_provenance
+        && (!json
+            || !full
+            || !rerank
+            || !exact
+            || !matches!(mode, Mode::Hybrid)
+            || smart
+            || chunks
+            || min_score.is_some()
+            || show_relevance
+            || min_relevance.is_some()
+            || since.is_some()
+            || source.is_some()
+            || !(1..=MAX_PROVENANCE_LIMIT).contains(&limit))
+    {
+        bail!(
+            "--tick-provenance requires --json --full --rerank --exact with note-level hybrid search, limit 1..={MAX_PROVENANCE_LIMIT}, and no smart/filter/score/relevance floor"
+        );
+    }
     let relevance_requested = show_relevance || min_relevance.is_some();
     if relevance_requested && matches!(mode, Mode::Bm25) {
         bail!("--relevance/--min-relevance require --mode hybrid or --mode vec");
@@ -964,9 +1185,25 @@ pub fn run(
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
     // actually changed). `--no-index` skips it.
-    if !no_index && let Err(e) = index::run(cfg, index::IndexMode::Incremental) {
-        eprintln!("vagus: index refresh skipped ({e})");
-    }
+    let index_refreshed = if no_index {
+        false
+    } else {
+        match index::run(cfg, index::IndexMode::Incremental) {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("vagus: index refresh skipped ({error})");
+                false
+            }
+        }
+    };
+    // Fingerprint the executable before retrieval as well as the index. A concurrent binary
+    // replacement must not make the completed run claim code bytes this process did not execute.
+    let provenance_binary = tick_provenance
+        .then(crate::util::executable_fingerprint)
+        .transpose()?;
+    let provenance_before = tick_provenance
+        .then(|| provenance_index_snapshot(cfg))
+        .transpose()?;
     // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses scoping.
     let scope = if all {
         Scope::none()
@@ -978,7 +1215,7 @@ pub fn run(
     // every tail-filled slot (raw RRF score vs sigmoid top). A zero/absent floor drops nothing, so it
     // keeps the fast capped path.
     let score_floor = min_score.is_some_and(|f| f > 0.0);
-    let (mut hits, elided) = run_query(
+    let (mut hits, elided, query_meta) = run_query(
         cfg,
         q,
         mode,
@@ -1044,7 +1281,28 @@ pub fn run(
             hit.relevance_policy = None;
         }
     }
-    emit(&hits, json, verbose, full, relevance_requested);
+    if tick_provenance {
+        let provenance_after = provenance_index_snapshot(cfg)?;
+        if provenance_before.as_ref() != Some(&provenance_after) {
+            bail!("index changed during provenance search; discard the run and retry");
+        }
+        emit_tick_provenance(
+            &hits,
+            query_meta,
+            provenance_after,
+            limit,
+            rerank_context,
+            since.is_some() || source.is_some(),
+            !all,
+            scope.policy_id(),
+            elided,
+            !no_index,
+            index_refreshed,
+            provenance_binary.expect("captured with --tick-provenance"),
+        )?;
+    } else {
+        emit(&hits, json, verbose, full, relevance_requested);
+    }
     if tidy_omitted > 0 {
         let msg = format!(
             "{tidy_omitted} low-signal tail hit(s) omitted by adaptive cutoff (--exhaustive to show)"
@@ -1324,6 +1582,8 @@ mod scope_filter_tests {
             bm25: None,
             bm25_rank: None,
             cosine_rank: None,
+            fusion_rank: None,
+            rerank_rank: None,
             rerank: None,
             snippet: String::new(),
             body: None,
@@ -1411,6 +1671,8 @@ mod scope_filter_tests {
         h2.siblings = Some(2);
         h2.bm25_rank = Some(1);
         h2.cosine_rank = Some(2);
+        h2.fusion_rank = Some(3);
+        h2.rerank_rank = Some(1);
         let j2 = serde_json::to_string(&h2).unwrap();
         assert!(j2.contains("\"rerank\":1.5"));
         assert!(j2.contains("\"relevance\":0.42"));
@@ -1422,12 +1684,44 @@ mod scope_filter_tests {
         assert!(j2.contains("\"siblings\":2"));
         assert!(!j2.contains("bm25_rank"));
         assert!(!j2.contains("cosine_rank"));
+        assert!(!j2.contains("fusion_rank"));
+        assert!(!j2.contains("rerank_rank"));
+        assert!(!j2.contains("event_id"));
+
+        let wrapped = ProvenanceHit {
+            hit: &h2,
+            provenance: HitRankProvenance {
+                event_id: "a".repeat(64),
+                fusion_rank: 3,
+                bm25_rank: Some(1),
+                cosine_rank: Some(2),
+                rerank_rank: Some(1),
+                final_rank: 1,
+                rerank_scored: true,
+            },
+        };
+        let explicit = serde_json::to_string(&wrapped).unwrap();
+        assert!(explicit.contains("\"provenance\""));
+        assert!(explicit.contains("\"event_id\""));
+        assert!(explicit.contains("\"fusion_rank\":3"));
 
         let mut unknown = hit("lexical-only.md");
         unknown.relevance_policy = Some(crate::relevance::POLICY);
         let j3 = serde_json::to_string(&unknown).unwrap();
         assert!(j3.contains("\"relevance_policy\""));
         assert!(!j3.contains("\"relevance\":"));
+    }
+
+    #[test]
+    fn explicit_provenance_refuses_to_invent_missing_index_identity() {
+        let dir = crate::util::testdir::TempDir::new("search-provenance-identity");
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        Db::open(&cfg.db_path()).unwrap();
+        assert!(provenance_index_snapshot(&cfg).is_err());
     }
 
     #[test]
@@ -1806,13 +2100,16 @@ mod scope_filter_tests {
             rrf: Some(rrf),
             ..hit(path)
         };
-        let hits = vec![
+        let mut hits = vec![
             mk("a.md", 0.05),
             mk("b.md", 0.04),
             mk("c.md", 0.03),
             mk("d.md", 0.02),
             mk("e.md", 0.01),
         ];
+        for (i, hit) in hits.iter_mut().enumerate() {
+            hit.fusion_rank = Some(i + 1);
+        }
         // Reranker scores the top 2 and flips them (b above a); indices are into the prefix.
         let order = vec![(1, 3.0), (0, -1.0)];
         let out = apply_rerank_prefix(hits, 2, order);
@@ -1821,7 +2118,18 @@ mod scope_filter_tests {
         // Prefix carries a rerank logit (+ sigmoid score); the tail has neither.
         assert_eq!(out[0].rerank, Some(3.0));
         assert_eq!(out[1].rerank, Some(-1.0));
-        assert!(out[2..].iter().all(|h| h.rerank.is_none()));
+        assert_eq!(out[0].rerank_rank, Some(1));
+        assert_eq!(out[1].rerank_rank, Some(2));
+        assert!(
+            out[2..]
+                .iter()
+                .all(|hit| hit.rerank.is_none() && hit.rerank_rank.is_none()),
+            "unscored tail must never receive fake rerank provenance"
+        );
+        assert_eq!(
+            out.iter().map(|hit| hit.fusion_rank).collect::<Vec<_>>(),
+            [Some(2), Some(1), Some(3), Some(4), Some(5)]
+        );
         assert_eq!(out[2].score, 0.03); // tail RRF score untouched
         assert_eq!(out[4].score, 0.01);
         assert_eq!(
@@ -1846,7 +2154,7 @@ mod scope_filter_tests {
     fn rerank_cap_then_dedup_fills_limit_from_tail() {
         // Capping the reranked prefix must not starve note-dedup: the un-reranked tail still carries
         // enough distinct notes to fill `limit` after dedup — only the compute is capped, not depth.
-        let hits = vec![
+        let mut hits = vec![
             hit_chunk("a.md", 1),
             hit_chunk("a.md", 2), // same note as the top hit — dedup folds it
             hit_chunk("b.md", 1),
@@ -1854,6 +2162,9 @@ mod scope_filter_tests {
             hit_chunk("c.md", 1),
             hit_chunk("d.md", 1),
         ];
+        for (i, hit) in hits.iter_mut().enumerate() {
+            hit.fusion_rank = Some(i + 1);
+        }
         let order = vec![(0, 2.0), (1, 1.0), (2, 0.5)]; // rerank the top 3, keep their order
         let reranked = apply_rerank_prefix(hits, 3, order);
         let mut deduped = dedupe_notes(reranked);
@@ -1862,5 +2173,8 @@ mod scope_filter_tests {
         // Prefix had only 2 distinct notes (a, b); c from the tail fills the 3rd slot.
         assert_eq!(paths, ["a.md", "b.md", "c.md"]);
         assert_eq!(deduped[0].siblings, Some(1)); // a#2 folded into a
+        assert_eq!(deduped[0].fusion_rank, Some(1));
+        assert_eq!(deduped[2].fusion_rank, Some(4));
+        assert_eq!(deduped[2].rerank_rank, None, "tail remains unscored");
     }
 }

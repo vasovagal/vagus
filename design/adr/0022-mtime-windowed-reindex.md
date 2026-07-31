@@ -44,7 +44,7 @@ Add `vagus reindex --since <duration>` with these semantics:
 - Older existing notes retain normal incremental behavior. New notes are indexed even when their mtime
   is older than the window, and missing paths are deleted globally. Thus `--since` augments normal
   reconciliation; it never creates an intentionally partial local index.
-- The command does **not** clear SQLite/Tantivy/usearch and never touches usage ticks (G25). Plain
+- The command does **not** clear SQLite/Tantivy/usearch and never touches G25 usage/provenance user data. Plain
   `vagus reindex` without `--since` keeps its existing full-wipe/rebuild behavior.
 - An incompatible identity cannot be repaired by a time window. The existing chunk-version
   auto-rebuild upgrades the run to a full reindex and reports it; a direct embedding-identity

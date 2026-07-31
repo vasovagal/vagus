@@ -117,4 +117,6 @@ as an evidence gate for explicit experiments; it does not itself change default 
   This is slow but truthful and offline; session reuse is a later optimization that must not alter
   results or provenance.
 - Changing metric meaning or required JSON fields requires a schema-version bump and ADR/G27 update.
+- ADR 0021's cited-note rank events are agent-selection-biased presentation diagnostics with no
+  missing-answer observations or qrels; they cannot replace this acceptance harness.
 - No index schema, model identity, chunk version, network path, daemon, or vault write is introduced.

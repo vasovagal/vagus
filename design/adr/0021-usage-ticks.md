@@ -1,63 +1,104 @@
-# ADR 0021 — Usage ticks: local user data in meta.db
+# ADR 0021 — Usage ticks and presentation provenance
 
-- **Status:** Accepted (2026-07-08)
+- **Status:** Accepted (2026-07-08); **amended 2026-07-30** with versioned rank-provenance events.
 
 ## Context
 
-We want a per-note usage signal — a "hall of fame" (`vagus fame`) — recorded when the `/search`
-skill judges a note a top hit and actually presents it. The signal must never enter the iCloud
-vault (G1) or note frontmatter (G3). meta.db is currently described as wholly derived (db.rs
-module doc, G2), and ticks contradict that as written: usage counts are user data, not derivable
-from the Markdown.
+The search Agent Skill records a per-note usage signal when it judges a note useful and actually
+presents it. This powers `vagus fame` without editing Markdown. These counters are local user data,
+not a cache derivable from the vault.
+
+Counters say which notes are useful but not how retrieval surfaced them. Selected-result provenance
+can show whether a cited note began low in fused/source ranks, finished high, or remained in the
+unscored RRF tail. Such observations are **selection-biased diagnostics**, not ground truth: the log
+cannot see missing answers and agent judgments vary. ADR 0024 qrels/eval remains the acceptance gate.
 
 ## Options considered
 
-- **Frontmatter counters.** Rejected: G3's auto-edit ban, G1's vault-stays-plain-content rule, and
-  iCloud churn on every search.
-- **Separate `ticks.db` sidecar.** Rejected: a fourth store with its own WAL, and it loses the
-  single-connection transaction for rename re-keying. The `meta`-survives-`clear_all` precedent
-  shows scoped wipes work inside one DB.
-- **Append-only event log (path, ticked_at, query).** Deferred: enables `--since`/decay later; a
-  counter row with `first_used`/`last_used` is enough for fame v1 and matches the existing upsert
-  idiom. Revisit if windowed stats are wanted.
-- **Stable note-ID in frontmatter to survive renames.** Rejected: G3.
-- **Ticking from bare `vagus search`.** Rejected: retrieval is not usage; only the tier-2 judge
-  knows what was presented (G19).
-- **Counter table `ticks` in meta.db, no FK (chosen).**
+- **Frontmatter:** rejected by G3 and because it would create iCloud churn.
+- **A separate sidecar DB:** rejected because it adds a store and prevents one transaction.
+- **Stable IDs in frontmatter:** rejected by G3; normalized vault-relative paths are sufficient.
+- **Ticking from bare search:** rejected; retrieval is not usage. Only the tier-2 judge knows what it
+  presented (G19).
+- **Counter-only table:** selected originally; minimal, but insufficient for rank diagnostics.
+- **Events with path/query/two ranks:** rejected; capped tails have no rerank rank and ranks are
+  ambiguous without complete pipeline and corpus identity.
+- **Versioned run + selected-event rows in `meta.db`:** selected by the amendment.
 
 ## Decision
 
-meta.db now holds **two data classes**: (a) derived cache (`files`/`chunks`/`meta`/`expansion_cache`
-— rebuildable, G2) and (b) **local user data** (`ticks` — NOT rebuildable, excluded from every wipe
-path).
+`meta.db` has two data classes:
 
-- **No FK to `files`**: `foreign_keys=ON` + `ON DELETE CASCADE` would cascade-wipe ticks on every
-  reindex (`clear_all` deletes all `files` rows) and on `delete_file()`.
-- **`clear_all` never touches `ticks`** — ticks survive `vagus reindex` and the automatic
-  CHUNK_VERSION-mismatch reindex (same wipe path).
-- Keyed by **vault-relative path**; `vagus file` re-keys with a merge-on-conflict in the same
-  operation, **fail-soft** (a re-key failure warns and never fails the filing). Re-keying to the
-  same path is a guarded no-op (re-filing a note into its current folder must not touch its ticks),
-  and alias spellings of absolute paths (the vault symlink's real target, `/tmp` -> `/private/tmp`)
-  are canonicalized before keying so they hit the same row as the plain spelling.
-- Deletes and external renames (Finder/Obsidian = delete+add to the indexer) **orphan** rows:
-  kept, hidden by fame's default JOIN, shown by `--all`, counted by `doctor`. No rename-detection
-  heuristics — accepted limitation.
-- **Recording is unconditional** — never gate user data on the cache (the `files` table is
-  transiently empty mid-reindex); unknown paths get a stderr notice only.
-- **Skill-channel-only writes** (tier 2): only the `/search` skill ticks; bare `vagus search`
-  (tier 0/1) never writes — consistent with G19 channel selection.
-- Stable `--json` on both commands (G9a).
-- Counts measure **presentations**, not distinct queries or user approval — repeated searches
-  inflate; accepted and named.
-- Deferred (not in v1): `--since` windowing (needs an event log), untick/reset, manual
-  `tick --move`, surfacing tick counts in search Hits.
+1. **Derived cache:** `files`, `chunks`, `meta`, and `expansion_cache`, plus Tantivy/usearch.
+2. **Local user data:** `ticks`, `tick_runs`, and `tick_events`.
+
+Full, incremental, windowed, and chunk-version reindex preserve all local-user-data tables. File
+moves re-key event paths with counters. External moves can orphan both; fame/rank reports hide
+missing paths by default and doctor reports counter/event orphans. None enters iCloud.
+
+### Counter contract
+
+`ticks` remains keyed by normalized vault-relative Markdown path with no FK to `files`. Unknown but
+valid paths warn and still record. Repeated presentation increments repeatedly; a tick is neither a
+distinct query nor user approval. `vagus file` merges conflicting destination counters atomically.
+
+### Explicit search instrumentation
+
+Default `vagus search --json` remains the ordinary byte-compatible Hit array; internal rank fields
+are never serialized there. Only this fixed note-level standard-hybrid path may emit schema-1
+`{run,hits}`:
+
+```text
+--json --full --rerank --exact --tick-provenance
+```
+
+Smart, BM25/vector-only, chunk, metadata-filtered, score-floor, and relevance-floor variants are
+rejected. CWD scope remains allowed but gets an opaque SHA-256 policy identity (raw words are not
+stored), preventing unlike exclusion sets from sharing a diagnostic group.
+
+A run records executable version and SHA-256; corpus SHA-256 and indexed counts; embed/chunk/tantivy
+identities; RRF/candidate-pool and exact-backend policies; reranker model and tokenizer-context policy;
+requested source/fused depths, actual candidate pool/cap; limit/returned counts; result/scope policies;
+and index-refresh request/outcome.
+Search fingerprints corpus/index metadata before and after retrieval and refuses mixed snapshots. A
+self-verifying `pipeline_id` hashes effective configuration, index counts, and actual pool/cap; corpus
+identity stays separate.
+
+Each wrapped Hit records:
+
+- `event_id`: SHA-256 binding this path and complete rank tuple to the run/pipeline/corpus;
+- `fusion_rank`: best pre-rerank note rank, folded across sibling chunks;
+- source `bm25_rank` / `cosine_rank` when present;
+- `rerank_rank` only if the candidate was actually scored inside the cap;
+- `final_rank` after rerank, note dedup, scope, and truncation;
+- explicit `rerank_scored` state.
+
+Scored means `fusion_rank <= cap` and requires a valid rerank rank. Unscored means
+`fusion_rank > cap` and forbids one. An agent may cite an unscored tail hit, but it cannot be called a
+reranker rescue.
+
+### Atomic writes and privacy
+
+The skill copies the run plus only cited `{path,provenance}` pairs to
+`vagus tick --events <JSON>`. Strict, bounded input is normalized and checked for path-bound event
+IDs, duplicate paths, positive/in-range/unique ranks, pipeline identity, and cap consistency. One
+SQLite transaction inserts
+the run, increments all selected counters, inserts all events, and commits all or rolls back all.
+Event failure can never inflate counters.
+
+Positional paths remain supported as counter-only input. Event paths and positional paths deduplicate
+within one invocation. Query text is omitted by default; storing it requires both `--query` and the
+separate `--store-query` opt-in, with size bounds. Bodies, snippets, and agent explanations are never
+stored. Payloads and queries are bounded before parsing/writing. `vagus ticks` groups rank summaries by
+`(path,pipeline_id,corpus_sha256)` and always labels their selection bias; `--all` includes orphans
+explicitly.
 
 ## Consequences
 
-- Deleting meta.db is no longer a lossless reset — doctor/docs must never suggest it.
-- Ticks sit outside the G5 three-store hash-diff (user data, not derived); `doctor` reports
-  orphans informationally, never auto-deletes.
-- Builtin `tick`/`fame` shadow any same-named `vagus-tick`/`vagus-fame` plugins.
-- Skill compliance is probabilistic — undercounting is a soft failure.
-- Users must re-run `vagus skills install` after upgrading to get the ticking skill.
+- **Positive:** useful-note popularity survives every index rebuild; default search JSON and ranking
+  are unchanged; exact pipeline/corpus groups support honest descriptive diagnostics; scored-prefix
+  versus unscored-tail observations are explicit; counter and event updates cannot diverge.
+- **Negative:** `meta.db` is no longer wholly disposable. Backup/recovery must preserve three tables.
+  Paths can orphan after external moves. Events add local storage and selected-path history.
+- **Boundary:** provenance does not establish recall, relevance calibration, causal model quality, or
+  universal thresholds. Ranking changes still require ADR 0024/0025 evidence gates.

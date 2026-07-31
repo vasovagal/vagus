@@ -13,7 +13,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -22,7 +21,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::scope::Scope;
 use crate::search::{self, Mode};
-use crate::util::sha256_hex;
+use crate::util::{corpus_fingerprint, executable_fingerprint, sha256_hex};
 use crate::vector;
 
 mod gate;
@@ -454,34 +453,6 @@ fn aggregate(reports: &[QueryReport]) -> Aggregate {
     }
 }
 
-fn corpus_fingerprint(files: &HashMap<String, (f64, String)>) -> String {
-    let mut rows: Vec<(&String, &String)> =
-        files.iter().map(|(path, (_, hash))| (path, hash)).collect();
-    rows.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    let mut bytes = Vec::new();
-    for (path, hash) in rows {
-        bytes.extend_from_slice(path.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(hash.as_bytes());
-        bytes.push(b'\n');
-    }
-    sha256_hex(&bytes)
-}
-
-fn binary_fingerprint() -> Result<String> {
-    static HASH: OnceLock<String> = OnceLock::new();
-    if let Some(hash) = HASH.get() {
-        return Ok(hash.clone());
-    }
-    let executable =
-        std::env::current_exe().context("resolving current executable for eval provenance")?;
-    let bytes = std::fs::read(&executable)
-        .with_context(|| format!("hashing eval executable {}", executable.display()))?;
-    let hash = sha256_hex(&bytes);
-    let _ = HASH.set(hash.clone());
-    Ok(hash)
-}
-
 fn ensure_index_unchanged(initial: &IndexSnapshot, final_snapshot: &IndexSnapshot) -> Result<()> {
     if initial != final_snapshot {
         bail!("index changed during eval; discard the run and retry against a fixed index");
@@ -576,14 +547,14 @@ fn evaluate(
     let initial_snapshot = index_snapshot(&db, &files)?;
     let provenance = Provenance {
         vagus_version: env!("CARGO_PKG_VERSION").to_owned(),
-        binary_sha256: binary_fingerprint()?,
+        binary_sha256: executable_fingerprint()?,
         labels_sha256: sha256_hex(label_content.as_bytes()),
         index: initial_snapshot.clone(),
     };
 
     let mut reports = Vec::with_capacity(labels.len());
     for label in &labels {
-        let (hits, _elided) = search::query(
+        let (hits, _elided, _query_meta) = search::query(
             cfg,
             &label.query,
             mode,

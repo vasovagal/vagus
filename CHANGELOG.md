@@ -11,6 +11,16 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
+- **Atomic cited-note rank provenance.** The bundled search skill's fixed exact+reranked full-body
+  path can now emit an explicit `{run,hits}` contract without changing default search JSON or ranking.
+  Runs self-verify executable, pipeline, model, corpus, cap/context, scope, and result identity;
+  path-bound event IDs reject mismatched rank/path copies, and hits distinguish real scored-prefix rerank ranks from
+  the untouched RRF tail. `vagus tick --events`
+  validates bounded cited-note payloads and writes the run, all events, and fame counters in one
+  transaction; query storage is separately opt-in and bodies/snippets are never stored. `vagus ticks`
+  reports path medians grouped by pipeline+corpus with an explicit agent-selection-bias caveat, while
+  status/doctor expose counts/orphans. All three local-user-data tables survive every reindex and
+  follow `vagus file` moves. Reinstall Claude/pi skills after upgrading. (ADR 0021/G9f/G25)
 - **Honest opt-in semantic relevance.** `search --relevance` reports finite original-query
   EmbeddingGemma cosine clamped to `[0,1]` under a model/chunk-named policy, explicitly as a heuristic
   rather than confidence or probability. `--min-relevance 0..=1` applies an order-preserving,
