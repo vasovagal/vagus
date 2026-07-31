@@ -25,7 +25,8 @@ coding harness (Claude Code and pi).
   while radius 0 remains the exact center-only default and returned bodies stay unchanged (ADR 0015).
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
-  force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes.
+  force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;
+  forced usearch mutations persist, and incomplete embedding rows trigger implicit per-file repair.
 - **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the

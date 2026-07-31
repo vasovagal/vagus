@@ -32,7 +32,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    docs (`writer.delete_term(path)` → `commit()`), its SQLite vector rows (no FK/triggers), **and** its
    usearch vectors (`remove(key_for(id))` — ADR 0019). Same `chunk_id`/`vec_key` keys drive all three.
    The f32 BLOBs are authoritative; the `.usearch` sidecar is a rebuildable derived cache (missing/stale
-   ⇒ rebuilt from the BLOBs, no re-embed).
+   ⇒ rebuilt from the BLOBs, no re-embed). NULL chunk embeddings force a full per-file retry despite
+   matching mtime/hash, and forced-refresh vector mutations must be saved.
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —
    always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or
    `FASTEMBED_CACHE_DIR`). Plain `vagus doctor` is filesystem-presence-only and must never instantiate
@@ -91,8 +92,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
     `design/README.md` ADR index, `design/guardrails.md`, and this file **in sync, same change**.
 16. **Windowed reindex is forced incremental repair, not a partial index** (ADR 0022/G26). `vagus
     reindex --since <duration>` snapshots every Markdown path + filesystem mtime first, force-refreshes
-    selected existing notes across SQLite/Tantivy/usearch even when cached metadata agrees, and still
-    reconciles all new/deleted files. It preserves older indexed notes and all G25 user data; plain `reindex` is
+    selected existing notes across SQLite/Tantivy/usearch even when cached metadata agrees, persists
+    those usearch mutations, and still reconciles all new/deleted files. It preserves older indexed
+    notes and all G25 user data; plain `reindex` is
     the full rebuild, and a G4 identity mismatch still requires one (chunk-version auto-reindex may
     upgrade the windowed run; a direct embedding mismatch refuses it).
 17. **Plain hybrid note search treats `--limit` as a context ceiling** (ADR 0023/G9d). A guarded

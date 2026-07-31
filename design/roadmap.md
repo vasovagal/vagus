@@ -30,7 +30,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | BM25 + cosine + RRF (tier 0) | core `vagus` | exact <10k; **usearch HNSW** ≥10k; all-mode `--exact` oracle | shipped (ADRs 0003/0019) |
 | Embedder | core `vagus` | fastembed/ort — **EmbeddingGemma-300M** (768-dim, 2048 ctx) | shipped (ADR 0006) |
 | Token-budgeted chunking + code atomicity | core `vagus` | dep-free (`chars/3.5`) | shipped (ADR 0013) |
-| Mtime-windowed forced reindex (`reindex --since`) | core `vagus` | full-vault snapshot + G5 replacement path | shipped (ADR 0022) |
+| Mtime-windowed forced reindex (`reindex --since`) | core `vagus` | full-vault snapshot + persisted G5 replacement + incomplete-row retry | shipped (ADR 0022) |
 | Fail-closed vault onboarding + network-free doctor | core `vagus` | alias-aware paths; explicit model-fetch consent | shipped (ADRs 0004/0006/0015) |
 | Cross-encoder reranker (`--rerank`, optional `--rerank-context 1|2`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en**; exact pair-token budgeting | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
