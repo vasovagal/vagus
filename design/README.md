@@ -74,3 +74,5 @@ silently breaking an invariant.
   experiments require a fixed held-out paired `eval-gate`, and default promotion needs another ADR.
 - `0026-bounded-semantic-relevance.md` — opt-in finite original-query cosine clamped to `[0,1]` as a
   named heuristic; post-truncation floor with honest unknowns; adds G9e and aligns search/rerank/eval.
+- `0027-producer-frontmatter-metadata.md` — safe optional producer metadata on `add-note`: validated JSON
+  becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.

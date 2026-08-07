@@ -21,10 +21,13 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `ticks`/`tick_runs`/`tick_events` are local user data, not derived caches — see G25
   ([ADR 0021](./adr/0021-usage-ticks.md)).
 - **G3 — Never auto-edit the user's note.** Frontmatter is optional; a frontmatter-free note must index
-  correctly (title ← first `# heading` or filename). Frontmatter is written/enriched only during an
-  explicit, user-approved filing step. ([ADR 0005](./adr/0005-assisted-filing.md)) A bare note must
-  also stay **filterable by `search --since`**: when `created` frontmatter is absent/unparseable, the
-  filter falls back to the file's **filesystem mtime**. ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
+  correctly (title ← first `# heading` or filename). Frontmatter is written only by an explicit capture or
+  user-approved filing action: `add-note` may include validated, non-reserved producer metadata in its
+  initial write, while `file` enriches Vagus-owned filing fields. Index/search never edits notes.
+  ([ADR 0005](./adr/0005-assisted-filing.md), [ADR 0027](./adr/0027-producer-frontmatter-metadata.md))
+  A bare note must also stay **filterable by `search --since`**: when `created` frontmatter is
+  absent/unparseable, the filter falls back to the file's **filesystem mtime**.
+  ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G25 — Ticks and presentation provenance are local user data in meta.db.** `ticks`, `tick_runs`,
   and `tick_events` never enter the vault/frontmatter and survive `clear_all`/every reindex/file
   deletion; event paths re-key with counters on `vagus file`. Default search output cannot expose

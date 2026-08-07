@@ -37,7 +37,8 @@ straight from a Claude Code or pi session).
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the search index is
   a throwaway cache (local usage counters/provenance are the explicit exception).
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  the create-note skill from Claude Code or pi.
+  the create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
+  provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields.
 - **Assisted, never automatic filing.** The process-inbox skill proposes a PARA home per note; you
   approve.
 - **Claude Code and pi skills built in.** Create-note, search, and process-inbox skills ship
@@ -156,6 +157,7 @@ vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankin
 vagus eval labels.jsonl --exact --rerank --rerank-context 1 --json  # evaluate that input policy
 vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
+vagus add-note "Generated" --frontmatter-json '{"producer":{"version":"1"}}'  # safe metadata
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # network-free health/cache-presence check

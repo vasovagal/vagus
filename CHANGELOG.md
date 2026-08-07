@@ -9,6 +9,14 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Safe generated-note provenance.** `vagus add-note --frontmatter-json <OBJECT>` adds validated producer
+  metadata without accepting raw YAML or allowing overrides of Vagus-owned fields. Integrations can pass the
+  same object through the child-only `VAGUS_ADD_NOTE_FRONTMATTER_JSON` compatibility channel, so an older
+  Vagus still creates the note during staggered upgrades. Metadata remains optional, Obsidian-compatible,
+  and excluded from indexed note content. (ADR 0027/G3)
+
 ## [0.11.0] — 2026-07-31
 
 ### Added

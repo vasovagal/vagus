@@ -22,7 +22,9 @@ canonical invariant list and is **binding** — the summary below must stay in s
    preserves them and they never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
-   or filename). Frontmatter is only added/enriched during an explicit, approved filing step.
+   or filename). Frontmatter is written only by explicit capture/filing actions: `add-note` may include
+   validated non-reserved producer metadata in its initial write (ADR 0027), and approved `file` enriches
+   Vagus-owned fields. Index/search never edits notes.
 4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `tantivy_version` in the
    `meta` table. On any mismatch, refuse incremental indexing and require `vagus reindex`. Never mix
    vectors from different models/dims — it silently corrupts ranking. Current identity:
