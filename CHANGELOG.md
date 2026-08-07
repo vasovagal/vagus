@@ -9,6 +9,16 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Safe generated-note provenance.** `vagus add-note --frontmatter-json <OBJECT>` adds validated producer
+  metadata without accepting raw YAML or allowing overrides of Vagus-owned fields. Integrations can pass the
+  same object through the child-only `VAGUS_ADD_NOTE_FRONTMATTER_JSON` compatibility channel, so an older
+  Vagus still creates the note during staggered upgrades. Valid non-owned JSON fields are projected into
+  dedicated, kind-separated BM25 + semantic chunks, making model/version/config provenance searchable
+  without indexing Vagus lifecycle fields or displacing body rerank neighbors. Chunk version 6 performs
+  one automatic full re-embed on upgrade. (ADRs 0027/0028; G3/G9g)
+
 ## [0.11.0] — 2026-07-31
 
 ### Added

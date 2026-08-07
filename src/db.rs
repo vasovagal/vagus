@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS chunks(
   id           TEXT PRIMARY KEY,                                 -- sha256(path + '#' + ord)
   path         TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
   ord          INTEGER NOT NULL,
+  kind         INTEGER NOT NULL,                                -- 0=note content, 1=searchable producer metadata. ADR 0028
   heading_path TEXT NOT NULL,
   body         TEXT NOT NULL,
   embedding    BLOB,                                             -- f32 LE, len = dims*4; NULL until embedded
@@ -167,7 +168,7 @@ impl Db {
     /// Idempotent additive migrations for DBs created before a column existed. The CHUNK_VERSION bump
     /// clears *rows* (G4 auto-reindex) but never alters the table shape, so a pre-existing `chunks`
     /// table needs its new columns added here. `CREATE TABLE IF NOT EXISTS` covers fresh DBs.
-    /// (ADR 0017: `created_at` + `source` for the `--since` / `--source` filters.)
+    /// (ADR 0017: `created_at` + `source` filters; ADR 0028: kind-separated producer metadata.)
     fn migrate(conn: &Connection) -> Result<()> {
         let have: std::collections::HashSet<String> = conn
             .prepare("PRAGMA table_info(chunks)")?
@@ -178,6 +179,9 @@ impl Db {
         }
         if !have.contains("source") {
             conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT;")?;
+        }
+        if !have.contains("kind") {
+            conn.execute_batch("ALTER TABLE chunks ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;")?;
         }
         // `vec_key` (ADR 0019): the u64 usearch key for each chunk, derived from its id, with an index
         // for the reverse `key -> id` lookup at search time. Additive — no CHUNK_VERSION bump / re-embed.
@@ -354,12 +358,13 @@ impl Db {
         radius: usize,
     ) -> Result<Vec<(usize, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "WITH center(ord) AS (
-                 SELECT ord FROM chunks WHERE path=?1 AND id=?2
+            "WITH center(ord,kind) AS (
+                 SELECT ord,kind FROM chunks WHERE path=?1 AND id=?2
              )
              SELECT c.ord, c.id, c.body
              FROM chunks c, center
-             WHERE c.path=?1 AND c.ord BETWEEN center.ord - ?3 AND center.ord + ?3
+             WHERE c.path=?1 AND c.kind=center.kind
+               AND c.ord BETWEEN center.ord - ?3 AND center.ord + ?3
              ORDER BY c.ord",
         )?;
         let rows = stmt.query_map(params![path, center_id, radius as i64], |r| {
@@ -391,8 +396,9 @@ impl Db {
 
     /// Replace all chunks for a file (delete-then-insert). Embeddings are left NULL here; the embed
     /// step fills them. `created_at` (unix secs) and `source` are **note-level** values (parsed from
-    /// frontmatter, with a mtime fallback for `created_at` — G3/ADR 0017) attached to every chunk of
-    /// the note. Returns the prior chunk ids (for tantivy cleanup, guardrail G5).
+    /// frontmatter, with a mtime fallback for `created_at` — G3/ADR 0017) attached to every chunk;
+    /// `kind` keeps note content and producer-metadata rerank neighborhoods separate (ADR 0028).
+    /// Returns the prior chunk ids (for tantivy cleanup, guardrail G5).
     pub fn replace_chunks(
         &self,
         path: &str,
@@ -405,8 +411,8 @@ impl Db {
         tx.execute("DELETE FROM chunks WHERE path=?1", params![path])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
-                 VALUES(?1,?2,?3,?4,?5,NULL,?6,?7,?8)",
+                "INSERT INTO chunks(id,path,ord,kind,heading_path,body,embedding,created_at,source,vec_key)
+                 VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9)",
             )?;
             for c in chunks {
                 // `vec_key` is the usearch key derived from the id (ADR 0019); stored as i64 (SQLite has
@@ -415,6 +421,7 @@ impl Db {
                     c.id,
                     path,
                     c.ord as i64,
+                    c.kind.as_i64(),
                     c.heading_path,
                     c.body,
                     created_at,
@@ -827,9 +834,39 @@ mod tests {
         Chunk {
             id: crate::util::sha256_hex(format!("{path}#{ord}").as_bytes()),
             ord,
+            kind: crate::chunk::ChunkKind::Content,
             heading_path: String::new(),
             body: "body".into(),
         }
+    }
+
+    #[test]
+    fn migration_marks_existing_chunks_as_content() {
+        let dir = TempDir::new("chunk-kind-migration");
+        let path = dir.path().join("meta.db");
+        let id = crate::util::sha256_hex(b"old chunk");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE files(path TEXT PRIMARY KEY,mtime REAL NOT NULL,sha256 TEXT NOT NULL,indexed_at INTEGER NOT NULL);
+                 CREATE TABLE chunks(id TEXT PRIMARY KEY,path TEXT NOT NULL,ord INTEGER NOT NULL,heading_path TEXT NOT NULL,body TEXT NOT NULL,embedding BLOB);
+                 INSERT INTO files VALUES('old.md',1.0,'sha',1);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks VALUES(?1,'old.md',0,'','body',NULL)",
+                params![id],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let kind: i64 = db
+            .conn
+            .query_row("SELECT kind FROM chunks WHERE id=?1", params![id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, crate::chunk::ChunkKind::Content.as_i64());
     }
 
     #[test]
@@ -840,6 +877,12 @@ mod tests {
         let mut chunks: Vec<Chunk> = (0..6).map(|ord| chunk(path, ord)).collect();
         for chunk in &mut chunks {
             chunk.body = format!("body {}", chunk.ord);
+        }
+        for ord in 6..8 {
+            let mut metadata = chunk(path, ord);
+            metadata.kind = crate::chunk::ChunkKind::ProducerMetadata;
+            metadata.body = format!("metadata {ord}");
+            chunks.push(metadata);
         }
         db.replace_chunks(path, &chunks, None, None).unwrap();
 
@@ -854,6 +897,21 @@ mod tests {
         assert_eq!(
             edge.iter().map(|(ord, _, _)| *ord).collect::<Vec<_>>(),
             [0, 1, 2]
+        );
+        // The adjacent producer metadata cannot displace content context, and metadata gets only
+        // metadata neighbors when it is itself the matched center (ADR 0028).
+        let content_edge = db.chunk_window(path, &chunks[5].id, 2).unwrap();
+        assert_eq!(
+            content_edge
+                .iter()
+                .map(|(ord, _, _)| *ord)
+                .collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        let metadata = db.chunk_window(path, &chunks[6].id, 2).unwrap();
+        assert_eq!(
+            metadata.iter().map(|(ord, _, _)| *ord).collect::<Vec<_>>(),
+            [6, 7]
         );
         assert!(db.chunk_window(path, "missing", 2).unwrap().is_empty());
     }

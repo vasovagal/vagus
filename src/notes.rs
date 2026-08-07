@@ -13,9 +13,16 @@ use chrono::Local;
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::frontmatter::{is_vagus_owned, valid_producer_key};
 use crate::index;
 use crate::scope::Scope;
 use crate::search::{self, Mode};
+
+/// Child-process compatibility channel for integrations that need producer-owned frontmatter. A current
+/// Vagus consumes it; older binaries harmlessly ignore it, unlike an unknown command-line flag.
+const ADD_NOTE_FRONTMATTER_ENV: &str = "VAGUS_ADD_NOTE_FRONTMATTER_JSON";
+/// Keep one integration from turning the small note header into an unbounded transport.
+const MAX_EXTRA_FRONTMATTER_BYTES: usize = 64 * 1024;
 
 /// Map a PARA keyword (for `add-note --para`) to its folder.
 fn para_folder(para: &str) -> Result<&'static str> {
@@ -139,16 +146,71 @@ fn upsert(lines: &mut Vec<String>, key: &str, val: &str) {
 
 // --- add-note ---------------------------------------------------------------
 
+/// Render an optional JSON object as frontmatter lines. Each value stays JSON-encoded: JSON scalars,
+/// arrays, and objects are valid YAML flow values, while quoting/escaping prevents a producer value from
+/// injecting another YAML line. The top-level key grammar is deliberately smaller than YAML's.
+fn render_extra_frontmatter(json: Option<&str>) -> Result<String> {
+    let Some(json) = json.map(str::trim).filter(|json| !json.is_empty()) else {
+        return Ok(String::new());
+    };
+    if json.len() > MAX_EXTRA_FRONTMATTER_BYTES {
+        bail!(
+            "--frontmatter-json is too large ({} bytes; maximum {})",
+            json.len(),
+            MAX_EXTRA_FRONTMATTER_BYTES
+        );
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("parsing --frontmatter-json")?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("--frontmatter-json must be a JSON object"))?;
+
+    let mut rendered = String::new();
+    for (key, value) in object {
+        if !valid_producer_key(key) {
+            bail!(
+                "invalid frontmatter key {key:?}; use ASCII letters, digits, `_`, or `-`, starting with a letter or `_`"
+            );
+        }
+        if is_vagus_owned(key) {
+            bail!("frontmatter key {key:?} is owned by vagus and cannot be overridden");
+        }
+        rendered.push_str(key);
+        rendered.push_str(": ");
+        rendered.push_str(&serde_json::to_string(value)?);
+        rendered.push('\n');
+    }
+    if rendered.len() > MAX_EXTRA_FRONTMATTER_BYTES {
+        bail!(
+            "rendered --frontmatter-json is too large ({} bytes; maximum {})",
+            rendered.len(),
+            MAX_EXTRA_FRONTMATTER_BYTES
+        );
+    }
+    Ok(rendered)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn add_note(
     cfg: &Config,
     title: &str,
     para: &str,
     source: Option<&str>,
+    frontmatter_json: Option<&str>,
     print_path: bool,
     edit: bool,
     no_edit: bool,
 ) -> Result<()> {
+    // CLI input wins over the compatibility environment. Validate before creating a directory or note, so
+    // malformed producer metadata has no filesystem side effect.
+    let env_frontmatter = if frontmatter_json.is_none() {
+        std::env::var(ADD_NOTE_FRONTMATTER_ENV).ok()
+    } else {
+        None
+    };
+    let extra_frontmatter =
+        render_extra_frontmatter(frontmatter_json.or(env_frontmatter.as_deref()))?;
     let folder = para_folder(para)?;
     let dir = cfg.vault.join(folder);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -171,6 +233,7 @@ pub fn add_note(
     if let Some(src) = source {
         fm.push_str(&format!("source: {src}\n"));
     }
+    fm.push_str(&extra_frontmatter);
     fm.push_str("---\n\n");
     let content = format!("{fm}# {title}\n\n{}\n", body.trim());
     fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
@@ -605,6 +668,60 @@ fn existing_para_folders(cfg: &Config) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::util::testdir::TempDir;
+
+    #[test]
+    fn producer_frontmatter_is_yaml_safe_and_structured() {
+        let rendered = render_extra_frontmatter(Some(
+            r#"{"corti":{"version":"0.12.0","mode":"live","nested":{"threshold":0.5}},"external-id":"line 1\nstatus: hacked"}"#,
+        ))
+        .unwrap();
+        assert!(
+            rendered.contains(
+                r#"corti: {"mode":"live","nested":{"threshold":0.5},"version":"0.12.0"}"#
+            )
+        );
+        assert!(rendered.contains(r#"external-id: "line 1\nstatus: hacked""#));
+        assert_eq!(
+            rendered.lines().count(),
+            2,
+            "a value cannot inject YAML lines"
+        );
+    }
+
+    #[test]
+    fn rendered_producer_frontmatter_becomes_searchable_metadata() {
+        let rendered = render_extra_frontmatter(Some(
+            r#"{"corti":{"models":{"asr":{"id":"nvidia/parakeet-tdt-0.6b-v3"}}}}"#,
+        ))
+        .unwrap();
+        let note = format!("---\n{rendered}---\n\n# Transcript\n\nspoken words\n");
+        let chunks = crate::chunk::chunk_markdown("transcript.md", &note);
+        let metadata = chunks
+            .iter()
+            .find(|chunk| chunk.kind == crate::chunk::ChunkKind::ProducerMetadata)
+            .unwrap();
+        assert_eq!(metadata.heading_path, "Frontmatter > corti");
+        assert!(metadata.body.contains("parakeet-tdt-0.6b-v3"));
+    }
+
+    #[test]
+    fn producer_frontmatter_must_be_an_object_with_safe_nonreserved_keys() {
+        for invalid in [
+            r#"["not", "an", "object"]"#,
+            r#"{"status":"active"}"#,
+            r#"{"created":"sometime"}"#,
+            r#"{"bad:key":1}"#,
+            r#"{"9bad":1}"#,
+            "{not json}",
+        ] {
+            assert!(
+                render_extra_frontmatter(Some(invalid)).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert_eq!(render_extra_frontmatter(None).unwrap(), "");
+        assert_eq!(render_extra_frontmatter(Some("{}")).unwrap(), "");
+    }
 
     // Alias spellings of absolute paths (vault symlink's real target, /tmp -> /private/tmp) must
     // key identically to the plain spelling — both when cfg.vault is the symlink (the ~/brain

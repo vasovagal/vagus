@@ -464,7 +464,7 @@ mod tests {
             embedded_chunks: 30,
             embed_model: "google/embeddinggemma-300m".into(),
             embed_dims: 768,
-            chunk_version: "5".into(),
+            chunk_version: crate::config::CHUNK_VERSION.into(),
             tantivy_version: "0.26".into(),
             fusion_policy: crate::search::FUSION_POLICY.into(),
             fusion_candidate_pool: FUSION_CANDIDATE_POOL.into(),

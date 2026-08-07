@@ -22,7 +22,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
    preserves them and they never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
-   or filename). Frontmatter is only added/enriched during an explicit, approved filing step.
+   or filename). Frontmatter is written only by explicit capture/filing actions: `add-note` may include
+   validated non-reserved producer metadata in its initial write (ADR 0027), and approved `file` enriches
+   Vagus-owned fields. Index/search never edits notes; indexing may derive searchable, kind-separated
+   chunks from valid non-owned producer JSON while lifecycle frontmatter stays out of chunk text
+   (ADR 0028).
 4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `tantivy_version` in the
    `meta` table. On any mismatch, refuse incremental indexing and require `vagus reindex`. Never mix
    vectors from different models/dims — it silently corrupts ranking. Current identity:
@@ -80,8 +84,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
     provenance and counters for cited notes without query content. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
-    (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Re-derive the budget if the
-    embedder changes; roll via `CHUNK_VERSION`.
+    (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Searchable producer JSON
+    follows the same budget in a separate chunk kind, including whitespace-free hard splits, and
+    cannot occupy content rerank-neighbor slots (ADR 0028/G9g). Re-derive the budget if the embedder
+    changes; roll via `CHUNK_VERSION`.
 14. **Multi-agent isolation** (ADR 0018/G21–G23). Parallel/swarm work runs in its own git worktree
     (`.claude/worktrees/<name>` or org-level `.vagus-worktrees/`, branched fresh from `origin/main`) —
     never dueling agents in one checkout. **No direct commits to `main`** except releases — a version

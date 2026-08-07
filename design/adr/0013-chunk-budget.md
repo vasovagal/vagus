@@ -26,13 +26,19 @@ derived from the current embedder:
   whole as its own chunk (BM25 indexes it fully; the embedding sees its first-window prefix — an
   accepted trade to keep code findable and intact). Without this, the old "code blocks stay whole"
   guarantee would silently become a lie.
-- Bump `CHUNK_VERSION` on any change here (force a one-time reindex; G4). v3 = this sub-splitting.
+- **Producer metadata follows the same budget.** [ADR 0028](./0028-searchable-producer-metadata.md)
+  appends valid JSON projections as a separate chunk kind. Whitespace-free values are character-split
+  rather than allowed to exceed the embedding window, and kind-aware rerank neighborhoods keep those
+  chunks from consuming body-context slots.
+- Bump `CHUNK_VERSION` on any change here (force a one-time reindex; G4). v3 = this sub-splitting;
+  v6 = kind-separated searchable producer metadata.
 
 ## Consequences
 
 - Recorded as guardrail **G20**. If the embedder changes, **re-derive the budget** from its context
   window (the rule is fixed; 900/128 is EmbeddingGemma's instantiation).
 - Long notes now yield multiple chunks (per-note chunk counts rise ~20% on long notes); `chunk_id`
-  stays `sha256(path + "#" + ord)` with dense `ord`, so ids remain stable for a stable file.
+  stays `sha256(path + "#" + ord)` with dense `ord`, so ids remain stable for a stable file. ADR 0028
+  appends metadata after content, preserving existing content ordinals when metadata is added.
 - Overlap introduces intentional duplication across sub-chunks (better recall at a seam); negligible
   at personal scale.

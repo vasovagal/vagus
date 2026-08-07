@@ -1,7 +1,7 @@
 # ADR 0026 — Opt-in bounded semantic relevance
 
-- **Status:** Accepted (2026-07-30); adds G9e and clarifies/amends ADRs 0003, 0012, 0015, 0023,
-  and 0024.
+- **Status:** Accepted (2026-07-30); amended 2026-08-07 for chunk version 6; adds G9e and
+  clarifies/amends ADRs 0003, 0012, 0015, 0023, and 0024.
 
 ## Context
 
@@ -36,18 +36,21 @@ only the capped prefix.
 
 ## Decision
 
-Add an opt-in relevance policy named
-`embeddinggemma300m_chunk5_cosine_clamped_v1`:
+Add an opt-in relevance policy whose identity tracks the chunk corpus. The current name is
+`embeddinggemma300m_chunk6_cosine_clamped_v1` (the original name was identical with `chunk5`):
 
 ```text
 relevance = clamp(original_query_cosine, 0, 1), if cosine is finite
 relevance = unknown,                         otherwise
 ```
 
-The name pins the interpretation to the current EmbeddingGemma-300M identity and chunk version 5.
+The name pins the interpretation to the current EmbeddingGemma-300M identity and chunk version 6.
 Clamping makes the public field bounded and JSON-safe; it does not claim that cosine is naturally a
-probability. A future model/chunk identity must either retain this policy only with fresh evidence or
-introduce a newly named policy.
+probability. [ADR 0028](./0028-searchable-producer-metadata.md) changed the corpus by adding metadata
+vectors, so the policy name advanced from chunk 5 even though the transform stayed v1. The chunk-5
+measurements below remain historical evidence for body chunks, not calibration for the new metadata
+chunks or their changed candidate pool. A future model/chunk identity must likewise receive a newly
+named policy and fresh evidence before making threshold claims.
 
 ### Reporting contract
 
@@ -80,8 +83,9 @@ introduce a newly named policy.
 5. Any explicit relevance floor disables ADR 0023 adaptive tidy so two independent tail policies do
    not stack. `--exhaustive` remains useful for disabling tidy but does not bypass an explicit floor.
 
-The floor is not a default and `0.30` is not a globally calibrated constant. It is an evidence-backed
-starting point for the current private corpus only.
+The floor is not a default and `0.30` is not a globally calibrated constant. It was an evidence-backed
+starting point for the chunk-5 private corpus; chunk 6 retains it only as user-owned opt-in and makes no
+claim that the old threshold is validated for producer-metadata chunks.
 
 ### Evaluation contract
 
@@ -94,6 +98,9 @@ provenance and no metric meaning changes, this does not require a schema bump.
 This decision is guardrail **G9e**.
 
 ## Measured evidence
+
+These measurements predate ADR 0028 and use chunk version 5. They justify the original named policy,
+not a threshold claim for chunk 6's added producer-metadata vectors.
 
 All runs used corpus SHA-256
 `5fd75d935c59612709be2b718ed0eadc5cece941197ebdc27559b8c4a3ece98d`
@@ -144,6 +151,7 @@ vaults should inspect their own labeled positives/negatives with `vagus eval --r
   remove a useful lexical-only hit; that fail-closed behavior is explicit and opt-in.
 - Reranker context changes ordering but not the semantic field attached to each hit. Top-score cohort
   diagnostics may therefore change or become undefined as a different hit reaches rank 1.
-- No index schema, embedding, chunk format, model download, network path, daemon, or vault write is
-  introduced.
+- This relevance transform itself introduces no index schema, embedding, chunk-format, model-download,
+  network, daemon, or vault-write change. ADR 0028 independently changes the chunk corpus and therefore
+  advances the policy identity.
 - Default ranking and output remain unchanged; production fusion is still unweighted RRF k=60.

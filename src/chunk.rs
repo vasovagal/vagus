@@ -15,6 +15,7 @@
 
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
+use crate::frontmatter::producer_search_text;
 use crate::util::sha256_hex;
 
 /// Target chunk size in *estimated* tokens, sized well under EmbeddingGemma's 2048-token context
@@ -30,10 +31,26 @@ fn estimate_tokens(s: &str) -> usize {
     ((s.chars().count() as f32) / 3.5).ceil() as usize
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkKind {
+    Content,
+    ProducerMetadata,
+}
+
+impl ChunkKind {
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Self::Content => 0,
+            Self::ProducerMetadata => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub id: String,
     pub ord: usize,
+    pub kind: ChunkKind,
     pub heading_path: String,
     pub body: String,
 }
@@ -56,49 +73,71 @@ fn level_num(l: HeadingLevel) -> usize {
     }
 }
 
-/// Hand-parsed note-level frontmatter values used as indexed search filters (ADR 0017). Only the keys
-/// we filter on are extracted; everything else in the block is ignored (and never indexed as content).
-#[derive(Debug, Default, Clone, PartialEq)]
+/// One non-Vagus top-level field whose compact JSON value is projected into a searchable chunk
+/// (ADR 0028). The original frontmatter remains untouched in the Markdown source of truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducerMetadata {
+    pub key: String,
+    pub search_text: String,
+}
+
+/// Hand-parsed note-level frontmatter used for filters (ADR 0017) and validated producer metadata
+/// search chunks (ADR 0028). Lifecycle fields remain filters only; they never become chunk text.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Frontmatter {
     /// Raw `created` value (e.g. `2026-05-29T18:02`), if present. Parsed to a unix timestamp by the
     /// caller (`index`) so this module stays free of a timezone dependency.
     pub created: Option<String>,
     /// Raw `source` value (provenance), if present. NULL `source` never matches `--source`.
     pub source: Option<String>,
+    /// Non-owned top-level fields with valid compact JSON values, in source order.
+    pub producer_metadata: Vec<ProducerMetadata>,
 }
 
-/// Extract the `created` / `source` keys from a leading YAML frontmatter block. Mirrors
-/// `strip_frontmatter`'s block detection (must be the very first line `---` … closing `---`); a note
-/// without frontmatter (G3) returns all-`None`. Hand-parsed (no YAML dep) — `key: value`, trimmed,
-/// with surrounding single/double quotes stripped from the value.
+/// Extract indexed values from a complete leading YAML frontmatter block. `created` / `source` are
+/// hand-parsed scalar filters; non-Vagus fields are accepted for search only when their one-line value
+/// parses as JSON, matching the safe producer contract from ADR 0027. An absent or unclosed block
+/// returns the default so parsing mirrors `strip_frontmatter` exactly without adding a YAML dependency.
 pub fn parse_frontmatter(text: &str) -> Frontmatter {
-    let mut fm = Frontmatter::default();
+    let mut parsed = Frontmatter::default();
     let mut lines = text.lines();
     if lines.next() != Some("---") {
-        return fm;
+        return parsed;
     }
     for line in lines {
         if line.trim_end() == "---" {
-            break; // end of the frontmatter block
+            return parsed;
         }
         let Some((key, val)) = line.split_once(':') else {
             continue;
         };
         let key = key.trim();
-        let val = val
-            .trim()
-            .trim_matches(|c| c == '"' || c == '\'')
-            .to_string();
-        if val.is_empty() {
+        let raw = val.trim();
+        if raw.is_empty() {
             continue;
         }
         match key {
-            "created" => fm.created.get_or_insert(val),
-            "source" => fm.source.get_or_insert(val),
-            _ => continue,
-        };
+            "created" => {
+                parsed
+                    .created
+                    .get_or_insert_with(|| raw.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+            "source" => {
+                parsed
+                    .source
+                    .get_or_insert_with(|| raw.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+            _ => {
+                if let Some(search_text) = producer_search_text(key, raw) {
+                    parsed.producer_metadata.push(ProducerMetadata {
+                        key: key.to_owned(),
+                        search_text,
+                    });
+                }
+            }
+        }
     }
-    fm
+    Frontmatter::default()
 }
 
 /// Return the note body with a leading YAML frontmatter block (`---` … `---`) removed.
@@ -123,9 +162,14 @@ fn strip_frontmatter(text: &str) -> String {
     text.to_string()
 }
 
-/// Split `text` (the note at vault-relative `path`) into heading-aware, budget-sized chunks.
+/// Split `text` (the note at vault-relative `path`) into heading-aware, budget-sized content chunks,
+/// followed by dedicated chunks for valid producer JSON fields (ADR 0028). Vagus lifecycle
+/// frontmatter remains excluded. Metadata is kept in its own chunk kind so rerank context windows do
+/// not displace neighboring note content.
 pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
-    // Don't index YAML frontmatter (created/status/source/…) as note content.
+    let producer_metadata = parse_frontmatter(text).producer_metadata;
+    // Strip the complete YAML block before ordinary Markdown chunking. Selected producer fields are
+    // reintroduced only through their normalized, bounded searchable projection below.
     let md = strip_frontmatter(text);
 
     // Heading breadcrumb stack of (level, text) for levels 1..=3.
@@ -231,7 +275,13 @@ pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
             if body.is_empty() {
                 continue;
             }
-            push_chunk(&mut chunks, path, heading_path.clone(), body);
+            push_chunk(
+                &mut chunks,
+                path,
+                ChunkKind::Content,
+                heading_path.clone(),
+                body,
+            );
         }
         if chunks.len() > before {
             continue; // section carried real body text
@@ -251,19 +301,51 @@ pub fn chunk_markdown(path: &str, text: &str) -> Vec<Chunk> {
         }
         let leaf = heading_path.rsplit(" > ").next().unwrap_or_default();
         if !leaf.is_empty() {
-            push_chunk(&mut chunks, path, heading_path.clone(), leaf.to_string());
+            push_chunk(
+                &mut chunks,
+                path,
+                ChunkKind::Content,
+                heading_path.clone(),
+                leaf.to_string(),
+            );
         }
     }
+    // Producer metadata comes last, preserving every content chunk's historical ord/id. Each
+    // top-level field is independently budgeted; a large JSON value can therefore span several
+    // metadata chunks without exceeding the embedding target.
+    for metadata in producer_metadata {
+        let heading_path = format!("Frontmatter > {}", metadata.key);
+        for body in pack_section(&[Seg::Prose(metadata.search_text)]) {
+            let body = body.trim().to_owned();
+            if !body.is_empty() {
+                push_chunk(
+                    &mut chunks,
+                    path,
+                    ChunkKind::ProducerMetadata,
+                    heading_path.clone(),
+                    body,
+                );
+            }
+        }
+    }
+
     chunks
 }
 
 /// Append a chunk, assigning its `ord` (and thus `chunk_id = sha256(path#ord)`) from the current
 /// output position — so dropping an empty section renumbers everything after it.
-fn push_chunk(chunks: &mut Vec<Chunk>, path: &str, heading_path: String, body: String) {
+fn push_chunk(
+    chunks: &mut Vec<Chunk>,
+    path: &str,
+    kind: ChunkKind,
+    heading_path: String,
+    body: String,
+) {
     let ord = chunks.len();
     chunks.push(Chunk {
         id: sha256_hex(format!("{path}#{ord}").as_bytes()),
         ord,
+        kind,
         heading_path,
         body,
     });
@@ -354,7 +436,29 @@ fn to_pieces(segs: &[Seg], budget: usize) -> Vec<String> {
 fn hard_split_words(para: &str, budget: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
+    let max_chars = ((budget as f32) * 3.5).floor().max(1.0) as usize;
     for word in para.split_whitespace() {
+        if estimate_tokens(word) > budget {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            // JSON strings, URLs, and hashes can be one enormous whitespace-free token. Split such a
+            // run by Unicode scalar count rather than silently exceeding the embedding window.
+            let mut piece = String::new();
+            let mut piece_chars = 0;
+            for ch in word.chars() {
+                piece.push(ch);
+                piece_chars += 1;
+                if piece_chars == max_chars {
+                    out.push(std::mem::take(&mut piece));
+                    piece_chars = 0;
+                }
+            }
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+            continue;
+        }
         if !cur.is_empty() && estimate_tokens(&cur) + estimate_tokens(word) + 1 > budget {
             out.push(std::mem::take(&mut cur));
         }
@@ -419,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_is_not_indexed() {
+    fn vagus_lifecycle_frontmatter_is_not_indexed() {
         let md = "---\ncreated: 2026-05-29T18:02\nstatus: inbox\nsource: chat\n---\n\n# Title\n\nbody text\n";
         let c = chunk_markdown("p.md", md);
         let all: String = c
@@ -434,8 +538,57 @@ mod tests {
             !all.contains("created"),
             "frontmatter leaked into chunks: {all}"
         );
+        assert!(!all.contains("chat"), "source leaked into chunks: {all}");
         assert!(all.contains("Title"));
         assert!(all.contains("body text"));
+    }
+
+    #[test]
+    fn producer_json_is_a_dedicated_searchable_chunk_after_content() {
+        let md = concat!(
+            "---\n",
+            "created: 2026-05-29T18:02\n",
+            "status: inbox\n",
+            "corti: {\"schema\":1,\"mode\":\"live\",\"models\":{\"asr\":{\"id\":\"nvidia/parakeet-tdt-0.6b-v3\"}}}\n",
+            "---\n\n# Transcript\n\nspoken words\n",
+        );
+        let chunks = chunk_markdown("p.md", md);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, ChunkKind::Content);
+        assert_eq!(chunks[0].id, sha256_hex(b"p.md#0"));
+        assert_eq!(chunks[0].body, "spoken words");
+        assert_eq!(chunks[1].kind, ChunkKind::ProducerMetadata);
+        assert_eq!(chunks[1].id, sha256_hex(b"p.md#1"));
+        assert_eq!(chunks[1].heading_path, "Frontmatter > corti");
+        assert!(chunks[1].body.contains("parakeet-tdt-0.6b-v3"));
+        assert!(chunks[1].body.contains("mode live"));
+        assert!(!chunks[1].body.contains("created"));
+        assert!(!chunks[1].body.contains("status"));
+    }
+
+    #[test]
+    fn unclosed_frontmatter_does_not_create_a_producer_metadata_chunk() {
+        let chunks = chunk_markdown(
+            "broken.md",
+            "---\ncorti: {\"models\":{\"asr\":\"parakeet\"}}\n# Body\nwords\n",
+        );
+        assert!(chunks.iter().all(|c| c.kind == ChunkKind::Content));
+    }
+
+    #[test]
+    fn long_unbroken_producer_value_stays_inside_the_chunk_budget() {
+        let value = "x".repeat(10_000);
+        let md = format!("---\nproducer: {{\"value\":\"{value}\"}}\n---\n");
+        let chunks = chunk_markdown("large.md", &md);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.kind == ChunkKind::ProducerMetadata));
+        for chunk in chunks {
+            assert!(
+                estimate_tokens(&chunk.body) <= CHUNK_BUDGET_TOKENS + CHUNK_OVERLAP_TOKENS + 5,
+                "metadata chunk over budget: {} tokens",
+                estimate_tokens(&chunk.body)
+            );
+        }
     }
 
     #[test]

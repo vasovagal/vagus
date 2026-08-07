@@ -45,7 +45,9 @@ grades fail the run. This prevents typos and deleted notes from masquerading as 
 The report also carries mode-specific top-score means (`rrf`, `bm25`, `cosine`, or
 `rerank_sigmoid`). They are diagnostics only—not calibrated probabilities and not comparable across
 different modes/configurations. With explicit `--relevance`, `score_kind` instead names
-`embeddinggemma300m_chunk5_cosine_clamped_v1`: finite original-query cosine clamped to `[0,1]`.
+`embeddinggemma300m_chunk6_cosine_clamped_v1`: finite original-query cosine clamped to `[0,1]`.
+The chunk-5 policy/evidence predates searchable producer-metadata vectors; policy names advance with
+`CHUNK_VERSION`, and old threshold observations do not calibrate a new corpus.
 This remains a semantic heuristic, not confidence. A BM25-only top hit can make it `null`; cohort
 means remain undefined unless every member has a finite top value.
 

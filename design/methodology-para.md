@@ -43,8 +43,11 @@ destinations.
 - **Folders carry actionability; a small flat tag set carries topic.** Don't encode topic in the folder
   tree (that's the over-categorization trap PARA avoids).
 - **Capture-time frontmatter is minimal**: `created`, `status: inbox`, `source` (the one
-  irrecoverable-later field). Everything else (title cleanup, tags, type, final status) is added during
-  the Organize/Distill pass. A bare note with *no* frontmatter is still valid.
+  irrecoverable-later field). A generated artifact may additionally carry one namespaced, validated
+  provenance object supplied during `add-note` (ADR 0027); its producer JSON is searchable as dedicated
+  metadata chunks without making lifecycle fields retrieval text (ADR 0028). Everything else (title
+  cleanup, tags, type, final status) is added during the Organize/Distill pass. A bare note with *no*
+  frontmatter is still valid.
 - **Link by `[[title]]`/alias, not by path**, so PARA moves don't break the recall graph.
 
 ## Retrieval implications

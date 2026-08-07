@@ -15,7 +15,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use chrono::{Local, NaiveDateTime, TimeZone};
 
-use crate::chunk::{chunk_markdown, parse_frontmatter};
+use crate::chunk::{Chunk, chunk_markdown, parse_frontmatter};
 use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL, VEC_INDEX_VERSION};
 use crate::db::Db;
 use crate::embed::Embedder;
@@ -156,6 +156,12 @@ fn created_at_secs(created: Option<&str>, mtime: f64) -> i64 {
         return dt.timestamp();
     }
     mtime as i64 // G3 mtime fallback
+}
+
+/// Exact document text sent to the semantic index. Producer metadata is already represented as its
+/// own bounded chunk, so this same path embeds it without hidden side channels or body mutation.
+fn embedding_documents(chunks: &[Chunk]) -> Vec<String> {
+    chunks.iter().map(|chunk| chunk.body.clone()).collect()
 }
 
 /// Reconcile the vault according to `mode`.
@@ -340,10 +346,10 @@ pub fn run_timed(
                 embedder = Some(Embedder::new(&cfg.cache_dir)?);
             }
             let emb = embedder.as_mut().unwrap();
-            let bodies: Vec<String> = chunks.iter().map(|c| c.body.clone()).collect();
+            let documents = embedding_documents(&chunks);
 
             let t0 = Instant::now();
-            let vecs = emb.embed_documents(bodies)?;
+            let vecs = emb.embed_documents(documents)?;
             if let Some(t) = timings.as_mut() {
                 t.embed_ms += elapsed_ms(t0);
             }
@@ -462,6 +468,23 @@ mod tests {
         assert!(elapsed_ms(Instant::now()) >= 0.0);
     }
 
+    #[test]
+    fn producer_metadata_is_sent_to_the_semantic_document_path() {
+        let chunks = chunk_markdown(
+            "transcript.md",
+            concat!(
+                "---\n",
+                "status: inbox\n",
+                "corti: {\"models\":{\"asr\":{\"id\":\"nvidia/parakeet-tdt-0.6b-v3\"}}}\n",
+                "---\n\n# Transcript\n\nspoken words\n",
+            ),
+        );
+        let documents = embedding_documents(&chunks);
+        assert!(documents.iter().any(|body| body.contains("parakeet")));
+        assert!(documents.iter().all(|body| !body.contains("status")));
+        assert!(documents.iter().all(|body| !body.contains("inbox")));
+    }
+
     fn empty_note_cfg(tag: &str) -> (crate::util::testdir::TempDir, Config) {
         let dir = crate::util::testdir::TempDir::new(tag);
         let cfg = Config {
@@ -487,8 +510,8 @@ mod tests {
             let bogus = sha256_hex(b"bogus chunk");
             db.conn
                 .execute(
-                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
-                     VALUES(?1,'recent.md',0,'','stale',NULL,NULL,NULL,?2)",
+                    "INSERT INTO chunks(id,path,ord,kind,heading_path,body,embedding,created_at,source,vec_key)
+                     VALUES(?1,'recent.md',0,0,'','stale',NULL,NULL,NULL,?2)",
                     rusqlite::params![bogus, key_for(&bogus) as i64],
                 )
                 .unwrap();
@@ -550,8 +573,8 @@ mod tests {
             let bogus = sha256_hex(b"partial chunk");
             db.conn
                 .execute(
-                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,created_at,source,vec_key)
-                     VALUES(?1,'partial.md',0,'','partial',NULL,NULL,NULL,?2)",
+                    "INSERT INTO chunks(id,path,ord,kind,heading_path,body,embedding,created_at,source,vec_key)
+                     VALUES(?1,'partial.md',0,0,'','partial',NULL,NULL,NULL,?2)",
                     rusqlite::params![bogus, key_for(&bogus) as i64],
                 )
                 .unwrap();

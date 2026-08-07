@@ -154,3 +154,38 @@ pub struct SegmentStats {
     pub docs: u32,
     pub deleted: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chunk::{ChunkKind, chunk_markdown};
+    use crate::util::testdir::TempDir;
+
+    #[test]
+    fn bm25_finds_projected_producer_metadata_but_not_lifecycle_fields() {
+        let dir = TempDir::new("lex-producer-metadata");
+        let lex = Lex::open(dir.path()).unwrap();
+        let chunks = chunk_markdown(
+            "transcript.md",
+            concat!(
+                "---\n",
+                "created: 2026-08-07T12:00\n",
+                "status: inbox\n",
+                "corti: {\"models\":{\"asr\":{\"id\":\"nvidia/parakeet-tdt-0.6b-v3\"}}}\n",
+                "---\n\n# Call\n\nordinary spoken words\n",
+            ),
+        );
+        let metadata = chunks
+            .iter()
+            .find(|chunk| chunk.kind == ChunkKind::ProducerMetadata)
+            .unwrap();
+        let mut writer = lex.writer().unwrap();
+        lex.replace_file(&writer, "transcript.md", &chunks).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let hits = lex.search("parakeet", 10).unwrap();
+        assert_eq!(hits.first().map(|(id, _)| id), Some(&metadata.id));
+        assert!(lex.search("inbox", 10).unwrap().is_empty());
+    }
+}
