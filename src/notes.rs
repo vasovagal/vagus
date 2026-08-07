@@ -13,6 +13,7 @@ use chrono::Local;
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::frontmatter::{is_vagus_owned, valid_producer_key};
 use crate::index;
 use crate::scope::Scope;
 use crate::search::{self, Mode};
@@ -22,9 +23,6 @@ use crate::search::{self, Mode};
 const ADD_NOTE_FRONTMATTER_ENV: &str = "VAGUS_ADD_NOTE_FRONTMATTER_JSON";
 /// Keep one integration from turning the small note header into an unbounded transport.
 const MAX_EXTRA_FRONTMATTER_BYTES: usize = 64 * 1024;
-/// Keys whose lifecycle belongs to Vagus rather than an external producer.
-const RESERVED_FRONTMATTER_KEYS: [&str; 6] =
-    ["created", "status", "source", "para", "modified", "title"];
 
 /// Map a PARA keyword (for `add-note --para`) to its folder.
 fn para_folder(para: &str) -> Result<&'static str> {
@@ -170,17 +168,12 @@ fn render_extra_frontmatter(json: Option<&str>) -> Result<String> {
 
     let mut rendered = String::new();
     for (key, value) in object {
-        let mut chars = key.chars();
-        let valid = chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
-        if !valid {
+        if !valid_producer_key(key) {
             bail!(
                 "invalid frontmatter key {key:?}; use ASCII letters, digits, `_`, or `-`, starting with a letter or `_`"
             );
         }
-        if RESERVED_FRONTMATTER_KEYS.contains(&key.as_str()) {
+        if is_vagus_owned(key) {
             bail!("frontmatter key {key:?} is owned by vagus and cannot be overridden");
         }
         rendered.push_str(key);
@@ -693,6 +686,22 @@ mod tests {
             2,
             "a value cannot inject YAML lines"
         );
+    }
+
+    #[test]
+    fn rendered_producer_frontmatter_becomes_searchable_metadata() {
+        let rendered = render_extra_frontmatter(Some(
+            r#"{"corti":{"models":{"asr":{"id":"nvidia/parakeet-tdt-0.6b-v3"}}}}"#,
+        ))
+        .unwrap();
+        let note = format!("---\n{rendered}---\n\n# Transcript\n\nspoken words\n");
+        let chunks = crate::chunk::chunk_markdown("transcript.md", &note);
+        let metadata = chunks
+            .iter()
+            .find(|chunk| chunk.kind == crate::chunk::ChunkKind::ProducerMetadata)
+            .unwrap();
+        assert_eq!(metadata.heading_path, "Frontmatter > corti");
+        assert!(metadata.body.contains("parakeet-tdt-0.6b-v3"));
     }
 
     #[test]

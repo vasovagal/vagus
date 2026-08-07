@@ -11,6 +11,7 @@ mod db;
 mod embed;
 mod eval;
 mod export;
+mod frontmatter;
 mod index;
 mod init;
 mod lex;
@@ -218,8 +219,8 @@ enum Command {
         /// Provenance to record in frontmatter (URL or where it came from).
         #[arg(long)]
         source: Option<String>,
-        /// Additional producer metadata as a JSON object. Top-level keys become safe YAML frontmatter;
-        /// Vagus-owned keys are rejected. Intended for integrations such as Corti.
+        /// Additional producer metadata as a JSON object. Top-level keys become safe, searchable YAML
+        /// frontmatter; Vagus-owned keys are rejected. Intended for integrations such as Corti.
         #[arg(long, value_name = "OBJECT")]
         frontmatter_json: Option<String>,
         /// Print only the created file's absolute path (for the skill to consume).

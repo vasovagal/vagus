@@ -32,13 +32,15 @@ flag and no transcript note is created.
    metadata is written in the same initial file creation as the body. G3 still forbids index/search operations
    from editing notes and still permits frontmatter-free Markdown. `vagus file` preserves producer-owned
    fields while enriching only its own filing fields.
-5. **Producer metadata is not indexed as note content.** The existing frontmatter stripping remains
-   unchanged. A future searchable producer field requires its own explicit indexing/schema decision.
+5. **Searchability is a separate decision.** This ADR originally left producer metadata outside note
+   content pending an explicit indexing design. [ADR 0028](./0028-searchable-producer-metadata.md) now
+   projects valid non-owned JSON fields into dedicated BM25/semantic metadata chunks while keeping
+   Vagus lifecycle frontmatter excluded.
 
 ## Consequences
 
 - Generated notes can carry structured, Obsidian-compatible provenance without Vagus knowing producer
-  schemas or accepting raw YAML.
+  schemas or accepting raw YAML; ADR 0028 makes that producer namespace searchable.
 - Ordinary `add-note` output is unchanged byte-for-byte when neither metadata input is present.
 - Malformed JSON, unsafe keys, reserved keys, and oversized metadata fail before note creation.
 - Environment fallback deliberately favors note availability during staggered upgrades: an old Vagus files a

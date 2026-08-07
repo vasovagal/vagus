@@ -6,9 +6,11 @@
 
 Users want to narrow hybrid search results by when a note was written
 (`--since=10d`) and where it came from (`--source=slack`). Both facts live in
-**optional** note frontmatter (`created`, `source`), which today is stripped
-before indexing ([ADR 0013](./0013-chunk-budget.md)) and is absent from the
+**optional** note frontmatter (`created`, `source`), which was stripped from chunk text
+when this decision landed ([ADR 0013](./0013-chunk-budget.md)) and is absent from the
 tantivy schema (path/chunk_id/heading/body only — [ADR 0003](./0003-search-stack.md)).
+[ADR 0028](./0028-searchable-producer-metadata.md) later made only non-owned JSON producer fields
+searchable as dedicated chunks; it does not change these lifecycle filters.
 
 The filter must not perturb the deterministic RRF floor (G7/G8): RRF (k=60) is
 unweighted and any filter has to be a separate stage *around* fusion, like the
@@ -67,8 +69,9 @@ filterable by `--since`.
 - `created_at`/`source` are denormalized onto every chunk (note-level value
   repeated per chunk). At personal scale the duplication is negligible and keeps
   hydration a single-row read.
-- Frontmatter is still hand-parsed (no YAML dependency); only top-level scalar
-  `created`/`source` keys are read, with quote/whitespace trimming.
+- Frontmatter is still hand-parsed (no YAML dependency); top-level scalar `created`/`source` keys are
+  read with quote/whitespace trimming. ADR 0028 additionally recognizes valid one-line JSON values for
+  non-owned producer fields, without turning lifecycle fields into search text.
 - The hydration cap (`limit + 32` candidates) is shared with `apply_scope`; a
   very aggressive filter could under-fill results, same best-effort behavior as
   scope. Acceptable at personal scale; revisit only if it bites.

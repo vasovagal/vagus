@@ -113,6 +113,7 @@ fn fixture() -> (TempDir, Config) {
         let chunk = Chunk {
             id,
             ord: 0,
+            kind: crate::chunk::ChunkKind::Content,
             heading_path: word.to_owned(),
             body: format!("{word} answer"),
         };

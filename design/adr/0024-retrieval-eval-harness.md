@@ -74,8 +74,9 @@ returned ranked note paths so metrics can be independently recomputed.
 
 The top hit's finite mode-specific score is retained as a diagnostic (`rrf`, `bm25`, `cosine`, or
 `rerank_sigmoid`). ADR 0026's opt-in `--relevance` instead records finite original-query cosine
-clamped to `[0,1]` under the policy name `embeddinggemma300m_chunk5_cosine_clamped_v1`; this remains
-an explicitly uncalibrated heuristic. A cohort mean is defined only when that cohort is non-empty and
+clamped to `[0,1]` under a chunk-pinned policy name (currently
+`embeddinggemma300m_chunk6_cosine_clamped_v1`; the original evidence used chunk 5); this remains an
+explicitly uncalibrated heuristic. A cohort mean is defined only when that cohort is non-empty and
 **every** member returned a score. Neither it nor its delta is a probability or ranking acceptance
 metric; a BM25-only top hit can make the relevance diagnostic undefined.
 

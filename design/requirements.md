@@ -23,6 +23,9 @@ coding harness (Claude Code and pi).
   same-candidate-pool alternate is explicit-only and must clear ADR 0025 before it may land. The
   separate cross-encoder may opt into tokenizer-safe small-to-big context (`--rerank-context 1|2`),
   while radius 0 remains the exact center-only default and returned bodies stay unchanged (ADR 0015).
+  Valid producer JSON frontmatter is retrievable through dedicated lexical + semantic chunks (for
+  example, finding generated notes by model); Vagus lifecycle frontmatter stays out of chunk text
+  (ADR 0028).
 - **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;

@@ -361,8 +361,8 @@ mod tests {
         {
             let mut insert = tx
                 .prepare(
-                    "INSERT INTO chunks(id,path,ord,heading_path,body,embedding,vec_key)
-                     VALUES(?1,'fixture.md',?2,'fixture','fixture',?3,?4)",
+                    "INSERT INTO chunks(id,path,ord,kind,heading_path,body,embedding,vec_key)
+                     VALUES(?1,'fixture.md',?2,0,'fixture','fixture',?3,?4)",
                 )
                 .unwrap();
             for (ord, (key, vector)) in data.iter().enumerate() {

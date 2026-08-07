@@ -38,7 +38,8 @@ straight from a Claude Code or pi session).
   a throwaway cache (local usage counters/provenance are the explicit exception).
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
   the create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
-  provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields.
+  provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields; that producer
+  metadata is searchable by BM25 and meaning, so queries such as `parakeet` find model provenance.
 - **Assisted, never automatic filing.** The process-inbox skill proposes a PARA home per note; you
   approve.
 - **Claude Code and pi skills built in.** Create-note, search, and process-inbox skills ship
@@ -157,7 +158,8 @@ vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankin
 vagus eval labels.jsonl --exact --rerank --rerank-context 1 --json  # evaluate that input policy
 vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
 vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
-vagus add-note "Generated" --frontmatter-json '{"producer":{"version":"1"}}'  # safe metadata
+vagus add-note "Generated" --frontmatter-json '{"producer":{"model":"parakeet"}}'  # safe metadata
+vagus search "parakeet"    # producer metadata is indexed lexically + semantically
 vagus inbox                 # list 00-Inbox items
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # network-free health/cache-presence check
@@ -176,6 +178,11 @@ knee separates a high-signal prefix from a low-signal tail. The stage only drops
 changes ranking or scores, and it fails open before any top-three BM25/cosine source champion. Pass
 `--exhaustive` to fill the legacy result set up to the limit, or
 `--chunks` to rank individual chunks instead.
+
+Validated producer JSON appears as dedicated `Frontmatter > <namespace>` search chunks. Vagus-owned
+lifecycle fields (`created`, `status`, `source`, `para`, `modified`, `title`) remain excluded from
+BM25/embeddings; `--since` and `--source` retain their exact filter behavior. The first index after
+this feature performs a one-time full re-embed for chunk version 6.
 
 `--rerank-context N` accepts 0–2 and requires `--rerank` or `--smart`. Radius 0 is the exact historical
 center-only path. Radius 1/2 gives the cross-encoder up to N adjacent chunks per side, admitting whole

@@ -23,8 +23,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G3 — Never auto-edit the user's note.** Frontmatter is optional; a frontmatter-free note must index
   correctly (title ← first `# heading` or filename). Frontmatter is written only by an explicit capture or
   user-approved filing action: `add-note` may include validated, non-reserved producer metadata in its
-  initial write, while `file` enriches Vagus-owned filing fields. Index/search never edits notes.
-  ([ADR 0005](./adr/0005-assisted-filing.md), [ADR 0027](./adr/0027-producer-frontmatter-metadata.md))
+  initial write, while `file` enriches Vagus-owned filing fields. Index/search never edits notes;
+  indexing may derive dedicated searchable chunks from valid producer JSON without mutating the file.
+  ([ADR 0005](./adr/0005-assisted-filing.md), [ADR 0027](./adr/0027-producer-frontmatter-metadata.md),
+  [ADR 0028](./adr/0028-searchable-producer-metadata.md))
   A bare note must also stay **filterable by `search --since`**: when `created` frontmatter is
   absent/unparseable, the filter falls back to the file's **filesystem mtime**.
   ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
@@ -62,8 +64,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   on paragraph boundaries (greedily packed, overlap re-prepended); fenced code blocks stay **atomic**
   (never split — an over-budget block is one chunk). The rule is fixed; the value is derived from the
   embedder (EmbeddingGemma 2048 ctx → ~900-token target, ~128 overlap; estimate `chars/3.5`, no
-  tokenizer in the hot path — G11). Roll changes via `CHUNK_VERSION`.
-  ([ADR 0013](./adr/0013-chunk-budget.md))
+  tokenizer in the hot path — G11). Valid producer JSON uses the same budget in a separate chunk
+  kind; even whitespace-free values are split, and metadata cannot occupy body rerank-context slots.
+  Roll changes via `CHUNK_VERSION`.
+  ([ADR 0013](./adr/0013-chunk-budget.md), [ADR 0028](./adr/0028-searchable-producer-metadata.md))
 - **G26 — Windowed reindex is a forced incremental repair, never a partial index.** `vagus reindex
   --since <duration>` first snapshots every Markdown path + **filesystem mtime** in the vault, then
   force-refreshes selected existing notes through all three G5 stores even when mtime/hash metadata
@@ -102,8 +106,9 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G9b — Frontmatter filters are a separate post-rank stage.** `search --since`/`--source` filter on
   per-chunk `created_at`/`source` denormalized into SQLite at index time (**no tantivy schema change**);
   the filter is a drop-only stage **around** fusion (mirrors `apply_scope`), **never** touching `rrf()`
-  (G7/G8) and **never** reordering survivors. `CHUNK_VERSION` (now **5**) back-fills the columns
-  via a one-time auto-reindex (G4). ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
+  (G7/G8) and **never** reordering survivors. The current `CHUNK_VERSION` (**6**) includes these
+  columns and back-fills them via a one-time auto-reindex (G4).
+  ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G9c — Note-level results are a separate post-rank dedup stage.** By default `--limit` counts
   **distinct notes**: `dedupe_notes` keeps each note's best-ranked chunk (folding later chunks into its
   `siblings` count and privately retaining their best source ranks for G9d) — a drop-only,
@@ -138,6 +143,14 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   Capped-tail hits are explicitly unscored; path-bound event IDs and all ranks are validated before
   atomically writing the run, cited-note events, and counters. Diagnostics group by pipeline + corpus and are
   selection-biased, never eval evidence. ([ADR 0021](./adr/0021-usage-ticks.md))
+- **G9g — Producer metadata is searchable, lifecycle frontmatter is not.** A complete leading
+  frontmatter block contributes search text only for safe non-Vagus top-level keys whose one-line
+  values parse as JSON. Each field becomes one or more budgeted `ProducerMetadata` chunks appended
+  after content and sent through SQLite/Tantivy/embeddings/usearch/reranking. `chunks.kind` prevents
+  metadata from displacing body neighbors under `--rerank-context`; note dedup remains unchanged.
+  Vagus-owned `created`/`status`/`source`/`para`/`modified`/`title` never become chunk text (ADR 0017's
+  exact filters still apply). Roll extraction changes via `CHUNK_VERSION`.
+  ([ADR 0028](./adr/0028-searchable-producer-metadata.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the

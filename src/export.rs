@@ -581,6 +581,7 @@ mod tests {
         Chunk {
             id: crate::util::sha256_hex(format!("{path}#{ord}").as_bytes()),
             ord,
+            kind: crate::chunk::ChunkKind::Content,
             heading_path: format!("H{ord}"),
             body: body.into(),
         }

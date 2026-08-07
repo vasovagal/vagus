@@ -19,8 +19,10 @@ pub const EMBED_DIMS: usize = 768;
 /// (v2 = stop indexing YAML frontmatter; v3 = token-budgeted sub-splitting of oversize sections, sized
 /// to the embedder context window — G20; v4 = persist per-note `created_at`/`source` from frontmatter
 /// onto every chunk for the `--since`/`--source` filters — [ADR 0017](../design/adr/0017-indexed-frontmatter-filters.md);
-/// v5 = drop empty heading-only chunks, with a title fallback so a stub note stays indexed).
-pub const CHUNK_VERSION: &str = "5";
+/// v5 = drop empty heading-only chunks, with a title fallback so a stub note stays indexed;
+/// v6 = index valid non-Vagus producer JSON as kind-separated metadata chunks —
+/// [ADR 0028](../design/adr/0028-searchable-producer-metadata.md)).
+pub const CHUNK_VERSION: &str = "6";
 
 /// Identity of the usearch vector index (ADR 0019), pinned in the `meta` table alongside the embedding
 /// identity (G4). Bump this when the HNSW build parameters or the on-disk index format change so the

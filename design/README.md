@@ -76,3 +76,5 @@ silently breaking an invariant.
   named heuristic; post-truncation floor with honest unknowns; adds G9e and aligns search/rerank/eval.
 - `0027-producer-frontmatter-metadata.md` — safe optional producer metadata on `add-note`: validated JSON
   becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.
+- `0028-searchable-producer-metadata.md` — valid non-owned JSON frontmatter becomes dedicated,
+  kind-separated BM25/semantic chunks; lifecycle fields stay filter-only; adds G9g and chunk version 6.

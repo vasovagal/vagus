@@ -38,7 +38,10 @@ nothing may perturb the deterministic RRF floor (G7/G8).
   list, so `--limit` is a maximum; `--exhaustive` restores the legacy fill behavior. Dedup also folds
   each note's best internal BM25/cosine rank across every sibling chunk and its best pre-rerank
   fusion rank. These fields remain absent from default Hit JSON. Source ranks stop ADR 0023 from
-  cutting before a champion; only ADR 0021's explicit wrapper may expose the folded ranks.
+  cutting before a champion; only ADR 0021's explicit wrapper may expose the folded ranks. Dedicated
+  producer-metadata chunks from [ADR 0028](./0028-searchable-producer-metadata.md) participate normally:
+  a provenance query may select that transparent chunk as the note representative, while a content
+  query may select a body chunk.
 - **`--chunks` opts out**, restoring raw chunk-level hits (`--limit` counts chunks) —
   byte-identical to pre-0.7 output, since `siblings` is never set on that path.
 - **`siblings` is an additive optional Hit field** (`skip_serializing_if`, like

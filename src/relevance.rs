@@ -6,7 +6,7 @@
 //! not a probability, and never affects ranking or `rrf()`.
 
 /// Stable identity recorded by `vagus eval --relevance` and tied to ADR 0026's evidence.
-pub const POLICY: &str = "embeddinggemma300m_chunk5_cosine_clamped_v1";
+pub const POLICY: &str = "embeddinggemma300m_chunk6_cosine_clamped_v1";
 
 /// Convert a finite cosine to the bounded reporting signal. Negative similarities carry no positive
 /// evidence and clamp to zero; tiny floating overshoot above one clamps to one. Non-finite derived
