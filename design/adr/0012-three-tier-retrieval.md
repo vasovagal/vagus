@@ -5,7 +5,9 @@
   [ADR 0023](./0023-adaptive-context-tidy-results.md), tier-2 uses a bounded 10-candidate exact+
   reranked judge with a grade-2 presentation floor, and ADR 0026 adds orthogonal opt-in semantic
   reporting without changing any tier pipeline; **amended 2026-07-30** — ADR 0021 adds strict,
-  query-free-by-default presentation provenance to the fixed tier-2 primary path. Supersedes the planned (never-written)
+  query-free-by-default presentation provenance to the fixed tier-2 primary path; **amended
+  2026-08-12** — explicit user time windows are pushed into retrieval with `--since`, using the
+  ordinary JSON/counter-only path required by ADR 0021. Supersedes the planned (never-written)
   "two-tier" ADR; the earlier framing lives in
   [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
@@ -30,7 +32,7 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank**; optional tokenizer-safe radius 1/2 context | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 + strict run/rank provenance → agent 0–3 judge → grade ≥2, max 6 + atomic cited-note tick; one counter-only fallback if none survive | Opus |
+| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6 + cited-note tick; strict provenance on the unfiltered primary, native `--since` + counter-only ticks for explicit time windows, and one uninstrumented fallback if none survive | Opus |
 
 The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
 standards-compatible `SKILL.md` is embedded once and installed by
@@ -58,9 +60,15 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   a bounded original-query cosine heuristic and post-truncation floor; `--smart` rejects it because
   typed multi-query fusion does not retain that signal. The tier-2 skill keeps its stronger 0–3
   full-body judgment and does not reinterpret local cosine as agent confidence.
-- **ADR 0021 provenance observes tier 2; it does not rank.** The fixed primary command emits a
-  self-verifying run plus honest capped-prefix/tail rank states without changing any result. The skill
-  atomically records only cited notes; query text is off, and fallback searches remain counter-only.
+- **Explicit time intent is retrieval input, not agent post-filtering.** When the user asks for a
+  window, the skill removes the temporal phrase when a meaningful topic remains and passes the shared
+  `--since` duration to the first retrieval and its one allowed fallback. Unqualified “recent” starts
+  at `1m` (30 days) and is disclosed in the answer. The filter is note creation time, not a date
+  mentioned in a body. The process-inbox skill applies the same rule to `vagus inbox --since`.
+- **ADR 0021 provenance observes tier 2; it does not rank.** The fixed unfiltered primary command
+  emits a self-verifying run plus honest capped-prefix/tail rank states without changing any result.
+  Metadata-filtered searches cannot claim that contract, so a `--since` primary emits ordinary JSON
+  and records cited paths counter-only; query text remains off, and fallback searches remain unticked.
   Result reports are selection-biased diagnostics, never ADR 0024 evaluation evidence.
 
 ## 2026-07-29 bounded-skill evidence
@@ -105,8 +113,9 @@ when the initial ten contain no useful evidence.
   `--exhaustive` restores the legacy fill/count/content; the default Hit JSON schema remains unchanged
   unless ADR 0026 reporting is explicit.
 - Tier-2 retrieval is deliberately bounded: ten candidate bodies, only grade 2–3 evidence presented,
-  at most six nonredundant notes, and no quota padding. A single shape-selected retry is the only
-  expansion path when the first pass has no useful evidence.
+  at most six nonredundant notes, and no quota padding. Explicit user time windows are applied by the
+  CLI before judging and preserved on retry. A single shape-selected retry is the only expansion path
+  when the first pass has no useful evidence.
 - Skill installation is harness-selectable without duplicating skill bodies; the existing no-flag
   command continues to target Claude Code, while `--agent pi` targets pi.
 - Advanced search is **not** a plugin: the capture-shaped NDJSON plugin protocol

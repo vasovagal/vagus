@@ -29,9 +29,6 @@ use crate::provenance::{
 };
 use crate::rerank::{Reranker, sigmoid};
 use crate::scope::Scope;
-#[cfg(test)]
-use crate::util::parse_duration;
-use crate::util::since_cutoff;
 
 /// RRF constant (guardrail G8).
 const RRF_K: f32 = 60.0;
@@ -1139,7 +1136,7 @@ pub fn run(
     show_relevance: bool,
     min_relevance: Option<f32>,
     smart: bool,
-    since: Option<&str>,
+    since: Option<i64>,
     source: Option<&str>,
     exact: bool,
     timings: bool,
@@ -1177,11 +1174,6 @@ pub fn run(
             "--relevance/--min-relevance are unavailable with --smart because multi-query fusion does not retain original-query cosine; use --rerank"
         );
     }
-    // Parse the `--since` duration up front so a bad spec errors clearly before any indexing/search.
-    let since_cut = match since {
-        Some(spec) => Some(since_cutoff(spec)?),
-        None => None,
-    };
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
     // actually changed). `--no-index` skips it.
@@ -1225,7 +1217,7 @@ pub fn run(
         rerank,
         rerank_context,
         smart,
-        since_cut,
+        since,
         source,
         exact,
         timings,
@@ -1879,26 +1871,6 @@ mod scope_filter_tests {
     }
 
     // --- --since / --source filters (ADR 0017) ----------------------------------------------------
-
-    #[test]
-    fn parse_duration_units() {
-        assert_eq!(parse_duration("90s").unwrap(), 90);
-        assert_eq!(parse_duration("30m").unwrap(), 30 * 60);
-        assert_eq!(parse_duration("6h").unwrap(), 6 * 3600);
-        assert_eq!(parse_duration("10d").unwrap(), 10 * 86_400);
-        assert_eq!(parse_duration("2w").unwrap(), 2 * 604_800);
-        // A bare number means days; the unit is case-insensitive; surrounding whitespace is trimmed.
-        assert_eq!(parse_duration("7").unwrap(), 7 * 86_400);
-        assert_eq!(parse_duration("3D").unwrap(), 3 * 86_400);
-        assert_eq!(parse_duration("  5h ").unwrap(), 5 * 3600);
-    }
-
-    #[test]
-    fn parse_duration_rejects_garbage() {
-        for bad in ["", "abc", "10x", "1.5d", "10 d", "-3d"] {
-            assert!(parse_duration(bad).is_err(), "expected error for {bad:?}");
-        }
-    }
 
     #[test]
     fn since_keeps_in_window_drops_older() {

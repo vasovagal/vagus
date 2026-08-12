@@ -235,5 +235,23 @@ mod tests {
             !search.body.contains("--store-query"),
             "search skill must not opt into query-content storage"
         );
+        assert!(
+            search.body.contains("--since <duration>"),
+            "search skill must teach agents native time filtering"
+        );
+        assert!(
+            search
+                .body
+                .contains("`--since` search must omit `--tick-provenance`"),
+            "filtered search must not claim unsupported rank provenance"
+        );
+
+        let process_inbox = BUNDLED.iter().find(|s| s.name == "process-inbox").unwrap();
+        assert!(
+            process_inbox
+                .body
+                .contains("inbox --json --since <duration>"),
+            "process-inbox skill must teach agents native time filtering"
+        );
     }
 }

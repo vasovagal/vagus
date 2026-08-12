@@ -1,12 +1,14 @@
 //! Small shared helpers.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
+use std::fmt::{Display, Formatter, Write as _};
 use std::io::Read as _;
+use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use chrono::{Local, NaiveDateTime, TimeZone};
 use sha2::{Digest, Sha256};
 
 /// Lowercase hex of the SHA-256 of `bytes`.
@@ -74,40 +76,158 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Parse a relative duration into seconds. Accepts one number+unit token — `30s`, `90m`, `6h`,
-/// `10d`, `2w` — or a bare integer interpreted as days (`7` == `7d`). Shared by search filtering
-/// and mtime-windowed reindexing (ADR 0022).
+const MINUTE_SECS: i64 = 60;
+const HOUR_SECS: i64 = 60 * MINUTE_SECS;
+const DAY_SECS: i64 = 24 * HOUR_SECS;
+const WEEK_SECS: i64 = 7 * DAY_SECS;
+const MONTH_SECS: i64 = 30 * DAY_SECS;
+const YEAR_SECS: i64 = 365 * DAY_SECS;
+const DURATION_HELP: &str =
+    "use NUMBER plus s, min, h, d, w, m, or y (m=30 days, y=365 days), or a bare number of days";
+
+/// Parse the shared `--since` duration grammar into seconds.
+///
+/// `m` deliberately means a 30-day month (not minutes) and `y` means 365 days; minutes remain
+/// available as `min`. Units are case-insensitive, and a bare integer means days (`7` == `7d`).
 pub fn parse_duration(input: &str) -> anyhow::Result<i64> {
-    let s = input.trim();
-    if s.is_empty() {
-        anyhow::bail!("empty duration (use e.g. 10d, 2w, 6h, 30m, 90s, or a bare number of days)");
+    let spec = input.trim();
+    if spec.is_empty() {
+        anyhow::bail!("empty duration ({DURATION_HELP})");
     }
-    let (num_str, unit_secs): (&str, i64) = match s.chars().last().unwrap() {
-        c if c.is_ascii_digit() => (s, 86_400), // bare number -> days
-        's' | 'S' => (&s[..s.len() - 1], 1),
-        'm' | 'M' => (&s[..s.len() - 1], 60),
-        'h' | 'H' => (&s[..s.len() - 1], 3_600),
-        'd' | 'D' => (&s[..s.len() - 1], 86_400),
-        'w' | 'W' => (&s[..s.len() - 1], 604_800),
-        other => anyhow::bail!(
-            "invalid duration unit {other:?} in {s:?} (use s, m, h, d, w, or a bare number of days)"
-        ),
+
+    // Split only on ASCII digits. Besides rejecting signs, decimals, and embedded whitespace, this
+    // avoids byte-slicing at an invalid boundary when a malformed operand ends in Unicode.
+    let unit_start = spec
+        .char_indices()
+        .find_map(|(index, c)| (!c.is_ascii_digit()).then_some(index))
+        .unwrap_or(spec.len());
+    let (number, unit) = spec.split_at(unit_start);
+    if number.is_empty() {
+        anyhow::bail!("invalid duration {spec:?} ({DURATION_HELP})");
+    }
+    let amount: i64 = number
+        .parse()
+        .map_err(|_| anyhow::anyhow!("duration too large: {spec:?}"))?;
+    let unit_secs = match unit.to_ascii_lowercase().as_str() {
+        "" | "d" => DAY_SECS,
+        "s" => 1,
+        "min" => MINUTE_SECS,
+        "h" => HOUR_SECS,
+        "w" => WEEK_SECS,
+        "m" => MONTH_SECS,
+        "y" => YEAR_SECS,
+        _ => anyhow::bail!("invalid duration {spec:?} ({DURATION_HELP})"),
     };
-    // Parse the numeric part as-is (no inner trim) so embedded whitespace like "10 d" is rejected.
-    let n: i64 = num_str.parse().map_err(|_| {
-        anyhow::anyhow!("invalid duration {s:?} (expected e.g. 10d, 2w, 6h, 30m, 90s, or a number)")
-    })?;
-    if n < 0 {
-        anyhow::bail!("duration must not be negative: {s:?}");
-    }
-    n.checked_mul(unit_secs)
-        .ok_or_else(|| anyhow::anyhow!("duration too large: {s:?}"))
+    amount
+        .checked_mul(unit_secs)
+        .ok_or_else(|| anyhow::anyhow!("duration too large: {spec:?}"))
 }
 
-/// Compute a relative-duration cutoff in Unix seconds (`now - duration`). Saturation makes an
-/// extremely large but otherwise valid duration mean "from the beginning" rather than overflowing.
-pub fn since_cutoff(spec: &str) -> anyhow::Result<i64> {
-    Ok(now_unix().saturating_sub(parse_duration(spec)?))
+/// A validated relative duration accepted by every applicable `--since` flag. Parsing this type in
+/// clap keeps validation and unit semantics identical across reindexing, search, and inbox listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinceDuration {
+    spec: String,
+    seconds: i64,
+}
+
+impl SinceDuration {
+    #[cfg(test)]
+    fn seconds(&self) -> i64 {
+        self.seconds
+    }
+
+    /// Compute `now - duration`. Saturation makes a huge valid duration mean "from the beginning".
+    pub fn cutoff(&self) -> i64 {
+        now_unix().saturating_sub(self.seconds)
+    }
+
+    #[cfg(test)]
+    fn cutoff_from(&self, now: i64) -> i64 {
+        now.saturating_sub(self.seconds)
+    }
+}
+
+impl FromStr for SinceDuration {
+    type Err = String;
+
+    fn from_str(input: &str) -> std::result::Result<Self, Self::Err> {
+        let spec = input.trim();
+        let seconds = parse_duration(spec).map_err(|error| error.to_string())?;
+        Ok(Self {
+            spec: spec.to_owned(),
+            seconds,
+        })
+    }
+}
+
+impl Display for SinceDuration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.spec)
+    }
+}
+
+/// Note-level creation timestamp shared by indexing and filesystem-backed listings. Valid Vagus
+/// frontmatter uses local `%Y-%m-%dT%H:%M`; absent/unparseable values fall back to filesystem mtime
+/// so frontmatter-free notes remain `--since`-filterable (ADR 0017/G3).
+pub fn note_created_at_secs(created: Option<&str>, mtime: f64) -> i64 {
+    if let Some(raw) = created
+        && let Ok(naive) = NaiveDateTime::parse_from_str(raw.trim(), "%Y-%m-%dT%H:%M")
+        && let Some(datetime) = Local.from_local_datetime(&naive).single()
+    {
+        return datetime.timestamp();
+    }
+    mtime as i64
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    #[test]
+    fn shared_since_units_include_hours_days_months_and_years() {
+        assert_eq!(parse_duration("10h").unwrap(), 10 * HOUR_SECS);
+        assert_eq!(parse_duration("5d").unwrap(), 5 * DAY_SECS);
+        assert_eq!(parse_duration("3m").unwrap(), 3 * MONTH_SECS);
+        assert_eq!(parse_duration("1y").unwrap(), YEAR_SECS);
+
+        // Preserve the useful smaller/week units without keeping the old ambiguous `m=minutes`.
+        assert_eq!(parse_duration("90s").unwrap(), 90);
+        assert_eq!(parse_duration("30min").unwrap(), 30 * MINUTE_SECS);
+        assert_eq!(parse_duration("2w").unwrap(), 2 * WEEK_SECS);
+        assert_eq!(parse_duration("7").unwrap(), 7 * DAY_SECS);
+        assert_eq!(parse_duration("3D").unwrap(), 3 * DAY_SECS);
+        assert_eq!(parse_duration("  5H ").unwrap(), 5 * HOUR_SECS);
+    }
+
+    #[test]
+    fn shared_since_parser_rejects_malformed_and_overflowing_operands() {
+        for invalid in [
+            "",
+            "abc",
+            "10x",
+            "1.5d",
+            "10 d",
+            "-3d",
+            "m",
+            "10é",
+            "999999999999999999999999999999999999999y",
+        ] {
+            assert!(
+                invalid.parse::<SinceDuration>().is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validated_since_duration_preserves_operand_and_saturates_cutoff() {
+        let duration: SinceDuration = " 3m ".parse().unwrap();
+        assert_eq!(duration.to_string(), "3m");
+        assert_eq!(duration.seconds(), 90 * DAY_SECS);
+        assert_eq!(duration.cutoff_from(100), -7_775_900);
+        assert_eq!(duration.cutoff_from(i64::MIN), i64::MIN);
+    }
 }
 
 /// Stable `u64` key for the usearch vector index, derived from a chunk id (ADR 0019).

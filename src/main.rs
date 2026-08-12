@@ -76,11 +76,11 @@ enum Command {
     Index,
     /// Rebuild the whole derived index, or force-refresh a recent mtime window.
     Reindex {
-        /// Force-reindex notes whose filesystem mtime is within this window (e.g. `10d`, `2w`,
-        /// `6h`). The whole vault is snapshotted for new/deleted files, but older indexed notes are
-        /// preserved instead of being re-embedded (ADR 0022).
+        /// Force-reindex notes whose filesystem mtime is within this window (e.g. `10h`, `5d`,
+        /// `3m`, or `1y`). The whole vault is snapshotted for new/deleted files, but older indexed
+        /// notes are preserved instead of being re-embedded (ADR 0022).
         #[arg(long, value_name = "DURATION")]
-        since: Option<String>,
+        since: Option<util::SinceDuration>,
     },
     /// Compact the tantivy index (force-merge segments, drop tombstones) without re-embedding.
     Compact,
@@ -141,11 +141,11 @@ enum Command {
         /// `generate` build feature (falls back to --rerank if absent).
         #[arg(long)]
         smart: bool,
-        /// Keep only notes created within this window (e.g. `10d`, `2w`, `6h`, `30m`, `90s`, or a
-        /// bare number of days). Uses the frontmatter `created` time, falling back to file mtime for
-        /// notes without it (ADR 0017). A post-rank filter — ranking (RRF) is unchanged.
+        /// Keep only notes created within this window (e.g. `10h`, `5d`, `3m`, or `1y`). Uses the
+        /// frontmatter `created` time, falling back to file mtime for notes without it (ADR 0017).
+        /// A post-rank filter — ranking (RRF) is unchanged.
         #[arg(long, value_name = "DURATION")]
-        since: Option<String>,
+        since: Option<util::SinceDuration>,
         /// Keep only notes whose frontmatter `source` matches (case-insensitive). Notes without a
         /// `source` are excluded when this is set (ADR 0017). A post-rank filter — RRF is unchanged.
         #[arg(long, value_name = "STR")]
@@ -235,6 +235,10 @@ enum Command {
     },
     /// List notes currently in `00-Inbox/`.
     Inbox {
+        /// Keep only notes created within this window (e.g. `10h`, `5d`, `3m`, or `1y`). Uses the
+        /// same frontmatter `created` time and filesystem-mtime fallback as search.
+        #[arg(long, value_name = "DURATION")]
+        since: Option<util::SinceDuration>,
         #[arg(long)]
         json: bool,
     },
@@ -401,7 +405,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Status => cmd_status(&cfg)?,
         Command::Index => cmd_index(&cfg)?,
-        Command::Reindex { since } => cmd_reindex(&cfg, since.as_deref())?,
+        Command::Reindex { since } => cmd_reindex(&cfg, since.as_ref())?,
         Command::Compact => cmd_compact(&cfg)?,
         Command::Search {
             query,
@@ -442,7 +446,7 @@ fn main() -> Result<()> {
             relevance,
             min_relevance,
             smart,
-            since.as_deref(),
+            since.as_ref().map(util::SinceDuration::cutoff),
             source.as_deref(),
             exact,
             timings,
@@ -501,7 +505,9 @@ fn main() -> Result<()> {
             edit,
             no_edit,
         )?,
-        Command::Inbox { json } => notes::inbox(&cfg, json)?,
+        Command::Inbox { since, json } => {
+            notes::inbox(&cfg, json, since.as_ref().map(util::SinceDuration::cutoff))?
+        }
         Command::File {
             path,
             to,
@@ -972,7 +978,7 @@ fn cmd_index(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reindex(cfg: &Config, since: Option<&str>) -> Result<()> {
+fn cmd_reindex(cfg: &Config, since: Option<&util::SinceDuration>) -> Result<()> {
     let Some(spec) = since else {
         let stats = index::run(cfg, index::IndexMode::Full)?;
         println!(
@@ -982,7 +988,7 @@ fn cmd_reindex(cfg: &Config, since: Option<&str>) -> Result<()> {
         return Ok(());
     };
 
-    let cutoff = util::since_cutoff(spec)?;
+    let cutoff = spec.cutoff();
     let stats = index::run(cfg, index::IndexMode::Since { cutoff })?;
     if stats.full_reindex {
         // A chunk-format mismatch cannot be repaired partially (G4), so the existing auto-reindex
@@ -1179,6 +1185,40 @@ mod eval_cli_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn since_validation_is_shared_by_every_applicable_subcommand() {
+        for valid in ["10h", "5d", "3m", "1y", "30min", "2w", "7"] {
+            assert!(
+                Cli::try_parse_from(["vagus", "reindex", "--since", valid]).is_ok(),
+                "reindex rejected {valid}"
+            );
+            assert!(
+                Cli::try_parse_from(["vagus", "search", "query", "--since", valid]).is_ok(),
+                "search rejected {valid}"
+            );
+            assert!(
+                Cli::try_parse_from(["vagus", "inbox", "--since", valid]).is_ok(),
+                "inbox rejected {valid}"
+            );
+        }
+        assert!(Cli::try_parse_from(["vagus", "search", "query", "--since=3m"]).is_ok());
+
+        for invalid in ["", "-1d", "1.5d", "10 d", "10x", "10é"] {
+            assert!(
+                Cli::try_parse_from(["vagus", "reindex", "--since", invalid]).is_err(),
+                "reindex accepted {invalid:?}"
+            );
+            assert!(
+                Cli::try_parse_from(["vagus", "search", "query", "--since", invalid]).is_err(),
+                "search accepted {invalid:?}"
+            );
+            assert!(
+                Cli::try_parse_from(["vagus", "inbox", "--since", invalid]).is_err(),
+                "inbox accepted {invalid:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 name: search
-description: Search the vagus second-brain vault with hybrid full-text + semantic search. Use when the user wants to find, look up, recall, retrieve, or surface notes, prior research, ideas, snippets, or knowledge from their second brain / vagus vault / knowledge base / personal notes. Not for searching code or the web.
+description: Search the vagus second-brain vault with hybrid full-text + semantic search, including recent or explicitly time-bounded notes. Use when the user wants to find, look up, recall, retrieve, or surface notes, prior research, ideas, snippets, or knowledge from their second brain / vagus vault / knowledge base / personal notes. Not for searching code or the web.
 argument-hint: "[query]"
 arguments: [query]
 allowed-tools: Bash(vagus *), Read
@@ -22,9 +22,26 @@ vagus search '<query>' --json --full --rerank --exact --limit 10 --tick-provenan
 
 Shell-quote the query as one literal. `--exact` makes semantic candidates reproducible even on a
 large vault; `--rerank` is only a prior, not the final verdict. `--full` supplies the matching chunk
-body. The response is `{run,hits}` with distinct note paths. Grade `hits`; retain `run` and each
-cited hit's `provenance` for step 5. For an explicit request for every passage, omit
-`--tick-provenance`, add `--chunks`, parse the ordinary Hit array, and use counter-only ticking.
+body.
+
+When the request includes a time window, apply it during retrieval instead of fetching all time and
+filtering afterward:
+
+```bash
+vagus search '<topic query>' --since <duration> --json --full --rerank --exact --limit 10
+```
+
+Use the user's exact window. Units are `h` (hours), `d` (days), `m` (30-day months), and `y`
+(365-day years); minutes use `min`. Examples: `10h`, `5d`, `3m`, `1y`. For unqualified “recent” or
+“latest,” start with `1m` and state that window in the answer. Strip the temporal phrase from the
+query when a meaningful topic remains. `--since` filters note creation time (`created` frontmatter,
+then filesystem mtime), not dates mentioned inside note bodies.
+
+The unfiltered command responds with `{run,hits}`. Grade `hits`; retain `run` and each cited hit's
+`provenance` for step 5. A `--since` search must omit `--tick-provenance` (filtered runs cannot use
+that fixed provenance contract), so it returns the ordinary Hit array and uses counter-only ticking.
+For an explicit request for every passage, likewise omit `--tick-provenance`, add `--chunks`, parse
+the Hit array, and use counter-only ticking.
 
 Hits may contain `{path, heading, score, snippet, rrf, cosine, bm25, rerank, body, siblings,
 provenance}`. Fields may be absent; `siblings > 0` means more chunks matched. Provenance is bookkeeping,
@@ -67,20 +84,23 @@ Choose exactly one retry based on the query; do not fan out routinely:
 - rare literal, identifier, error text, filename, or proper noun → `--mode bm25`
 - conceptual paraphrase with few shared words → `--mode vec --exact`
 
-Keep `--json --full --rerank --limit 10`, grade again, and stop. If nothing reaches 2, say no confident
-match was found and offer to broaden or ask for another clue. Do not tick on this path.
+Keep `--json --full --rerank --limit 10`, preserve the exact `--since` window when one was requested,
+grade again, and stop. If nothing reaches 2, say no confident match was found and offer to broaden
+the time window or ask for another clue. Do not tick on this path.
 
 ## 5. Record only presented notes
 
-After answering, copy `run` verbatim and only cited `{path,provenance}` pairs into one compact object:
+After an unfiltered primary search, copy `run` verbatim and only cited `{path,provenance}` pairs into
+one compact object:
 
 ```bash
 vagus tick --events '{"run":<complete run>,"events":[{"path":<cited path>,"provenance":<complete provenance>}]}'
 ```
 
-Do not include the query. Escape an embedded single quote as `'\''`; never include dropped notes. If
-For explicit `--chunks`, use one counter-only `vagus tick '<path1>' '<path2>'`; the step-4 retry
-remains unticked. Never relay/retry tick output or let failure block the answer.
+Do not include the query. Escape an embedded single quote as `'\''`; never include dropped notes.
+For a primary `--since` or explicit `--chunks` search, use one counter-only
+`vagus tick '<path1>' '<path2>'`. The step-4 retry remains unticked. Never relay/retry tick output or
+let failure block the answer.
 
 ## Scope
 

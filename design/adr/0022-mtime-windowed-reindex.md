@@ -1,7 +1,8 @@
 # ADR 0022 — Mtime-windowed forced reindex
 
 - **Status:** Accepted (2026-07-29); **amended 2026-07-31** to persist forced usearch mutations and
-  make incomplete embedding rows an implicit incremental repair set.
+  make incomplete embedding rows an implicit incremental repair set; **amended 2026-08-12** to use
+  the shared CLI duration grammar.
 
 ## Context
 
@@ -32,10 +33,12 @@ the time window.
 
 Add `vagus reindex --since <duration>` with these semantics:
 
-- Durations use the existing relative grammar: `s`, `m`, `h`, `d`, `w`, or a bare number of days.
-  The cutoff is `invocation time - duration`.
+- Durations use the same validated `SinceDuration` CLI type as `search` and `inbox`: `h` = hours,
+  `d` = days, `m` = 30-day months, and `y` = 365-day years, with `s`, `min`, `w`, and bare days also
+  accepted. (`m` now means months; minutes use `min`.) Invalid values fail in clap before vault/index
+  access. The cutoff is `invocation time - duration`.
 - The selector is the note's **filesystem mtime**, not frontmatter `created` (the latter belongs to
-  `search --since`, ADR 0017). A note is selected when `mtime >= cutoff`.
+  `search --since` / `inbox --since`, ADR 0017). A note is selected when `mtime >= cutoff`.
 - Before mutating a derived store, the indexer walks the **entire vault** and builds a sorted snapshot
   of every Markdown path and mtime. Walk/stat errors are fatal rather than silently turning unreadable
   notes into apparent deletions.

@@ -22,7 +22,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    preserves them and they never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
-   or filename). Frontmatter is written only by explicit capture/filing actions: `add-note` may include
+   or filename) and remain filterable by both `search --since` and `inbox --since` via filesystem
+   mtime. Frontmatter is written only by explicit capture/filing actions: `add-note` may include
    validated non-reserved producer metadata in its initial write (ADR 0027), and approved `file` enriches
    Vagus-owned fields. Index/search never edits notes; indexing may derive searchable, kind-separated
    chunks from valid non-owned producer JSON while lifecycle frontmatter stays out of chunk text
@@ -80,8 +81,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
     `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
-    only, max 6 presented, one fallback only if none survive; its fixed primary path atomically logs
-    provenance and counters for cited notes without query content. Advanced search is **in core**,
+    only, max 6 presented, one fallback only if none survive. Its fixed unfiltered primary atomically
+    logs provenance and counters for cited notes without query content; explicit user time windows use
+    native `--since`, preserve it on retry, and record primary citations counter-only because filtered
+    provenance is forbidden. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Searchable producer JSON

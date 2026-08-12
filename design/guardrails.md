@@ -27,8 +27,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   indexing may derive dedicated searchable chunks from valid producer JSON without mutating the file.
   ([ADR 0005](./adr/0005-assisted-filing.md), [ADR 0027](./adr/0027-producer-frontmatter-metadata.md),
   [ADR 0028](./adr/0028-searchable-producer-metadata.md))
-  A bare note must also stay **filterable by `search --since`**: when `created` frontmatter is
-  absent/unparseable, the filter falls back to the file's **filesystem mtime**.
+  A bare note must also stay **filterable by `search --since` and `inbox --since`**: when `created`
+  frontmatter is absent/unparseable, both filters fall back to the file's **filesystem mtime**.
   ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G25 — Ticks and presentation provenance are local user data in meta.db.** `ticks`, `tick_runs`,
   and `tick_events` never enter the vault/frontmatter and survive `clear_all`/every reindex/file
@@ -156,8 +156,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
-  fixed primary path emits G9f provenance, and the skill atomically records only cited notes without
-  query content; retries remain counter-only. The *channel* picks the tier — no escalation prompts or
+  fixed **unfiltered** primary path emits G9f provenance and atomically records only cited notes
+  without query content. Explicit user time windows go into retrieval as `--since`, stay on retry,
+  omit the G9f wrapper because metadata-filtered provenance is forbidden, and record primary cited
+  paths counter-only; retries remain unticked. The *channel* picks the tier — no escalation prompts or
   routine tier-2 fan-out. The skill keeps rerank-context radius 0; optional wider model input never
   expands the ten matched bodies shown to the agent.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))

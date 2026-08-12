@@ -34,7 +34,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Fail-closed vault onboarding + network-free doctor | core `vagus` | alias-aware paths; explicit model-fetch consent | shipped (ADRs 0004/0006/0015) |
 | Cross-encoder reranker (`--rerank`, optional `--rerank-context 1|2`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en**; exact pair-token budgeting | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
-| Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
+| Note-time filters (`search`/`inbox --since`; search `--source`) | core `vagus` | shared duration/timestamp rules; SQLite post-rank search stage | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF knee + source-champion veto (RRF untouched) | shipped (ADR 0023) |
 | Opt-in semantic relevance (`--relevance` / explicit floor) | core `vagus` | named finite original-query cosine heuristic; post-truncation/no backfill | shipped (ADR 0026) |
@@ -62,13 +62,14 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — tier-2 bounded skill** *(shipped; tightened 2026-07-30)*: `skills/search/SKILL.md` runs
+- **M3 — tier-2 bounded skill** *(shipped; tightened 2026-08-12)*: `skills/search/SKILL.md` runs
   the fixed `vagus search --json --full --rerank --exact --limit 10 --tick-provenance` path at
   rerank-context radius 0, judges full bodies 0–3, presents only nonredundant grade≥2 evidence (max 6,
-  never pads), and permits one query-shape-selected fallback only when none survive. The primary run
-  carries self-verifying pipeline/corpus identity and strict rank/cap states; one atomic tick records
-  only cited paths, with query content off. Fallbacks are counter-only. Judging stays in the skill
-  (G17); RRF is never re-derived (G8). The same Agent Skill installs for Claude Code and pi.
+  never pads), and permits one query-shape-selected fallback only when none survive. The unfiltered
+  primary carries self-verifying pipeline/corpus identity and atomically ticks cited paths with query
+  content off. Explicit user windows use native `--since`, ordinary JSON, and counter-only primary
+  ticks; filtered retries remain unticked. Judging stays in the skill (G17); RRF is never re-derived
+  (G8). The same Agent Skill installs for Claude Code and pi; process-inbox learns the same window grammar.
 
 ## Deferred / not building
 

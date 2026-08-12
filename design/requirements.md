@@ -14,7 +14,8 @@ coding harness (Claude Code and pi).
   `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
   or recursively deletes an occupied vault.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
-  Also the create-note skill to capture from a Claude Code or pi session.
+  Also the create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
+  the processing list by the same note-creation rule as search without requiring prior indexing.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
   hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
@@ -30,12 +31,15 @@ coding harness (Claude Code and pi).
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;
   forced usearch mutations persist, and incomplete embedding rows trigger implicit per-file repair.
+  Every applicable `--since` uses one validated grammar, including hours, days, months, and years.
 - **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
   `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
   10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), never pads, and
-  atomically records only cited-note counters/provenance from its fixed primary path.
+  atomically records only cited-note counters/provenance from its fixed unfiltered primary path.
+  Explicit user time windows are applied natively with `--since`; filtered primary citations are
+  counter-only. Process-inbox applies the same duration grammar instead of post-filtering a full list.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 - **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against

@@ -1,6 +1,7 @@
 # ADR 0021 — Usage ticks and presentation provenance
 
-- **Status:** Accepted (2026-07-08); **amended 2026-07-30** with versioned rank-provenance events.
+- **Status:** Accepted (2026-07-08); **amended 2026-07-30** with versioned rank-provenance events;
+  **amended 2026-08-12** to make the skill's explicit `--since` path counter-only.
 
 ## Context
 
@@ -53,8 +54,11 @@ are never serialized there. Only this fixed note-level standard-hybrid path may 
 ```
 
 Smart, BM25/vector-only, chunk, metadata-filtered, score-floor, and relevance-floor variants are
-rejected. CWD scope remains allowed but gets an opaque SHA-256 policy identity (raw words are not
-stored), preventing unlike exclusion sets from sharing a diagnostic group.
+rejected. Therefore, when the skill honors explicit user time intent with `--since`, it must omit
+`--tick-provenance`, parse the ordinary Hit array, and record only cited paths through positional
+counter ticks; it must never synthesize a run or rank tuple. CWD scope remains allowed but gets an
+opaque SHA-256 policy identity (raw words are not stored), preventing unlike exclusion sets from
+sharing a diagnostic group.
 
 A run records executable version and SHA-256; corpus SHA-256 and indexed counts; embed/chunk/tantivy
 identities; RRF/candidate-pool and exact-backend policies; reranker model and tokenizer-context policy;
@@ -95,9 +99,10 @@ explicitly.
 
 ## Consequences
 
-- **Positive:** useful-note popularity survives every index rebuild; default search JSON and ranking
-  are unchanged; exact pipeline/corpus groups support honest descriptive diagnostics; scored-prefix
-  versus unscored-tail observations are explicit; counter and event updates cannot diverge.
+- **Positive:** useful-note popularity survives every index rebuild; default and time-filtered search
+  JSON and ranking remain honest; exact pipeline/corpus groups support descriptive diagnostics only
+  where the strict contract applies; scored-prefix versus unscored-tail observations are explicit;
+  counter and event updates cannot diverge.
 - **Negative:** `meta.db` is no longer wholly disposable. Backup/recovery must preserve three tables.
   Paths can orphan after external moves. Events add local storage and selected-path history.
 - **Boundary:** provenance does not establish recall, relevance calibration, causal model quality, or
