@@ -37,7 +37,9 @@ coding harness (Claude Code and pi).
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
   `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
   10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), never pads, and
-  atomically records only cited-note counters/provenance from its fixed primary path.
+  atomically records only cited-note counters/provenance from its fixed unfiltered primary path.
+  Explicit user time windows are applied natively with `--since`; filtered primary citations are
+  counter-only. Process-inbox applies the same duration grammar instead of post-filtering a full list.
 - **F7 — Obsidian compatibility.** The vault opens in Obsidian unchanged (plain `.md`, optional
   `[[wikilinks]]` and YAML frontmatter); editable on mobile via iCloud.
 - **F8 — Reproducible retrieval evaluation.** `vagus eval` scores a fixed current index against

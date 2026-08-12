@@ -156,8 +156,10 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
-  fixed primary path emits G9f provenance, and the skill atomically records only cited notes without
-  query content; retries remain counter-only. The *channel* picks the tier — no escalation prompts or
+  fixed **unfiltered** primary path emits G9f provenance and atomically records only cited notes
+  without query content. Explicit user time windows go into retrieval as `--since`, stay on retry,
+  omit the G9f wrapper because metadata-filtered provenance is forbidden, and record primary cited
+  paths counter-only; retries remain unticked. The *channel* picks the tier — no escalation prompts or
   routine tier-2 fan-out. The skill keeps rerank-context radius 0; optional wider model input never
   expands the ten matched bodies shown to the agent.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))

@@ -5,9 +5,11 @@ shell out to `vagus`, which must be on `PATH`. No bundled scripts — the CLI is
 
 - **`create-note`** — capture a note from a session into the inbox (`/create-note "title"` in Claude
   Code; `/skill:create-note title` in pi).
-- **`search`** — hybrid search the vault (`/search <query>`; `/skill:search <query>` in pi).
-- **`process-inbox`** — assisted PARA filing (`/process-inbox`; `/skill:process-inbox` in pi),
-  manual-trigger only because it moves files (`disable-model-invocation: true`).
+- **`search`** — hybrid search the vault, translating requests such as “from the last 3 months” into
+  a native `--since 3m` retrieval filter (`/search <query>`; `/skill:search <query>` in pi).
+- **`process-inbox`** — assisted PARA filing, including time-bounded passes such as the last five days
+  (`/process-inbox`; `/skill:process-inbox` in pi), manual-trigger only because it moves files
+  (`disable-model-invocation: true`).
 
 ## Install
 

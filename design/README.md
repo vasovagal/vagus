@@ -42,7 +42,8 @@ silently breaking an invariant.
 - `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
 - `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
-  channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 context contract.
+  channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 contract and pushes explicit
+  time windows into native `--since` retrieval.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit
@@ -61,8 +62,8 @@ silently breaking an invariant.
   post-rank dedup; folded source ranks preserve the G9d champion guard; `--chunks` opts out; adds G9c.
 - `0021-usage-ticks.md` — local usage counters plus atomic, schema-versioned cited-note rank
   provenance (`vagus tick`/`fame`/`ticks`): survives reindex, re-keys on file moves, pins pipeline +
-  corpus with path-bound event IDs, names capped tails honestly, and keeps default search JSON
-  unchanged; adds G25/G9f.
+  corpus with path-bound event IDs, names capped tails honestly, keeps default search JSON unchanged,
+  and requires filtered skill searches to use ordinary JSON/counter-only ticks; adds G25/G9f.
 - `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault,
   force-refreshes and persists the recent filesystem-mtime window without wiping older notes, and
   treats interrupted NULL embeddings as implicit repairs; adds G26.

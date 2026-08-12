@@ -81,8 +81,10 @@ canonical invariant list and is **binding** — the summary below must stay in s
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
     `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
-    only, max 6 presented, one fallback only if none survive; its fixed primary path atomically logs
-    provenance and counters for cited notes without query content. Advanced search is **in core**,
+    only, max 6 presented, one fallback only if none survive. Its fixed unfiltered primary atomically
+    logs provenance and counters for cited notes without query content; explicit user time windows use
+    native `--since`, preserve it on retry, and record primary citations counter-only because filtered
+    provenance is forbidden. Advanced search is **in core**,
     **not** a plugin — plugins (G18) are for networked capture only.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Searchable producer JSON

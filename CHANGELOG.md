@@ -13,6 +13,10 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 - `vagus inbox --since <duration>` filters inbox notes by the same
   `created`-frontmatter/filesystem-mtime rule as search. (ADR 0017)
+- The bundled search and process-inbox skills recognize requested time windows and apply native
+  `--since` filters immediately. Filtered search correctly uses ordinary JSON and counter-only ticks
+  because rank provenance intentionally rejects metadata-filtered runs. Reinstall skills after
+  upgrading. (ADRs 0012/0021)
 
 ### Changed
 

@@ -113,6 +113,8 @@ vagus skills install --agent pi      # pi: ~/.pi/agent/skills
 vagus skills list --agent pi         # show pi install status
 ```
 
+The bundled search and process-inbox skills translate user time windows directly into `--since`
+filters (for example, “last three months” → `3m`) instead of making the agent post-filter results.
 The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
 leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an
 upgrade, install again for each agent you use; in an existing pi session, run `/reload`.
