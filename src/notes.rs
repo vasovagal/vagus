@@ -6,17 +6,19 @@
 use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 
+use crate::chunk::parse_frontmatter;
 use crate::config::Config;
 use crate::db::Db;
 use crate::frontmatter::{is_vagus_owned, valid_producer_key};
 use crate::index;
 use crate::scope::Scope;
 use crate::search::{self, Mode};
+use crate::util::note_created_at_secs;
 
 /// Child-process compatibility channel for integrations that need producer-owned frontmatter. A current
 /// Vagus consumes it; older binaries harmlessly ignore it, unlike an unknown command-line flag.
@@ -295,18 +297,37 @@ fn open_editor(path: &Path) -> Result<bool> {
 
 // --- inbox ------------------------------------------------------------------
 
-pub fn inbox(cfg: &Config, json: bool) -> Result<()> {
+fn inbox_items(cfg: &Config, since: Option<i64>) -> Result<Vec<(String, String)>> {
     let dir = cfg.vault.join("00-Inbox");
-    let mut items: Vec<(String, String)> = Vec::new();
+    let mut items = Vec::new();
     if dir.exists() {
         for entry in fs::read_dir(&dir)? {
-            let p = entry?.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                items.push((vault_rel(cfg, &p), note_title(&p)));
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+                continue;
             }
+            if let Some(cutoff) = since {
+                let mtime = fs::metadata(&path)?
+                    .modified()?
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs_f64())
+                    .unwrap_or(0.0);
+                let text = fs::read_to_string(&path)
+                    .with_context(|| format!("reading {} for --since", path.display()))?;
+                let frontmatter = parse_frontmatter(&text);
+                if note_created_at_secs(frontmatter.created.as_deref(), mtime) < cutoff {
+                    continue;
+                }
+            }
+            items.push((vault_rel(cfg, &path), note_title(&path)));
         }
     }
     items.sort();
+    Ok(items)
+}
+
+pub fn inbox(cfg: &Config, json: bool, since: Option<i64>) -> Result<()> {
+    let items = inbox_items(cfg, since)?;
 
     if json {
         let arr: Vec<_> = items
@@ -668,6 +689,33 @@ fn existing_para_folders(cfg: &Config) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::util::testdir::TempDir;
+
+    #[test]
+    fn inbox_since_uses_created_frontmatter() {
+        let dir = TempDir::new("inbox-since");
+        let cfg = Config {
+            vault: dir.path().join("vault"),
+            data_dir: dir.path().join("data"),
+            cache_dir: dir.path().join("cache"),
+        };
+        let inbox = cfg.vault.join("00-Inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(
+            inbox.join("old.md"),
+            "---\ncreated: 2000-01-01T00:00\n---\n# Old\n",
+        )
+        .unwrap();
+        fs::write(
+            inbox.join("recent.md"),
+            "---\ncreated: 2099-01-01T00:00\n---\n# Recent\n",
+        )
+        .unwrap();
+        fs::write(inbox.join("bare.md"), "# Bare\n").unwrap();
+
+        // The bare note falls back to its current filesystem mtime (before this 2033 cutoff).
+        let items = inbox_items(&cfg, Some(2_000_000_000)).unwrap();
+        assert_eq!(items, [("00-Inbox/recent.md".into(), "Recent".into())]);
+    }
 
     #[test]
     fn producer_frontmatter_is_yaml_safe_and_structured() {

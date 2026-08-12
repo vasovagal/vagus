@@ -13,14 +13,12 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use walkdir::{DirEntry, WalkDir};
 
-use chrono::{Local, NaiveDateTime, TimeZone};
-
 use crate::chunk::{Chunk, chunk_markdown, parse_frontmatter};
 use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL, VEC_INDEX_VERSION};
 use crate::db::Db;
 use crate::embed::Embedder;
 use crate::lex::Lex;
-use crate::util::{key_for, now_unix, sha256_hex};
+use crate::util::{key_for, note_created_at_secs, now_unix, sha256_hex};
 use crate::vector::{UsearchIndex, VectorIndex};
 
 /// How an index run treats the existing derived stores.
@@ -142,20 +140,6 @@ fn mtime_secs(path: &Path) -> Result<f64> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0))
-}
-
-/// Note-level `created_at` (unix secs) for the `--since` filter (ADR 0017): the frontmatter `created`
-/// value parsed as `%Y-%m-%dT%H:%M` in **local** time (matching how notes.rs writes it), or — when
-/// the key is absent, empty, or unparseable — a **G3 fallback to the file mtime** so a bare,
-/// frontmatter-free note is still `--since`-filterable.
-fn created_at_secs(created: Option<&str>, mtime: f64) -> i64 {
-    if let Some(raw) = created
-        && let Ok(naive) = NaiveDateTime::parse_from_str(raw.trim(), "%Y-%m-%dT%H:%M")
-        && let Some(dt) = Local.from_local_datetime(&naive).single()
-    {
-        return dt.timestamp();
-    }
-    mtime as i64 // G3 mtime fallback
 }
 
 /// Exact document text sent to the semantic index. Producer metadata is already represented as its
@@ -314,7 +298,7 @@ pub fn run_timed(
         // Note-level indexed filters (ADR 0017): `created_at` (frontmatter `created`, else mtime — G3)
         // and `source` (frontmatter `source`, else NULL), attached to every chunk of this note.
         let fm = parse_frontmatter(&text);
-        let created_at = created_at_secs(fm.created.as_deref(), mtime);
+        let created_at = note_created_at_secs(fm.created.as_deref(), mtime);
 
         let t0 = Instant::now();
         let chunks = chunk_markdown(&rel, &text);

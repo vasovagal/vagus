@@ -34,7 +34,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Fail-closed vault onboarding + network-free doctor | core `vagus` | alias-aware paths; explicit model-fetch consent | shipped (ADRs 0004/0006/0015) |
 | Cross-encoder reranker (`--rerank`, optional `--rerank-context 1|2`) | core `vagus` | fastembed/ort — **jina-reranker-v1-turbo-en**; exact pair-token budgeting | shipped (ADR 0015) |
 | `--full` / `--min-score` (skill enablers) | core `vagus` | — | shipped |
-| Frontmatter filters (`--since` / `--source`) | core `vagus` | SQLite post-rank stage (no tantivy change) | shipped (ADR 0017) |
+| Note-time filters (`search`/`inbox --since`; search `--source`) | core `vagus` | shared duration/timestamp rules; SQLite post-rank search stage | shipped (ADR 0017) |
 | Note-level results by default (+ `--chunks` opt-out) | core `vagus` | post-rank dedup stage (RRF untouched) | shipped (ADR 0020) |
 | Adaptive context-tidy result ceiling (+ `--exhaustive`) | core `vagus` | robust RRF knee + source-champion veto (RRF untouched) | shipped (ADR 0023) |
 | Opt-in semantic relevance (`--relevance` / explicit floor) | core `vagus` | named finite original-query cosine heuristic; post-truncation/no backfill | shipped (ADR 0026) |

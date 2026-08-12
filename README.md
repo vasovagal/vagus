@@ -144,9 +144,10 @@ vagus init --icloud         # one-time fail-closed iCloud/PARA setup (`vagus ini
 vagus tutorial              # the capture → search → file PARA workflow
 vagus index                 # incremental: sync the vault into the local index
 vagus reindex               # full rebuild from the vault
-vagus reindex --since 10d   # force-refresh recent filesystem mtimes; preserve older embeddings
+vagus reindex --since 5d    # force-refresh recent filesystem mtimes; preserve older embeddings
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
+vagus search "<query>" --since 3m  # keep notes created in the last three months
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)
 vagus search "<query>" --rerank --rerank-context 1  # score with adjacent in-note context
@@ -161,6 +162,7 @@ vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), th
 vagus add-note "Generated" --frontmatter-json '{"producer":{"model":"parakeet"}}'  # safe metadata
 vagus search "parakeet"    # producer metadata is indexed lexically + semantically
 vagus inbox                 # list 00-Inbox items
+vagus inbox --since 10h     # list inbox notes created in the last ten hours
 vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
 vagus doctor                # network-free health/cache-presence check
 vagus doctor --fetch-models # explicitly download + validate embedder and reranker
@@ -171,6 +173,13 @@ vagus ticks                 # selection-biased rank diagnostics by pipeline + co
 vagus vectors export --out DIR  # coherent local vector/metadata snapshot for offline analysis
 vagus skills install        # install agent skills (--agent claude|pi; default: claude)
 ```
+
+The applicable time-window commands (`reindex`, `search`, and `inbox`) share one validated `--since`
+grammar: `h` (hours), `d` (days), `m` (30-day months), and `y` (365-day years), plus `s` (seconds),
+`min` (minutes), `w` (weeks), and bare days. For example: `10h`, `5d`, `3m`, and `1y`. `search` and
+`inbox` filter the note's `created` frontmatter with a filesystem-mtime fallback; `reindex` selects
+filesystem mtimes for forced repair. Invalid operands fail during CLI parsing before a command opens
+the index.
 
 Search results are **one per note** by default, each shown as its best-matching chunk. `--limit 10`
 means **at most** 10 distinct notes: plain hybrid search may return fewer when a guarded robust RRF
@@ -229,8 +238,8 @@ metadata says they are unchanged, including persisted usearch repairs. Older ind
 local usage/provenance rows are preserved; new/deleted files are still reconciled globally. Ordinary
 `vagus index` also retries a file if an interrupted run left any chunk embedding missing. Use plain
 `vagus reindex` when the suspect period is unknown or the
-embedding/chunk identity changed. (`search --since` is different: it filters results by note creation
-time.)
+embedding/chunk identity changed. (`search --since` and `inbox --since` are different: they filter
+notes by creation time.)
 
 The index/database live **outside** iCloud (`~/.local/share/vagus/`) — only your notes live in
 iCloud. The search index is fully rebuildable from the Markdown (`vagus reindex`), but the database

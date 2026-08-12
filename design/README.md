@@ -49,7 +49,8 @@ silently breaking an invariant.
   doctor fetch/validation and bounded tokenizer-safe `--rerank-context`; amends 0003 + G17.
 - `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); `--smart`
   forwards bounded rerank context and releases its embedder before widened inference; amends G17.
-- `0017-indexed-frontmatter-filters.md` — `search --since`/`--source` via SQLite-denormalized
+- `0017-indexed-frontmatter-filters.md` — shared `search`/`inbox --since` note-age semantics and
+  `search --source` via SQLite-denormalized
   `created_at`/`source` (no tantivy schema change); adds G9b.
 - `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
   worktree janitor, soft breadcrumb nudge; adds G21–G24.

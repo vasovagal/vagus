@@ -22,7 +22,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    preserves them and they never enter the vault.
 3. **Never auto-edit a note the user is writing.** Frontmatter is *optional*; a bare `vim
    ~/brain/00-Inbox/x.md` with no frontmatter must index fine (title falls back to first `# heading`
-   or filename). Frontmatter is written only by explicit capture/filing actions: `add-note` may include
+   or filename) and remain filterable by both `search --since` and `inbox --since` via filesystem
+   mtime. Frontmatter is written only by explicit capture/filing actions: `add-note` may include
    validated non-reserved producer metadata in its initial write (ADR 0027), and approved `file` enriches
    Vagus-owned fields. Index/search never edits notes; indexing may derive searchable, kind-separated
    chunks from valid non-owned producer JSON while lifecycle frontmatter stays out of chunk text

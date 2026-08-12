@@ -1,11 +1,13 @@
 # ADR 0017 — Indexed frontmatter filters: `search --since` / `--source`
 
-- **Status:** Accepted (2026-05-30)
+- **Status:** Accepted (2026-05-30); **amended 2026-08-12** so every applicable CLI command uses
+  one validated duration grammar and `inbox` can apply the same note-age filter.
 
 ## Context
 
 Users want to narrow hybrid search results by when a note was written
-(`--since=10d`) and where it came from (`--source=slack`). Both facts live in
+(`--since=10d`) and where it came from (`--source=slack`). The same age window is useful when listing
+items to process with `vagus inbox`. Both indexed search facts live in
 **optional** note frontmatter (`created`, `source`), which was stripped from chunk text
 when this decision landed ([ADR 0013](./0013-chunk-budget.md)) and is absent from the
 tantivy schema (path/chunk_id/heading/body only — [ADR 0003](./0003-search-stack.md)).
@@ -48,8 +50,13 @@ filterable by `--since`.
   Keep a hit iff (`--since` unset OR `created_at >= cutoff`) AND (`--source`
   unset OR `source` equals the request, ASCII case-insensitive). A `NULL`
   `source` never matches a `--source` filter. The cutoff is computed in the CLI:
-  `--since` is a relative duration parsed dependency-free (`s/m/h/d/w`, bare
-  number = days), `cutoff = now − dur`.
+  `--since` is a relative duration parsed dependency-free by the shared CLI `SinceDuration` type:
+  `h` = hours, `d` = days, `m` = 30-day months, and `y` = 365-day years; `s`, `min`, `w`, and bare
+  days remain supported. (`m` formerly meant minutes; the unambiguous spelling is now `min`.) Invalid
+  values fail during clap parsing before config/index access. The cutoff is `now − duration`.
+- **Inbox uses the same note timestamp.** `vagus inbox --since` reads each candidate note's
+  frontmatter and applies the identical parsed `created` value plus filesystem-mtime fallback. It
+  does not depend on index freshness, so newly dropped inbox Markdown remains visible/filterable.
 - **CHUNK_VERSION bump → auto-reindex (G4/G20).** `CHUNK_VERSION` goes `3 → 4`.
   `index.rs` already forces a full reindex on identity mismatch and re-pins
   identity in `meta`, so existing vaults reindex **once** automatically and
@@ -70,8 +77,9 @@ filterable by `--since`.
   repeated per chunk). At personal scale the duplication is negligible and keeps
   hydration a single-row read.
 - Frontmatter is still hand-parsed (no YAML dependency); top-level scalar `created`/`source` keys are
-  read with quote/whitespace trimming. ADR 0028 additionally recognizes valid one-line JSON values for
-  non-owned producer fields, without turning lifecycle fields into search text.
+  read with quote/whitespace trimming. Indexing and inbox listing share the timestamp conversion so
+  their fallback behavior cannot drift. ADR 0028 additionally recognizes valid one-line JSON values
+  for non-owned producer fields, without turning lifecycle fields into search text.
 - The hydration cap (`limit + 32` candidates) is shared with `apply_scope`; a
   very aggressive filter could under-fill results, same best-effort behavior as
   scope. Acceptable at personal scale; revisit only if it bites.

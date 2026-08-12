@@ -9,6 +9,19 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- `vagus inbox --since <duration>` filters inbox notes by the same
+  `created`-frontmatter/filesystem-mtime rule as search. (ADR 0017)
+
+### Changed
+
+- **Consistent relative-time windows.** `reindex`, `search`, and `inbox` all validate `--since`
+  through one CLI type and accept hours (`10h`), days (`5d`), 30-day months (`3m`), and 365-day
+  years (`1y`), while retaining seconds, weeks, bare days, and unambiguous minutes (`30min`). Invalid
+  operands fail before configuration or index access. `m` now means months; use `min` for minutes.
+  (ADRs 0017/0022)
+
 ## [0.12.0] — 2026-08-07
 
 ### Added

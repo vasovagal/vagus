@@ -14,7 +14,8 @@ coding harness (Claude Code and pi).
   `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
   or recursively deletes an occupied vault.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
-  Also the create-note skill to capture from a Claude Code or pi session.
+  Also the create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
+  the processing list by the same note-creation rule as search without requiring prior indexing.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
   hybrid note search treats `--limit` as a context-conscious ceiling: a robust RRF knee may omit only
@@ -30,6 +31,7 @@ coding harness (Claude Code and pi).
   `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;
   forced usearch mutations persist, and incomplete embedding rows trigger implicit per-file repair.
+  Every applicable `--since` uses one validated grammar, including hours, days, months, and years.
 - **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the

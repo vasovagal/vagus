@@ -27,8 +27,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   indexing may derive dedicated searchable chunks from valid producer JSON without mutating the file.
   ([ADR 0005](./adr/0005-assisted-filing.md), [ADR 0027](./adr/0027-producer-frontmatter-metadata.md),
   [ADR 0028](./adr/0028-searchable-producer-metadata.md))
-  A bare note must also stay **filterable by `search --since`**: when `created` frontmatter is
-  absent/unparseable, the filter falls back to the file's **filesystem mtime**.
+  A bare note must also stay **filterable by `search --since` and `inbox --since`**: when `created`
+  frontmatter is absent/unparseable, both filters fall back to the file's **filesystem mtime**.
   ([ADR 0017](./adr/0017-indexed-frontmatter-filters.md))
 - **G25 — Ticks and presentation provenance are local user data in meta.db.** `ticks`, `tick_runs`,
   and `tick_events` never enter the vault/frontmatter and survive `clear_all`/every reindex/file
