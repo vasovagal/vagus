@@ -73,3 +73,19 @@ tokenizers = { version = "0.22", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.10.2", optional = true, features = ["metal"] }
 candle-transformers = { version = "0.10.2", optional = true, features = ["metal"] }
+
+# Release-binary size/codegen. The shipped v0.13.0 artifact was 55.5 MB on linux-x86_64 under the
+# default profile; ~11 MB of that was `.symtab`/`.strtab` symbol names that a released CLI has no use
+# for. Stripping and single-CGU ThinLTO cut the artifact without touching what it links: G13's
+# self-contained property is about linkage, not symbols, so `otool -L`/`ldd` must still show system
+# dylibs only after any change here — re-verify alongside the usual `ort`/usearch/platform bumps.
+#   strip          symbol table only; there is no debuginfo in the default release profile anyway.
+#                  Costs backtrace quality in release builds (dev/test profiles are untouched).
+#   lto/cgu        cross-crate inlining + dedup of the generic instantiations that dominate `.text`
+#                  (candle `gemm`, tantivy, serde). Rust-side only — the static C++ (onnxruntime,
+#                  usearch) is unaffected, no `-Clinker-plugin-lto`. Buys size at release build time;
+#                  `ci.yml` tests on the dev profile and `release.yml` doesn't re-run them (Law 3).
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
