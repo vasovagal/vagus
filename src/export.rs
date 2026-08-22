@@ -646,8 +646,10 @@ mod tests {
         assert_eq!(header_end % 64, 0);
         assert_eq!(npy.len(), header_end + 3 * 3 * 4);
         let first: Vec<f32> = npy[header_end..header_end + 12]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         assert_eq!(first, [1.0, 2.0, 3.0]);
     }
