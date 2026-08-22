@@ -30,6 +30,10 @@ jobs:
         run: cargo test --all-features --locked
       - name: test (local-tracing only)
         run: cargo test --no-default-features --features local-tracing --locked
+      # Preserve the pre-tracing integration set while proving that its unconditional --trace flag is
+      # inert when local tracing is compiled out.
+      - name: test (generate only)
+        run: cargo test --no-default-features --features generate --locked
       # Compiled-out tracing/generation must accept their compatibility CLI while reading/creating no
       # tracing state and preserving the existing lean binary.
       - name: test (no default features)
@@ -49,5 +53,7 @@ jobs:
         run: cargo +1.96.0 check --all-features --locked
       - name: test (local-tracing only, Rust 1.96)
         run: cargo +1.96.0 test --no-default-features --features local-tracing --locked
+      - name: test (generate only, Rust 1.96)
+        run: cargo +1.96.0 test --no-default-features --features generate --locked
       - name: test (no default features, Rust 1.96)
         run: cargo +1.96.0 test --no-default-features --locked

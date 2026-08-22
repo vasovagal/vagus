@@ -36,6 +36,42 @@ const RRF_K: f32 = 60.0;
 /// experiment must report a different policy id without changing this default silently.
 pub const FUSION_POLICY: &str = "rrf_k60";
 
+/// Owns one smart-search prewarm worker and joins it on every scope exit, including `?`/unwind.
+#[cfg(feature = "generate")]
+struct ScopedWorker<T> {
+    handle: Option<JoinHandle<T>>,
+}
+
+#[cfg(feature = "generate")]
+impl<T> ScopedWorker<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    fn join(&mut self) -> Option<std::thread::Result<T>> {
+        self.handle.take().map(JoinHandle::join)
+    }
+}
+
+#[cfg(feature = "generate")]
+impl<T> Drop for ScopedWorker<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Both independent model prewarms share one lexical scope, so neither can outlive smart fallback or
+/// tracing shutdown even when rewrite/retrieval/hydration exits early.
+#[cfg(feature = "generate")]
+struct SmartPrewarm {
+    embedder: ScopedWorker<Result<Embedder>>,
+    reranker: ScopedWorker<Result<Reranker>>,
+}
+
 fn fusion_supports_adaptive_tidy(policy: &str) -> bool {
     policy == "rrf_k60"
 }
@@ -289,6 +325,15 @@ pub(crate) struct QueryMeta {
     /// Actual hydrated fused pool and actually scored prefix.
     pub candidate_pool: usize,
     pub rerank_cap: usize,
+}
+
+/// Internal query result that keeps the aggregate postprocess span alive across the caller's score,
+/// relevance, and adaptive-tidy projections.
+struct TracedQueryResult {
+    hits: Vec<Hit>,
+    elided: usize,
+    meta: QueryMeta,
+    postprocess_trace: crate::offline_trace::Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,6 +689,7 @@ pub fn query(
             "all"
         },
     );
+    let scope_trace = crate::offline_trace::search_scope(&trace, mode.trace_name());
     let result = trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
         query_traced(
             cfg,
@@ -661,13 +707,21 @@ pub fn query(
             chunks,
             score_floor,
             &trace,
+            &scope_trace,
         )
     });
-    if let Ok((hits, _, meta)) = &result {
-        trace.candidate_count(meta.candidate_pool);
-        trace.result_count(hits.len());
+    match result {
+        Ok(traced) => {
+            traced.postprocess_trace.result_count(traced.hits.len());
+            drop(traced.postprocess_trace);
+            scope_trace.ok();
+            drop(scope_trace);
+            trace.candidate_count(traced.meta.candidate_pool);
+            trace.result_count(traced.hits.len());
+            Ok((traced.hits, traced.elided, traced.meta))
+        }
+        Err(error) => Err(error),
     }
-    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -687,7 +741,8 @@ fn query_traced(
     chunks: bool,
     score_floor: bool,
     trace_parent: &crate::offline_trace::Span,
-) -> Result<(Vec<Hit>, usize, QueryMeta)> {
+    scope_trace: &crate::offline_trace::Span,
+) -> Result<TracedQueryResult> {
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
@@ -901,24 +956,28 @@ fn query_traced(
             Ok(hits)
         },
     )?;
-    postprocess_trace.result_count(hits.len());
-    drop(postprocess_trace);
-
     t.total_ms = ms_since(t_total);
     if timings {
         t.print(if rerank { "rerank" } else { "plain" });
     }
-    let (hits, elided) = apply_scope(std::mem::take(&mut hits), scope);
-    Ok((
+    let scope_candidates = hits.len();
+    let (hits, elided) = {
+        let _entered = scope_trace.enter();
+        apply_scope(std::mem::take(&mut hits), scope)
+    };
+    scope_trace.candidate_count(scope_candidates);
+    scope_trace.result_count(hits.len());
+    Ok(TracedQueryResult {
         hits,
         elided,
-        QueryMeta {
+        meta: QueryMeta {
             source_limit,
             fusion_limit: pool,
             candidate_pool,
             rerank_cap: actual_rerank_cap,
         },
-    ))
+        postprocess_trace,
+    })
 }
 
 /// Post-rank `--since`/`--source` filter (ADR 0017). Mirrors `apply_scope`: prunes already-ranked
@@ -1033,7 +1092,8 @@ fn smart_query(
     chunks: bool,
     score_floor: bool,
     trace_parent: &crate::offline_trace::Span,
-) -> Result<(Vec<Hit>, usize, QueryMeta)> {
+    scope_trace: &crate::offline_trace::Span,
+) -> Result<TracedQueryResult> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
     let t_total = Instant::now();
@@ -1054,29 +1114,31 @@ fn smart_query(
     // the process (G14). Trades a little peak RAM (all three models briefly resident) for latency. On a
     // worker panic we rebuild on the main thread, so run_query's "smart unavailable → --rerank"
     // graceful fallback still holds.
-    let mut emb_warm: Option<JoinHandle<Result<Embedder>>> = Some({
-        let cache = cfg.cache_dir.clone();
-        crate::offline_trace::spawn_with_parent(&vector_trace, move |parent| {
-            let load_trace = crate::offline_trace::model_load(
-                &parent,
-                "fastembed",
-                "embedding",
-                Some(crate::config::EMBED_DIMS),
-            );
-            load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                Embedder::new(&cache)
+    let mut prewarm = SmartPrewarm {
+        embedder: ScopedWorker::new({
+            let cache = cfg.cache_dir.clone();
+            crate::offline_trace::spawn_with_parent(&vector_trace, move |parent| {
+                let load_trace = crate::offline_trace::model_load(
+                    &parent,
+                    "fastembed",
+                    "embedding",
+                    Some(crate::config::EMBED_DIMS),
+                );
+                load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
+                    Embedder::new(&cache)
+                })
             })
-        })
-    });
-    let rr_warm: JoinHandle<Result<Reranker>> = {
-        let cache = cfg.cache_dir.clone();
-        crate::offline_trace::spawn_with_parent(&rerank_trace, move |parent| {
-            let load_trace =
-                crate::offline_trace::model_load(&parent, "fastembed", "reranker", None);
-            load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                Reranker::new(&cache, rerank_context)
+        }),
+        reranker: ScopedWorker::new({
+            let cache = cfg.cache_dir.clone();
+            crate::offline_trace::spawn_with_parent(&rerank_trace, move |parent| {
+                let load_trace =
+                    crate::offline_trace::model_load(&parent, "fastembed", "reranker", None);
+                load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
+                    Reranker::new(&cache, rerank_context)
+                })
             })
-        })
+        }),
     };
 
     // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
@@ -1159,23 +1221,9 @@ fn smart_query(
                         let t0 = Instant::now();
                         // Collect the explicitly parented prewarm worker. A panic falls back to a
                         // foreground load under the same vector stage.
-                        let embedder = match emb_warm.take() {
-                            Some(handle) => match handle.join() {
-                                Ok(result) => result?,
-                                Err(_) => {
-                                    let load_trace = crate::offline_trace::model_load(
-                                        &vector_trace,
-                                        "fastembed",
-                                        "embedding",
-                                        Some(crate::config::EMBED_DIMS),
-                                    );
-                                    load_trace.in_scope(
-                                        crate::offline_trace::ErrorCode::ModelUnavailable,
-                                        || Embedder::new(&cfg.cache_dir),
-                                    )?
-                                }
-                            },
-                            None => {
+                        let embedder = match prewarm.embedder.join() {
+                            Some(Ok(result)) => result?,
+                            Some(Err(_)) | None => {
                                 let load_trace = crate::offline_trace::model_load(
                                     &vector_trace,
                                     "fastembed",
@@ -1287,9 +1335,9 @@ fn smart_query(
     if !hits.is_empty() {
         let t0 = Instant::now();
         // Collect the explicitly parented prewarm worker. A panic falls back under the same stage.
-        let mut reranker = match rr_warm.join() {
-            Ok(result) => result?,
-            Err(_) => {
+        let mut reranker = match prewarm.reranker.join() {
+            Some(Ok(result)) => result?,
+            Some(Err(_)) | None => {
                 let load_trace =
                     crate::offline_trace::model_load(&rerank_trace, "fastembed", "reranker", None);
                 load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
@@ -1316,8 +1364,8 @@ fn smart_query(
         rerank_status.ok();
         t.rerank_ms = ms_since(t0);
     } else {
-        // The prewarm was already launched; join it before returning so no worker outlives tracing.
-        let _ = rr_warm.join();
+        // The prewarm was already launched; collect it now (the scope guard also covers errors).
+        let _ = prewarm.reranker.join();
         rerank_status.skipped();
     }
     drop(rerank_trace);
@@ -1341,23 +1389,28 @@ fn smart_query(
             Ok(hits)
         },
     )?;
-    postprocess_trace.result_count(hits.len());
-    drop(postprocess_trace);
     t.total_ms = ms_since(t_total);
     if timings {
         t.print("smart");
     }
-    let (hits, elided) = apply_scope(std::mem::take(&mut hits), scope);
-    Ok((
+    let scope_candidates = hits.len();
+    let (hits, elided) = {
+        let _entered = scope_trace.enter();
+        apply_scope(std::mem::take(&mut hits), scope)
+    };
+    scope_trace.candidate_count(scope_candidates);
+    scope_trace.result_count(hits.len());
+    Ok(TracedQueryResult {
         hits,
         elided,
-        QueryMeta {
+        meta: QueryMeta {
             source_limit: pool,
             fusion_limit: pool,
             candidate_pool,
             rerank_cap: actual_rerank_cap,
         },
-    ))
+        postprocess_trace,
+    })
 }
 
 /// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
@@ -1396,7 +1449,8 @@ fn run_query(
     chunks: bool,
     score_floor: bool,
     trace_parent: &crate::offline_trace::Span,
-) -> Result<(Vec<Hit>, usize, QueryMeta)> {
+    scope_trace: &crate::offline_trace::Span,
+) -> Result<TracedQueryResult> {
     #[cfg(feature = "generate")]
     if smart {
         match smart_query(
@@ -1413,6 +1467,7 @@ fn run_query(
             chunks,
             score_floor,
             trace_parent,
+            scope_trace,
         ) {
             Ok(r) => return Ok(r),
             Err(e) => {
@@ -1442,6 +1497,7 @@ fn run_query(
         chunks,
         score_floor,
         trace_parent,
+        scope_trace,
     )
 }
 
@@ -1620,7 +1676,7 @@ fn run_traced(
     // every tail-filled slot (raw RRF score vs sigmoid top). A zero/absent floor drops nothing, so it
     // keeps the fast capped path.
     let score_floor = min_score.is_some_and(|f| f > 0.0);
-    let (mut hits, elided, query_meta) = run_query(
+    let traced = run_query(
         cfg,
         q,
         mode,
@@ -1637,59 +1693,71 @@ fn run_traced(
         chunks,
         score_floor,
         trace_parent,
+        &scope_trace,
     )?;
-    scope_trace.candidate_count(hits.len() + elided);
-    scope_trace.result_count(hits.len());
+    let TracedQueryResult {
+        mut hits,
+        elided,
+        meta: query_meta,
+        postprocess_trace,
+    } = traced;
     drop(scope_trace);
-    // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
-    // below stays out of the way.
-    if let Some(floor) = min_score {
-        let top = hits.first().map(|h| h.score).unwrap_or(1.0);
-        hits.retain(|h| rel(h.score, top) as f32 >= floor);
-    }
-    // Optional bounded semantic floor (ADR 0026/G9e). It is deliberately post-dedup/truncation,
-    // matching --min-score: no backfill, and a positive floor drops hits with no finite cosine.
-    if let Some(floor) = min_relevance {
-        hits.retain(|hit| passes_min_relevance(hit, floor));
-    }
 
-    // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a ceiling,
-    // not a quota. If a robust RRF score knee separates a high-signal prefix from a real tail, drop
-    // only that suffix. Unsupported/mixed-score modes fail open; --exhaustive restores the old fill.
-    let tidy_omitted = if !exhaustive
-        && fusion_supports_adaptive_tidy(FUSION_POLICY)
-        && min_score.is_none()
-        && min_relevance.is_none()
-        && matches!(mode, Mode::Hybrid)
-        && !rerank
-        && !smart
-        && !chunks
-        && hits.len() == limit
-    {
-        let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
-        let protected_through = source_champion_through(&hits);
-        let keep = if scores.len() == hits.len() {
-            tidy_rrf_prefix_len(&scores, protected_through)
-        } else {
-            hits.len()
-        };
-        let omitted = hits.len() - keep;
-        hits.truncate(keep);
-        omitted
-    } else {
-        0
-    };
-
-    // Preserve both default human rendering and the stable default JSON Hit shape. Relevance exists
-    // only under explicit opt-in (a floor implies opt-in); ranking/filter decisions above are done.
-    for hit in &mut hits {
-        if relevance_requested {
-            hit.relevance_policy = Some(crate::relevance::POLICY);
-        } else {
-            hit.relevance = None;
-            hit.relevance_policy = None;
+    // Keep the same aggregate postprocess span active through every final score/floor/tidiness and
+    // relevance projection rather than ending it after only filter/dedup/truncation.
+    let tidy_omitted = {
+        let _entered = postprocess_trace.enter();
+        // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
+        // below stays out of the way.
+        if let Some(floor) = min_score {
+            let top = hits.first().map(|h| h.score).unwrap_or(1.0);
+            hits.retain(|h| rel(h.score, top) as f32 >= floor);
         }
-    }
+        // Optional bounded semantic floor (ADR 0026/G9e). It is deliberately post-dedup/truncation,
+        // matching --min-score: no backfill, and a positive floor drops hits with no finite cosine.
+        if let Some(floor) = min_relevance {
+            hits.retain(|hit| passes_min_relevance(hit, floor));
+        }
+
+        // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a
+        // ceiling, not a quota. A robust RRF knee may only drop an order-preserving suffix.
+        let tidy_omitted = if !exhaustive
+            && fusion_supports_adaptive_tidy(FUSION_POLICY)
+            && min_score.is_none()
+            && min_relevance.is_none()
+            && matches!(mode, Mode::Hybrid)
+            && !rerank
+            && !smart
+            && !chunks
+            && hits.len() == limit
+        {
+            let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
+            let protected_through = source_champion_through(&hits);
+            let keep = if scores.len() == hits.len() {
+                tidy_rrf_prefix_len(&scores, protected_through)
+            } else {
+                hits.len()
+            };
+            let omitted = hits.len() - keep;
+            hits.truncate(keep);
+            omitted
+        } else {
+            0
+        };
+
+        // Preserve default JSON while projecting explicit relevance only after every rank decision.
+        for hit in &mut hits {
+            if relevance_requested {
+                hit.relevance_policy = Some(crate::relevance::POLICY);
+            } else {
+                hit.relevance = None;
+                hit.relevance_policy = None;
+            }
+        }
+        tidy_omitted
+    };
+    postprocess_trace.result_count(hits.len());
+    drop(postprocess_trace);
     trace_parent.candidate_count(query_meta.candidate_pool);
     trace_parent.result_count(hits.len());
     if tick_provenance {
@@ -2020,6 +2088,38 @@ mod scope_filter_tests {
             chunk_id: format!("id:{path}#{ord}"),
             ..hit(path)
         }
+    }
+
+    #[cfg(feature = "generate")]
+    #[test]
+    fn smart_prewarm_scope_joins_both_workers_on_injected_early_failure() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn fail_after_launch(
+            embed_finished: Arc<AtomicBool>,
+            rerank_finished: Arc<AtomicBool>,
+        ) -> Result<()> {
+            let _prewarm = SmartPrewarm {
+                embedder: ScopedWorker::new(std::thread::spawn(move || {
+                    embed_finished.store(true, Ordering::Release);
+                    Err::<Embedder, _>(anyhow::anyhow!("injected embed failure"))
+                })),
+                reranker: ScopedWorker::new(std::thread::spawn(move || {
+                    rerank_finished.store(true, Ordering::Release);
+                    Err::<Reranker, _>(anyhow::anyhow!("injected rerank failure"))
+                })),
+            };
+            bail!("injected rewrite failure")
+        }
+
+        let embed_finished = Arc::new(AtomicBool::new(false));
+        let rerank_finished = Arc::new(AtomicBool::new(false));
+        assert!(
+            fail_after_launch(Arc::clone(&embed_finished), Arc::clone(&rerank_finished)).is_err()
+        );
+        assert!(embed_finished.load(Ordering::Acquire));
+        assert!(rerank_finished.load(Ordering::Acquire));
     }
 
     #[test]

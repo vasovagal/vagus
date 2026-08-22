@@ -129,9 +129,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
     `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/` after strict opt-in. Emit only the
     shared exact-target catalogue's low-cardinality enums/booleans/bounded aggregates—never queries,
     note metadata/content/paths, prompts/plugin args, hashes/cache keys, raw errors, or host/environment
-    identity. Every activation/config/storage/subscriber failure is a silent no-op. The default
-    `local-tracing` feature can be compiled out; unconditional `--trace` then does nothing and reads/
-    creates no tracing config/state. Traced/untraced stdout, JSON, stderr, and exit behavior stay stable.
+    identity. Before subscriber/storage setup, G1's missing-path/symlink-aware resolver must prove the
+    fixed prospective trace directory does not overlap the Markdown vault. Every
+    activation/config/storage/subscriber failure is a silent no-op. The default `local-tracing` feature
+    can be compiled out; unconditional `--trace` then does nothing and reads/creates no tracing config/
+    state. Traced/untraced stdout, JSON, stderr, and exact external-plugin exit behavior stay stable.
 
 ## Layout
 

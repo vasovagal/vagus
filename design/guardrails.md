@@ -233,10 +233,12 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   catalogue: no endpoint/collector/socket/upload, arbitrary path/field, or raw log/error mechanism.
   Instrumentation may record only reviewed low-cardinality enums/booleans/bounded aggregate counts—
   never query/variant text, note metadata/content/path, plugin args, prompts, hashes/cache keys, raw
-  errors, or host/user/environment identity. Activation/config/storage/subscriber failures are silent
-  no-ops. The default `local-tracing` feature may be compiled out; then `--trace` remains accepted but
-  no tracing input/path is read or created. Traced and untraced functional output/exit behavior stays
-  identical. ([ADR 0029](./adr/0029-local-offline-tracing.md))
+  errors, or host/user/environment identity. Before subscriber/storage setup, the fixed prospective
+  trace directory is resolved with G1's missing-path/symlink-aware check and must not overlap the
+  Markdown vault. Activation/config/storage/subscriber failures are silent no-ops. The
+  default `local-tracing` feature may be compiled out; then `--trace` remains accepted but no tracing
+  input/path is read or created. Traced and untraced functional output/exit behavior—including exact
+  external-plugin status—stays identical. ([ADR 0029](./adr/0029-local-offline-tracing.md))
 
 ## Concurrency & agents
 

@@ -407,13 +407,24 @@ impl Command {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandCompletion {
+    Completed,
+    ExternalExit(i32),
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    run_with_optional_tracing(cli)
+    match run_with_optional_tracing(cli)? {
+        CommandCompletion::Completed => Ok(()),
+        // Plugin status propagation happens only after the tracing wrapper has closed the root span
+        // and drained its guard. This preserves the child's exact status without losing a summary.
+        CommandCompletion::ExternalExit(code) => std::process::exit(code),
+    }
 }
 
 #[cfg(feature = "local-tracing")]
-fn run_with_optional_tracing(cli: Cli) -> Result<()> {
+fn run_with_optional_tracing(cli: Cli) -> Result<CommandCompletion> {
     use std::time::Duration;
 
     use tracing_subscriber::Registry;
@@ -438,36 +449,87 @@ fn run_with_optional_tracing(cli: Cli) -> Result<()> {
         status: _,
     } = prepared;
     let (guard, _status) = match layer {
-        Some(layer) => {
+        Some(layer) if prospective_trace_storage_is_separate_from_vault() => {
             let installed =
                 tracing::subscriber::set_global_default(Registry::default().with(layer)).is_ok();
             pending.finish(installed)
         }
-        None => pending.finish(false),
+        // G1 is stronger than tracing activation: if the fixed trace directory could alias the
+        // Markdown vault, decline the prepared layer before subscriber installation/storage setup.
+        Some(_) | None => pending.finish(false),
     };
 
     let command = offline_trace::command(cli.command.trace_name());
-    let result = command.in_scope(offline_trace::ErrorCode::Other, || {
-        run_command(cli, &command)
-    });
+    let result = run_command_in_span(cli, &command);
     // Close the root span before draining, otherwise its span_end would race shutdown.
     drop(command);
     guard.shutdown(Duration::from_secs(2));
     result
 }
 
+#[cfg(feature = "local-tracing")]
+fn prospective_trace_storage_is_separate_from_vault() -> bool {
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    fn absolute_nonempty(value: &OsStr) -> Option<PathBuf> {
+        if value.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(value);
+        path.is_absolute().then_some(path)
+    }
+
+    // This mirrors the pinned shared crate's fixed, side-effect-free state-path contract. The core
+    // intentionally exposes no arbitrary path and does not resolve/create storage until finish(true).
+    let state_base = match std::env::var_os("XDG_STATE_HOME") {
+        Some(value) => absolute_nonempty(&value),
+        None => std::env::var_os("HOME")
+            .as_deref()
+            .and_then(absolute_nonempty)
+            .map(|home| home.join(".local/state")),
+    };
+    let Some(trace_directory) =
+        state_base.map(|base| base.join("vasovagal").join("traces").join("vagus"))
+    else {
+        return false;
+    };
+    let Some(vault) = std::env::var_os("VAGUS_VAULT")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join("brain")))
+    else {
+        return false;
+    };
+
+    crate::path_safety::overlap(&trace_directory, &vault)
+        .map(|overlaps| !overlaps)
+        .unwrap_or(false)
+}
+
 #[cfg(not(feature = "local-tracing"))]
-fn run_with_optional_tracing(cli: Cli) -> Result<()> {
+fn run_with_optional_tracing(cli: Cli) -> Result<CommandCompletion> {
     // Deliberately do not inspect tracing environment/config/state. The unconditional flag remains a
     // compatibility no-op in lean builds.
     let _ = cli.trace;
     let command = offline_trace::command(cli.command.trace_name());
-    command.in_scope(offline_trace::ErrorCode::Other, || {
-        run_command(cli, &command)
-    })
+    run_command_in_span(cli, &command)
 }
 
-fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<()> {
+fn run_command_in_span(cli: Cli, command_trace: &offline_trace::Span) -> Result<CommandCompletion> {
+    let result = {
+        let _entered = command_trace.enter();
+        run_command(cli, command_trace)
+    };
+    match &result {
+        Ok(CommandCompletion::Completed) => command_trace.ok(),
+        Ok(CommandCompletion::ExternalExit(_)) | Err(_) => {
+            command_trace.error(offline_trace::ErrorCode::Other);
+        }
+    }
+    result
+}
+
+fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<CommandCompletion> {
     // Pure report comparison: no vault/config/model/index is needed or touched.
     if let Command::EvalGate {
         baseline,
@@ -475,7 +537,8 @@ fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<()> {
         json,
     } = &cli.command
     {
-        return eval::run_gate(baseline, candidate, *json);
+        eval::run_gate(baseline, candidate, *json)?;
+        return Ok(CommandCompletion::Completed);
     }
 
     let config_trace = offline_trace::config_load(command_trace);
@@ -654,9 +717,14 @@ fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<()> {
         )?,
         Command::Fame { limit, all, json } => ticks::fame(&cfg, limit, all, json)?,
         Command::Ticks { limit, all, json } => ticks::ticks_report(&cfg, limit, all, json)?,
-        Command::External(argv) => plugin::dispatch(&cfg, &argv)?,
+        Command::External(argv) => match plugin::dispatch(&cfg, &argv)? {
+            plugin::DispatchOutcome::Completed => {}
+            plugin::DispatchOutcome::Exit(code) => {
+                return Ok(CommandCompletion::ExternalExit(code));
+            }
+        },
     }
-    Ok(())
+    Ok(CommandCompletion::Completed)
 }
 
 const EMBED_CACHE_REPO: &str = "models--onnx-community--embeddinggemma-300m-ONNX";

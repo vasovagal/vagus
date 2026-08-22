@@ -59,8 +59,11 @@ impl Sandbox {
             }
         }
         let mut files = Vec::new();
-        visit(&self.root.join("state"), &mut files);
+        // Search the whole sandbox so a regression that writes through a vault/state alias is visible
+        // rather than hidden by the normal `state/` spelling.
+        visit(&self.root, &mut files);
         files.sort();
+        files.dedup();
         files
     }
 }
@@ -143,6 +146,39 @@ mod enabled {
             );
         }
         records
+    }
+
+    fn install_probe_plugin(sandbox: &Sandbox, exit_code: i32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = sandbox.root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let plugin = bin.join("vagus-probe");
+        fs::write(
+            &plugin,
+            format!(
+                "#!/bin/sh\nprintf 'plugin-out:%s|%s\\n' \"$1\" \"$2\"\nprintf 'plugin-err:%s|%s\\n' \"$1\" \"$2\" >&2\nexit {exit_code}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    fn plugin_command(sandbox: &Sandbox, exit_code: i32, traced: bool) -> Output {
+        let bin = install_probe_plugin(sandbox, exit_code);
+        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(&inherited_path));
+        let mut command = sandbox.command();
+        command.env("PATH", std::env::join_paths(paths).unwrap());
+        if traced {
+            command.arg("--trace");
+        }
+        command
+            .args(["probe", "alpha", "two words"])
+            .output()
+            .unwrap()
     }
 
     #[test]
@@ -268,6 +304,185 @@ mod enabled {
                 && record["outcome"] == "error"
                 && record["error_code"] == "other"
         }));
+    }
+
+    #[test]
+    fn successful_plugin_preserves_argv_bytes_status_and_graceful_summary() {
+        let baseline = Sandbox::new("plugin-success-baseline");
+        let baseline_output = plugin_command(&baseline, 0, false);
+        assert_eq!(baseline_output.status.code(), Some(0));
+        assert_eq!(baseline_output.stdout, b"plugin-out:alpha|two words\n");
+        assert_eq!(baseline_output.stderr, b"plugin-err:alpha|two words\n");
+
+        let traced = Sandbox::new("plugin-success-traced");
+        let traced_output = plugin_command(&traced, 0, true);
+        assert_eq!(traced_output.status.code(), baseline_output.status.code());
+        assert_eq!(traced_output.stdout, baseline_output.stdout);
+        assert_eq!(traced_output.stderr, baseline_output.stderr);
+        let records = records(&traced);
+        assert!(records.iter().any(|record| {
+            record["record_type"] == "span_end"
+                && record["operation"] == "vagus.command"
+                && record["outcome"] == "ok"
+        }));
+        assert!(
+            records
+                .iter()
+                .any(|record| record["record_type"] == "session_summary")
+        );
+    }
+
+    #[test]
+    fn nonzero_plugin_exits_only_after_root_end_and_graceful_summary() {
+        let baseline = Sandbox::new("plugin-failure-baseline");
+        let baseline_output = plugin_command(&baseline, 42, false);
+        assert_eq!(baseline_output.status.code(), Some(42));
+        assert_eq!(baseline_output.stdout, b"plugin-out:alpha|two words\n");
+        assert_eq!(baseline_output.stderr, b"plugin-err:alpha|two words\n");
+
+        let traced = Sandbox::new("plugin-failure-traced");
+        let traced_output = plugin_command(&traced, 42, true);
+        assert_eq!(traced_output.status.code(), baseline_output.status.code());
+        assert_eq!(traced_output.stdout, baseline_output.stdout);
+        assert_eq!(traced_output.stderr, baseline_output.stderr);
+        let records = records(&traced);
+        assert!(records.iter().any(|record| {
+            record["record_type"] == "span_end"
+                && record["operation"] == "vagus.command"
+                && record["outcome"] == "error"
+                && record["error_code"] == "other"
+        }));
+        assert!(
+            records
+                .iter()
+                .any(|record| record["record_type"] == "session_summary")
+        );
+    }
+
+    #[test]
+    fn equal_descendant_and_symlink_alias_trace_paths_are_inert() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let equal = Sandbox::new("vault-state-equal");
+        let equal_vault = equal.root.join("state/vasovagal/traces/vagus");
+        let baseline = equal
+            .command()
+            .env("VAGUS_VAULT", &equal_vault)
+            .arg("tutorial")
+            .output()
+            .unwrap();
+        let traced = equal
+            .command()
+            .env("VAGUS_VAULT", &equal_vault)
+            .args(["--trace", "tutorial"])
+            .output()
+            .unwrap();
+        assert_eq!(traced.status.code(), baseline.status.code());
+        assert_eq!(traced.stdout, baseline.stdout);
+        assert_eq!(traced.stderr, baseline.stderr);
+        assert!(!equal.root.join("state").exists());
+
+        let descendant = Sandbox::new("vault-state-descendant");
+        let baseline = descendant.command().arg("tutorial").output().unwrap();
+        let traced = descendant
+            .command()
+            .env("XDG_STATE_HOME", descendant.root.join("vault"))
+            .args(["--trace", "tutorial"])
+            .output()
+            .unwrap();
+        assert_eq!(traced.status.code(), baseline.status.code());
+        assert_eq!(traced.stdout, baseline.stdout);
+        assert_eq!(traced.stderr, baseline.stderr);
+        assert!(!descendant.root.join("vault/vasovagal").exists());
+
+        let alias = Sandbox::new("vault-state-symlink-alias");
+        let trace_dir = alias.root.join("state/vasovagal/traces/vagus");
+        fs::create_dir_all(&trace_dir).unwrap();
+        for directory in [
+            alias.root.join("state"),
+            alias.root.join("state/vasovagal"),
+            alias.root.join("state/vasovagal/traces"),
+            trace_dir.clone(),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let vault_alias = alias.root.join("vault-alias");
+        symlink(&trace_dir, &vault_alias).unwrap();
+        let baseline = alias
+            .command()
+            .env("VAGUS_VAULT", &vault_alias)
+            .arg("tutorial")
+            .output()
+            .unwrap();
+        let traced = alias
+            .command()
+            .env("VAGUS_VAULT", &vault_alias)
+            .args(["--trace", "tutorial"])
+            .output()
+            .unwrap();
+        assert_eq!(traced.status.code(), baseline.status.code());
+        assert_eq!(traced.stdout, baseline.stdout);
+        assert_eq!(traced.stderr, baseline.stderr);
+        assert!(fs::read_dir(&trace_dir).unwrap().next().is_none());
+        assert!(alias.trace_files().is_empty());
+    }
+
+    #[test]
+    fn nonempty_scope_and_floor_are_parented_and_have_accounted_busy_time() {
+        let sandbox = Sandbox::new("scope-floor-timing");
+        let work = sandbox.root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(
+            work.join(".vagus.json"),
+            r#"{"exclude":["private"],"root":true}"#,
+        )
+        .unwrap();
+        let output = sandbox
+            .command()
+            .current_dir(&work)
+            .args([
+                "--trace",
+                "search",
+                "PRIVATE QUERY MUST NOT LEAK",
+                "--mode",
+                "bm25",
+                "--no-index",
+                "--json",
+                "--min-score",
+                "0.5",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let records = records(&sandbox);
+        let starts: HashMap<&str, &serde_json::Value> = records
+            .iter()
+            .filter(|record| record["record_type"] == "span_start")
+            .filter_map(|record| {
+                record["operation"]
+                    .as_str()
+                    .map(|operation| (operation, record))
+            })
+            .collect();
+        let search = starts["vagus.search"];
+        for operation in ["vagus.search.scope", "vagus.search.postprocess"] {
+            assert_eq!(starts[operation]["parent_span_id"], search["span_id"]);
+            let end = records
+                .iter()
+                .find(|record| {
+                    record["record_type"] == "span_end" && record["operation"] == operation
+                })
+                .unwrap();
+            let duration = end["duration_ns"].as_u64().unwrap();
+            let busy = end["busy_ns"].as_u64().unwrap();
+            let idle = end["idle_ns"].as_u64().unwrap();
+            assert!(busy > 0, "{operation} did not account active work: {end}");
+            assert_eq!(busy + idle, duration);
+        }
     }
 
     #[test]

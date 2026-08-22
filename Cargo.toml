@@ -36,9 +36,9 @@ local-tracing = ["dep:tracing", "dep:tracing-subscriber", "dep:vasovagal-tracing
 
 [dependencies]
 vagus-plugin-protocol = { path = "crates/vagus-plugin-protocol", version = "0.1.0" }
-# Immutable pre-publication pin to the reviewed shared exporter commit. Replace with registry
-# `version = "0.1.1"` before merge (ADR 0029); never use a floating branch or path dependency.
-vasovagal-tracing = { git = "https://github.com/vasovagal/vasovagal-tracing", rev = "eebe5bbbba597b64dabd2d1981d18ba71bab9869", optional = true }
+# Immutable pre-publication pin to the squash-merged shared exporter commit. Replace with a
+# reviewed registry dependency before merge (ADR 0029); never use a floating branch or path.
+vasovagal-tracing = { git = "https://github.com/vasovagal/vasovagal-tracing", rev = "7afe13e46df63a3767d518ede7b733349dc09b14", optional = true }
 anyhow = "1.0.102"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive"] }

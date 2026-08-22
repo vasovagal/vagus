@@ -167,11 +167,13 @@ The strict YAML has no optional/unknown fields. Missing config means disabled; m
 invalid environment, insecure storage, or subscriber conflict silently disables tracing without
 changing the command. Files are private local JSONL under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`, with bounded rotation/retention and
-partial-tail recovery. They contain only catalogued operation timing, random session/span IDs, safe
-enums/booleans, bounded aggregate counts, and reviewed error codes—never query/variant text, note
+partial-tail recovery. If that fixed directory overlaps the Markdown vault—including equal,
+descendant, and symlink-alias spellings—Vagus declines tracing before subscriber installation or path
+creation. Files contain only catalogued operation timing, random session/span IDs, safe enums/booleans,
+bounded aggregate counts, and reviewed error codes—never query/variant text, note
 content/metadata/paths, prompts/plugin arguments, hashes/cache keys, raw errors, or host/environment
 identity. See [ADR 0029](design/adr/0029-local-offline-tracing.md) and the shared
-[offline-analysis guide](https://github.com/vasovagal/vasovagal-tracing/blob/eebe5bbbba597b64dabd2d1981d18ba71bab9869/docs/offline-analysis.md).
+[offline-analysis guide](https://github.com/vasovagal/vasovagal-tracing/blob/7afe13e46df63a3767d518ede7b733349dc09b14/docs/offline-analysis.md).
 A build without the default `local-tracing` feature still accepts `--trace` but performs no tracing
 activation/config/state access.
 

@@ -86,10 +86,7 @@ impl Span {
     ) {
         match result {
             Ok(_) => self.outcome("ok"),
-            Err(_) => {
-                self.outcome("error");
-                self.error_code(error_code.as_str());
-            }
+            Err(_) => self.error(error_code),
         }
     }
 
@@ -103,6 +100,12 @@ impl Span {
 
     pub(crate) fn fallback(&self) {
         self.outcome("fallback");
+    }
+
+    /// Mark an operation as a reviewed low-cardinality failure without formatting the error.
+    pub(crate) fn error(&self, error_code: ErrorCode) {
+        self.outcome("error");
+        self.error_code(error_code.as_str());
     }
 
     fn outcome(&self, value: &'static str) {

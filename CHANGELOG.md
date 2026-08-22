@@ -18,6 +18,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   query, note, path, prompt, raw-error, or host-identity fields. Invalid/compiled-out support is a
   silent no-op, and traced/untraced command output stays unchanged. (ADR 0029/G28)
 
+### Fixed
+
+- Local tracing now fails closed before path creation when its fixed state directory resolves inside
+  the Markdown vault, including missing-path and symlink-alias spellings. External plugins that exit
+  nonzero now retain their exact output/status while Vagus closes the command span and writes the
+  graceful trace summary first. (ADR 0029/G1/G28)
+
 ### Changed
 
 - **Smaller release binaries.** Release builds are now stripped and compiled with ThinLTO in a single

@@ -1,7 +1,7 @@
 # ADR 0029 — Privacy-projected local offline tracing
 
 - **Status:** Proposed (2026-08-22); implements the accepted cross-project
-  [Vasovagal tracing architecture v1](https://github.com/vasovagal/vasovagal-tracing/blob/eebe5bbbba597b64dabd2d1981d18ba71bab9869/docs/architecture-v1.md).
+  [Vasovagal tracing architecture v1](https://github.com/vasovagal/vasovagal-tracing/blob/7afe13e46df63a3767d518ede7b733349dc09b14/docs/architecture-v1.md).
 
 ## Context
 
@@ -23,10 +23,11 @@ dependencies. `--no-default-features` omits all three and every instrumentation 
 zero-sized no-op: the binary reads no tracing environment/YAML, creates no tracing path, but still
 silently accepts the unconditional global `--trace` flag.
 
-Until the shared crate completes its independently reviewed crates.io release, the implementation PR
-pins the pushed core commit `eebe5bbbba597b64dabd2d1981d18ba71bab9869` with an exact Git `rev`.
-A Git/path dependency may not merge; after tokenless publication succeeds, the release-remediation
-commit must use registry `version = "0.1.1"` and its reviewed lockfile.
+The independently reviewed core PR squash-landed as
+`7afe13e46df63a3767d518ede7b733349dc09b14`, but no tag or crates.io release exists yet. This draft
+integration therefore pins that exact immutable Git `rev`. A Git/path dependency may not merge; once
+the reviewed registry release is verifiably available, release remediation must use its crates.io
+semver dependency and reviewed lockfile.
 
 ### Activation and lifecycle
 
@@ -41,8 +42,14 @@ Invalid environment/config, missing home, insecure/unwritable storage, repeated 
 subscriber conflict produces no application error and no trace. Initialization occurs immediately
 after `Cli::parse()` and before the `eval-gate` fast path, config, vault, DB, model, or command work.
 The app composes the optional exact-target layer on a bare `tracing_subscriber::Registry`; no
-subscriber is installed when disabled. The root span closes on both `Ok` and `Result` error before a
-two-second best-effort guard shutdown.
+subscriber is installed when disabled. Before installation, Vagus side-effect-free resolves the
+shared contract's fixed prospective trace directory and its configured vault with the existing
+missing-path/symlink-aware G1 resolver. Any equality, containment, or symlink-alias overlap declines
+the layer before state creation. (The landed core v0.1 API deliberately defers storage to
+`finish(true)` and exposes no prospective-path accessor, so this check mirrors its immutable fixed
+location rather than opening storage.) The root span closes on both ordinary errors and typed
+external-plugin exits before a two-second best-effort guard shutdown; only then does the process
+propagate the child's exact nonzero status.
 
 Activated JSONL is written only to:
 
@@ -83,9 +90,11 @@ vagus.command
 
 `vagus.model.load`, `vagus.model.decode`, and `vagus.model.infer` are explicit children of the
 consuming stage. Smart-search prewarm workers receive the current dispatcher and an explicit cloned
-parent, enter it only inside their active closure, and are joined before shutdown. Index and smart
-variant/note work reuse aggregate spans rather than creating per-note/chunk/query-variant/token/SQL
-spans.
+parent, enter it only inside their active closure, and live in a join-on-scope owner that drains both
+workers on every success, `?`, fallback, or unwind before shutdown. Scope filtering re-enters its
+aggregate span, while the postprocess span remains alive and accounts filters, floors, adaptive tidy,
+and relevance projection. Index and smart variant/note work reuse aggregate spans rather than
+creating per-note/chunk/query-variant/token/SQL spans.
 
 The application can provide only catalogue enums, booleans, and bounded aggregate counts. It never
 passes query/variant text, note content/title/heading/snippet/frontmatter/source values, paths,
@@ -109,6 +118,17 @@ the bundled immutable JSON Schema.
   records remain valid, and readers may allow one partial tail.
 - Schema-v1 operation/attribute additions require a shared schema-v2 decision, preventing an app from
   quietly expanding the privacy surface.
+
+### 2026-08-22 reproducible performance evidence
+
+`scripts/benchmark-local-tracing.py` created a deterministic 128-note/768-section Markdown corpus,
+indexed it from the existing offline model cache, then alternated 15 traced/untraced pairs for BM25
+`--no-index` search and unchanged incremental indexing. On Apple arm64 with the Rust 1.96 debug test
+binary, median search was 18.479 ms untraced / 25.105 ms traced (+6.625 ms), and index was 31.439 ms /
+36.586 ms (+5.148 ms). Both satisfy the accepted “5% or 10 ms, whichever is larger” gate. Across 32
+graceful sessions, the largest trace was 11,744 bytes; every session had a summary, no queue drops,
+writer/rejection/privacy counters, or synthetic query text. The machine-readable release evidence is
+[`design/evidence/local-tracing-performance.json`](../evidence/local-tracing-performance.json).
 
 ## Alternatives considered
 
