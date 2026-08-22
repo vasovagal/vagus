@@ -9,6 +9,13 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **Smaller release binaries.** Release builds are now stripped and compiled with ThinLTO in a single
+  codegen unit. The v0.13.0 linux-x86_64 artifact was 55.5 MB unstripped, ~11 MB of which was symbol
+  names; the released binary and its download both shrink with no change to behavior or to the
+  self-contained linkage (G13). Release-build backtraces no longer carry symbol names.
+
 ## [0.13.0] — 2026-08-12
 
 ### Added
