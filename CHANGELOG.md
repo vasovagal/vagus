@@ -9,6 +9,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Privacy-projected local offline tracing.** Official builds include an off-by-default
+  `local-tracing` integration shared with Corti. Enable Vagus with global `--trace`, exact
+  `VASOVAGAL_TRACE=true`, or strict `~/.config/vasovagal/vagus.yaml`; it writes secure, rotated,
+  schema-validated JSONL under local state for offline analysis with no collector/network path and no
+  query, note, path, prompt, raw-error, or host-identity fields. Invalid/compiled-out support is a
+  silent no-op, and traced/untraced command output stays unchanged. (ADR 0029/G28)
+
 ### Changed
 
 - **Smaller release binaries.** Release builds are now stripped and compiled with ThinLTO in a single

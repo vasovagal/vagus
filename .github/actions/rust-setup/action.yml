@@ -5,6 +5,10 @@ description: >
   upstream — tens of MB, so GitHub Actions cache rather than S3; a named budget exception to Law 5).
 
 inputs:
+  toolchain:
+    description: "Rust toolchain: stable for the moving lane, or an exact version such as 1.96.0."
+    required: false
+    default: "stable"
   components:
     description: "Extra rustup components, space-separated (e.g. 'clippy rustfmt')."
     required: false
@@ -21,14 +25,17 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Toolchain (latest stable)
+    - name: Toolchain
       shell: bash
       run: |
-        # CI must ride the LATEST stable rustc, not the runner image's baked-in (often weeks-old) stable.
-        # `rustup update stable` guarantees it; the bare `... || rustup toolchain install stable` skipped the
-        # update whenever a toolchain was already active. (LAWS §8: keep rust-setup identical across repos.)
-        rustup update stable --no-self-update
-        rustup default stable
+        toolchain='${{ inputs.toolchain }}'
+        if [ "$toolchain" = stable ]; then
+          # Ride the LATEST stable, not the runner image's often-weeks-old baked-in toolchain.
+          rustup update stable --no-self-update
+        else
+          rustup toolchain install "$toolchain" --profile minimal --no-self-update
+        fi
+        rustup default "$toolchain"
         if [ -n "${{ inputs.components }}" ]; then rustup component add ${{ inputs.components }}; fi
         rustc -V && cargo -V
 

@@ -16,6 +16,7 @@ mod index;
 mod init;
 mod lex;
 mod notes;
+mod offline_trace;
 mod path_safety;
 mod plugin;
 mod provenance;
@@ -66,6 +67,10 @@ fn unit_interval(raw: &str) -> std::result::Result<f32, String> {
     )
 )]
 struct Cli {
+    /// Write privacy-projected, local-only JSONL traces for offline analysis (ADR 0029).
+    /// This remains accepted but inert when built without the `local-tracing` feature.
+    #[arg(long, global = true)]
+    trace: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -384,8 +389,85 @@ enum VectorsAction {
     },
 }
 
+impl Command {
+    /// Schema-v1's deliberately small command catalogue. Less common commands collapse to `other`;
+    /// no argument, path, query, or plugin name crosses the tracing privacy boundary.
+    fn trace_name(&self) -> &'static str {
+        match self {
+            Self::Init { .. } => "init",
+            Self::Index | Self::Reindex { .. } | Self::Compact => "index",
+            Self::Search { .. }
+            | Self::Eval { .. }
+            | Self::EvalGate { .. }
+            | Self::Rewrite { .. } => "search",
+            Self::Doctor { .. } | Self::Status => "doctor",
+            Self::Plugins | Self::External(_) => "plugin",
+            _ => "other",
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    run_with_optional_tracing(cli)
+}
+
+#[cfg(feature = "local-tracing")]
+fn run_with_optional_tracing(cli: Cli) -> Result<()> {
+    use std::time::Duration;
+
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
+    use vasovagal_tracing::{CliActivation, InitOptions, Service};
+
+    // Parsing intentionally precedes initialization. Everything after this point—including
+    // eval-gate's early path—is covered when activation succeeds. The shared crate resolves the
+    // strict CLI → environment → YAML precedence and defers storage until subscriber installation.
+    let prepared = vasovagal_tracing::prepare::<Registry>(InitOptions {
+        service: Service::Vagus,
+        package_version: env!("CARGO_PKG_VERSION"),
+        cli: if cli.trace {
+            CliActivation::Enable
+        } else {
+            CliActivation::Unspecified
+        },
+    });
+    let vasovagal_tracing::Prepared {
+        layer,
+        pending,
+        status: _,
+    } = prepared;
+    let (guard, _status) = match layer {
+        Some(layer) => {
+            let installed =
+                tracing::subscriber::set_global_default(Registry::default().with(layer)).is_ok();
+            pending.finish(installed)
+        }
+        None => pending.finish(false),
+    };
+
+    let command = offline_trace::command(cli.command.trace_name());
+    let result = command.in_scope(offline_trace::ErrorCode::Other, || {
+        run_command(cli, &command)
+    });
+    // Close the root span before draining, otherwise its span_end would race shutdown.
+    drop(command);
+    guard.shutdown(Duration::from_secs(2));
+    result
+}
+
+#[cfg(not(feature = "local-tracing"))]
+fn run_with_optional_tracing(cli: Cli) -> Result<()> {
+    // Deliberately do not inspect tracing environment/config/state. The unconditional flag remains a
+    // compatibility no-op in lean builds.
+    let _ = cli.trace;
+    let command = offline_trace::command(cli.command.trace_name());
+    command.in_scope(offline_trace::ErrorCode::Other, || {
+        run_command(cli, &command)
+    })
+}
+
+fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<()> {
     // Pure report comparison: no vault/config/model/index is needed or touched.
     if let Command::EvalGate {
         baseline,
@@ -395,12 +477,22 @@ fn main() -> Result<()> {
     {
         return eval::run_gate(baseline, candidate, *json);
     }
-    let cfg = Config::load()?;
+
+    let config_trace = offline_trace::config_load(command_trace);
+    let cfg = config_trace.in_scope(offline_trace::ErrorCode::Configuration, Config::load)?;
+    drop(config_trace);
+
     // Every command that may open/create meta.db or a model cache enforces G1 first. Doctor performs
     // the same validation itself so it can print a diagnostic instead of failing before its report.
-    if !matches!(&cli.command, Command::Doctor { .. }) {
-        cfg.validate_storage_separation()?;
+    let storage_trace = offline_trace::storage_validate(command_trace);
+    if matches!(&cli.command, Command::Doctor { .. }) {
+        storage_trace.skipped();
+    } else {
+        storage_trace.in_scope(offline_trace::ErrorCode::Storage, || {
+            cfg.validate_storage_separation()
+        })?;
     }
+    drop(storage_trace);
 
     match cli.command {
         Command::Status => cmd_status(&cfg)?,
@@ -1158,6 +1250,18 @@ mod doctor_tests {
 #[cfg(test)]
 mod eval_cli_tests {
     use super::*;
+
+    #[test]
+    fn global_trace_flag_is_unconditional_and_position_independent() {
+        for args in [
+            vec!["vagus", "--trace", "tutorial"],
+            vec!["vagus", "tutorial", "--trace"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.trace);
+            assert!(matches!(cli.command, Command::Tutorial));
+        }
+    }
 
     #[test]
     fn eval_k_is_bounded_during_cli_parsing() {

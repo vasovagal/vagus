@@ -213,11 +213,32 @@ impl Rewriter {
 
 /// `vagus rewrite "<query>"`: print the typed expansion lines (for inspection / composition).
 pub fn run_cli(cfg: &Config, query: &str) -> Result<()> {
-    let mut rw = Rewriter::new(&cfg.cache_dir)?;
-    for v in rw.expand(query)? {
-        println!("{}: {}", v.kind.tag(), v.text);
-    }
-    Ok(())
+    let search_trace = crate::offline_trace::search("smart", false, true, false, "all");
+    search_trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
+        let rewrite_trace = crate::offline_trace::search_rewrite(&search_trace, false);
+        let rewrite_status = rewrite_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
+        let load_trace = crate::offline_trace::model_load(&rewrite_trace, "other", "other", None);
+        let mut rewriter = load_trace
+            .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
+                Rewriter::new(&cfg.cache_dir)
+            })?;
+        drop(load_trace);
+        let decode_trace = crate::offline_trace::model_decode(&rewrite_trace, "other", "other");
+        let variants = decode_trace
+            .in_scope(crate::offline_trace::ErrorCode::DecodeFailed, || {
+                rewriter.expand(query)
+            })?;
+        decode_trace.item_count(variants.len());
+        drop(decode_trace);
+        rewrite_trace.result_count(variants.len());
+        rewrite_status.ok();
+        drop(rewrite_trace);
+        search_trace.result_count(variants.len());
+        for variant in variants {
+            println!("{}: {}", variant.kind.tag(), variant.text);
+        }
+        Ok(())
+    })
 }
 
 /// Parse the model's typed output into variants, dropping chat-template leakage and (for lex/vec)

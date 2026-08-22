@@ -124,6 +124,14 @@ canonical invariant list and is **binding** — the summary below must stay in s
     and rank states into one atomic run/events/counter transaction. Runs pin executable, pipeline,
     corpus, cap, context, scope, and result identity; reports group by pipeline+corpus and are never
     eval evidence. Query storage is separate opt-in; bodies/snippets are never stored.
+20. **Offline tracing is explicit, projected, and local-only** (ADR 0029/G28). It is off by default,
+    has no network/collector/arbitrary-output mechanism, and writes validated schema-v1 JSONL only to
+    `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/` after strict opt-in. Emit only the
+    shared exact-target catalogue's low-cardinality enums/booleans/bounded aggregates—never queries,
+    note metadata/content/paths, prompts/plugin args, hashes/cache keys, raw errors, or host/environment
+    identity. Every activation/config/storage/subscriber failure is a silent no-op. The default
+    `local-tracing` feature can be compiled out; unconditional `--trace` then does nothing and reads/
+    creates no tracing config/state. Traced/untraced stdout, JSON, stderr, and exit behavior stay stable.
 
 ## Layout
 
@@ -137,6 +145,7 @@ brew tap and choose their own home/vault paths; follow the README when helping t
 ~/brain -> ~/Library/Mobile Documents/com~apple~CloudDocs/Brain   # the vault (markdown only, in iCloud)
 ~/.local/share/vagus/       # index: tantivy/ + meta.db + config.toml   (OUTSIDE iCloud)
 ~/Library/Caches/vagus/models/   # cached ONNX models: embedder + optional reranker  (OUTSIDE iCloud)
+~/.local/state/vasovagal/traces/vagus/  # opt-in private local JSONL traces (ADR 0029)
 ~/.claude/skills/{create-note,search,process-inbox}/   # Claude Code skill installs
 ~/.pi/agent/skills/{create-note,search,process-inbox}/  # pi skill installs (both shell out to `vagus`)
 ```
