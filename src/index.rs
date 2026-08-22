@@ -38,6 +38,14 @@ impl IndexMode {
         matches!(self, Self::Full)
     }
 
+    fn trace_kind(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::Full => "full",
+            Self::Since { .. } => "refresh",
+        }
+    }
+
     fn force_refresh(self, mtime: f64) -> bool {
         matches!(self, Self::Since { cutoff } if mtime >= cutoff as f64)
     }
@@ -160,7 +168,29 @@ pub fn run(cfg: &Config, mode: IndexMode) -> Result<IndexStats> {
 pub fn run_timed(
     cfg: &Config,
     mode: IndexMode,
+    timings: Option<&mut IndexTimings>,
+) -> Result<IndexStats> {
+    let trace = crate::offline_trace::index(mode.trace_kind());
+    let result = trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
+        run_timed_inner(cfg, mode, timings, &trace)
+    });
+    if let Ok(stats) = &result {
+        trace.index_kind(if stats.full_reindex && !mode.is_full() {
+            "rebuild"
+        } else {
+            mode.trace_kind()
+        });
+        trace.document_count(stats.scanned);
+        trace.item_count(stats.new + stats.changed + stats.refreshed + stats.removed);
+    }
+    result
+}
+
+fn run_timed_inner(
+    cfg: &Config,
+    mode: IndexMode,
     mut timings: Option<&mut IndexTimings>,
+    index_trace: &crate::offline_trace::Span,
 ) -> Result<IndexStats> {
     if !cfg.vault.exists() {
         bail!(
@@ -173,7 +203,13 @@ pub fn run_timed(
 
     // Snapshot every vault path + mtime before any derived-store mutation. `--since` selects from
     // this list; all modes use it for complete deletion detection (ADR 0022/G26).
-    let vault_files = snapshot_vault(&cfg.vault)?;
+    let snapshot_trace = crate::offline_trace::index_snapshot(index_trace, mode.trace_kind());
+    let vault_files = snapshot_trace.in_scope(crate::offline_trace::ErrorCode::Storage, || {
+        snapshot_vault(&cfg.vault)
+    })?;
+    snapshot_trace.document_count(vault_files.len());
+    snapshot_trace.item_count(vault_files.len());
+    drop(snapshot_trace);
 
     // A chunker change reshapes every chunk; force a one-time rebuild so old indexes self-heal.
     let mut mode = mode;
@@ -194,6 +230,15 @@ pub fn run_timed(
         eprintln!("vagus: embedding/chunk format changed — reindexing the whole vault (one-time)…");
     }
     let full_reindex = mode.is_full();
+    let trace_kind = if auto_reindex {
+        "rebuild"
+    } else {
+        mode.trace_kind()
+    };
+    index_trace.index_kind(trace_kind);
+    let reconcile_trace = crate::offline_trace::index_reconcile(index_trace, trace_kind);
+    let reconcile_status = reconcile_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
+    let reconcile_entered = reconcile_trace.enter();
     if full_reindex {
         db.clear_all()?;
         let _ = std::fs::remove_dir_all(cfg.tantivy_dir());
@@ -242,6 +287,16 @@ pub fn run_timed(
     } else {
         None
     };
+
+    // One aggregate embedding/model span per index command: the same spans are entered around each
+    // batch, never once per note/chunk. `busy_ns` therefore captures active batches while lifecycle
+    // duration also exposes gaps spent reconciling the other stores.
+    let embed_trace = crate::offline_trace::index_embed(index_trace);
+    let embed_status = embed_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
+    let infer_trace =
+        crate::offline_trace::model_infer(&embed_trace, "fastembed", "embedding", Some(EMBED_DIMS));
+    let infer_status = infer_trace.error_on_drop(crate::offline_trace::ErrorCode::ModelUnavailable);
+    let mut embedded_chunks = 0_usize;
 
     // Lazily loaded on the first changed file, so a no-op `index` never loads the model.
     let mut embedder: Option<Embedder> = None;
@@ -327,13 +382,31 @@ pub fn run_timed(
 
         if !chunks.is_empty() {
             if embedder.is_none() {
-                embedder = Some(Embedder::new(&cfg.cache_dir)?);
+                let load_trace = crate::offline_trace::model_load(
+                    &embed_trace,
+                    "fastembed",
+                    "embedding",
+                    Some(EMBED_DIMS),
+                );
+                embedder = Some(
+                    load_trace
+                        .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
+                            Embedder::new(&cfg.cache_dir)
+                        })?,
+                );
             }
             let emb = embedder.as_mut().unwrap();
             let documents = embedding_documents(&chunks);
+            let batch_len = documents.len();
 
             let t0 = Instant::now();
-            let vecs = emb.embed_documents(documents)?;
+            let vecs = {
+                let _embed_entered = embed_trace.enter();
+                infer_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
+                    emb.embed_documents(documents)
+                })?
+            };
+            embedded_chunks += batch_len;
             if let Some(t) = timings.as_mut() {
                 t.embed_ms += elapsed_ms(t0);
             }
@@ -376,34 +449,67 @@ pub fn run_timed(
         }
     }
 
+    reconcile_trace.document_count(stats.scanned);
+    reconcile_trace.item_count(stats.new + stats.changed + stats.refreshed + stats.removed);
+    reconcile_status.ok();
+    drop(reconcile_entered);
+    drop(reconcile_trace);
+
+    embed_trace.item_count(embedded_chunks);
+    embed_trace.chunk_count(embedded_chunks);
+    infer_trace.item_count(embedded_chunks);
+    if embedded_chunks == 0 {
+        embed_status.skipped();
+        infer_status.skipped();
+    } else {
+        embed_status.ok();
+        infer_status.ok();
+    }
+    drop(infer_trace);
+    drop(embed_trace);
+
+    let lexical_trace = crate::offline_trace::index_lexical_commit(index_trace, trace_kind);
+    lexical_trace.document_count(stats.scanned);
+    lexical_trace.item_count(stats.new + stats.changed + stats.refreshed + stats.removed);
     let t0 = Instant::now();
-    writer.commit()?;
-    // Let tantivy's merge policy finish any scheduled merges so segments stay bounded instead of
-    // accumulating across per-file commits (the writer would otherwise drop before they run).
-    writer.wait_merging_threads()?;
+    lexical_trace.in_scope(crate::offline_trace::ErrorCode::BackendUnavailable, || {
+        writer.commit()?;
+        // Let tantivy's merge policy finish any scheduled merges so segments stay bounded instead of
+        // accumulating across per-file commits (the writer would otherwise drop before they run).
+        writer.wait_merging_threads()?;
+        Ok::<(), anyhow::Error>(())
+    })?;
     if let Some(t) = timings.as_mut() {
         t.commit_ms += elapsed_ms(t0);
     }
+    drop(lexical_trace);
 
     // Persist the vector index after the single tantivy commit (G5: the stores move together). Either
     // save the incrementally-mutated index, or do the one-time full rebuild from the now-current f32
     // BLOBs (no re-embed). A no-op incremental run skips the save (the sidecar is already current).
+    let vector_trace = crate::offline_trace::index_vector_persist(index_trace, trace_kind);
+    vector_trace.document_count(stats.scanned);
+    vector_trace.item_count(stats.new + stats.changed + stats.refreshed + stats.removed);
     let t0 = Instant::now();
-    // Forced repairs mutate the in-memory usearch index just like new/changed/deleted files. Omitting
-    // `refreshed` here used to discard those mutations at process exit, leaving the sidecar stale even
-    // though SQLite/Tantivy were repaired (ADR 0022/G5).
-    let changed_any = stats.new + stats.changed + stats.refreshed + stats.removed > 0;
-    match &vindex {
-        Some(vi) if changed_any => vi.save(&sidecar)?,
-        Some(_) => {}
-        None => UsearchIndex::rebuild_from_db(&db, EMBED_DIMS)?.save(&sidecar)?,
-    }
-    db.meta_set("vec_backend", "usearch")?;
-    db.meta_set("vec_index_version", VEC_INDEX_VERSION)?;
-    db.meta_set("vec_dims", &dims)?;
+    vector_trace.in_scope(crate::offline_trace::ErrorCode::BackendUnavailable, || {
+        // Forced repairs mutate the in-memory usearch index just like new/changed/deleted files.
+        // Omitting `refreshed` here used to discard those mutations at process exit, leaving the
+        // sidecar stale even though SQLite/Tantivy were repaired (ADR 0022/G5).
+        let changed_any = stats.new + stats.changed + stats.refreshed + stats.removed > 0;
+        match &vindex {
+            Some(vi) if changed_any => vi.save(&sidecar)?,
+            Some(_) => {}
+            None => UsearchIndex::rebuild_from_db(&db, EMBED_DIMS)?.save(&sidecar)?,
+        }
+        db.meta_set("vec_backend", "usearch")?;
+        db.meta_set("vec_index_version", VEC_INDEX_VERSION)?;
+        db.meta_set("vec_dims", &dims)?;
+        Ok::<(), anyhow::Error>(())
+    })?;
     if let Some(t) = timings.as_mut() {
         t.vector_ms += elapsed_ms(t0);
     }
+    drop(vector_trace);
     Ok(stats)
 }
 

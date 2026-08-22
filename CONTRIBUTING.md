@@ -9,10 +9,15 @@ binding invariant list.
 
 ## Build / test / run
 
+Vagus requires Rust 1.96 or newer (edition 2024).
+
 ```sh
 cargo build              # first build fetches a prebuilt ONNX Runtime (network, one-time)
 cargo test
-cargo clippy --all-targets
+cargo test --all-features
+cargo test --no-default-features
+cargo check --no-default-features --features local-tracing
+cargo clippy --all-targets --all-features
 cargo fmt                # run before every push (CI runs cargo fmt --check)
 ./target/debug/vagus --version   # run dev builds from target/; do not shadow the brew binary
 vagus doctor             # network-free installed-binary health/cache check
@@ -34,12 +39,21 @@ VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
 
 ### Feature flags
 
-The `generate` feature pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by
-`vagus search --smart` / `vagus rewrite`. For a leaner build without it:
+Official/default builds enable two independently removable integrations:
+
+- `generate` pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by `vagus search --smart` /
+  `vagus rewrite`.
+- `local-tracing` pulls in the shared privacy-projected local JSONL layer. Runtime tracing remains off
+  until `--trace`, `VASOVAGAL_TRACE=true`, or strict `vagus.yaml` enables it (ADR 0029/G28).
 
 ```sh
-cargo build --no-default-features    # add back features as needed
+cargo build --no-default-features
+cargo build --no-default-features --features local-tracing  # tracing-only feature lane
 ```
+
+A compiled-out build still accepts `--trace` but does not read tracing environment/YAML or create a
+trace path. Never replace the shared crate with a path/floating-branch dependency; pre-publication
+branches use an exact pushed Git `rev`, and merge uses the reviewed crates.io release.
 
 ## Releasing
 

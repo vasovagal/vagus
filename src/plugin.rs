@@ -15,8 +15,20 @@ use vagus_plugin_protocol::{self as proto, Event, LogLevel};
 use crate::config::Config;
 use crate::index;
 
+/// Completion of an external plugin dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DispatchOutcome {
+    /// The plugin and any requested core-side indexing completed successfully.
+    Completed,
+    /// The plugin requested propagation of its nonzero process status.
+    Exit(i32),
+}
+
 /// Dispatch `vagus <name> <rest…>` to `vagus-<name>` on `$PATH` (child + NDJSON event stream).
-pub fn dispatch(cfg: &Config, argv: &[OsString]) -> Result<()> {
+///
+/// A child failure is returned as data so the outer command lifecycle can close tracing and drain its
+/// writer before the process propagates the exact status.
+pub fn dispatch(cfg: &Config, argv: &[OsString]) -> Result<DispatchOutcome> {
     let (name, rest) = argv.split_first().context("empty plugin invocation")?;
     let name = name.to_string_lossy();
     let bin = format!("vagus-{name}");
@@ -83,8 +95,7 @@ pub fn dispatch(cfg: &Config, argv: &[OsString]) -> Result<()> {
 
     let status = child.wait().with_context(|| format!("waiting on {bin}"))?;
     if !status.success() {
-        // Propagate the plugin's own exit code.
-        std::process::exit(status.code().unwrap_or(1));
+        return Ok(DispatchOutcome::Exit(status.code().unwrap_or(1)));
     }
     if !result_ok {
         let detail = result_summary.map(|s| format!(": {s}")).unwrap_or_default();
@@ -102,7 +113,7 @@ pub fn dispatch(cfg: &Config, argv: &[OsString]) -> Result<()> {
             stats.new, stats.changed, stats.unchanged, stats.removed
         );
     }
-    Ok(())
+    Ok(DispatchOutcome::Completed)
 }
 
 fn export_env(cmd: &mut Command, cfg: &Config) {

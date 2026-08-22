@@ -40,6 +40,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Opt-in semantic relevance (`--relevance` / explicit floor) | core `vagus` | named finite original-query cosine heuristic; post-truncation/no backfill | shipped (ADR 0026) |
 | Reproducible retrieval evaluation + fusion gate | core `vagus` | `vagus eval` schema 2 + named relevance diagnostic + fixed paired `eval-gate` | shipped (ADRs 0024–0026) |
 | Atomic cited-note presentation provenance | core + tier-2 skill | strict run/event schema, binary+pipeline+corpus identity, capped-tail truth | shipped (ADR 0021 amendment) |
+| Privacy-projected offline tracing (`--trace` / env / strict YAML) | shared `vasovagal-tracing` layer + core spans | secure local schema-v1 JSONL; no collector/network path | proposed (ADR 0029) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |

@@ -226,6 +226,19 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   [ADR 0011](./adr/0011-plugin-protocol.md), `docs/plugin-contract.md`) Plugins are for **networked
   capture**, *not* search-time transforms: the reranker/rewriter live in core (G17), because the NDJSON
   contract is one-way note→index and they are neither networked nor a foreign runtime.
+- **G28 — Offline tracing is explicit, projected, and local-only.** Runtime tracing is off unless
+  `--trace`, exact `VASOVAGAL_TRACE=true`, or strict schema-v1 `vagus.yaml` enables it in that
+  precedence. It writes only validated JSONL under
+  `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/` through the shared exact-target
+  catalogue: no endpoint/collector/socket/upload, arbitrary path/field, or raw log/error mechanism.
+  Instrumentation may record only reviewed low-cardinality enums/booleans/bounded aggregate counts—
+  never query/variant text, note metadata/content/path, plugin args, prompts, hashes/cache keys, raw
+  errors, or host/user/environment identity. Before subscriber/storage setup, the fixed prospective
+  trace directory is resolved with G1's missing-path/symlink-aware check and must not overlap the
+  Markdown vault. Activation/config/storage/subscriber failures are silent no-ops. The
+  default `local-tracing` feature may be compiled out; then `--trace` remains accepted but no tracing
+  input/path is read or created. Traced and untraced functional output/exit behavior—including exact
+  external-plugin status—stays identical. ([ADR 0029](./adr/0029-local-offline-tracing.md))
 
 ## Concurrency & agents
 

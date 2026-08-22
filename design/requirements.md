@@ -81,6 +81,10 @@ coding harness (Claude Code and pi).
   Binary size ≠ model footprint (models are a lazily-downloaded cache). The author maintains the code.
   ([ADR 0014](./adr/0014-self-contained-universe.md))
 - **N6 — Small surface.** ~500–800 LOC of our own glue over mature crates; no novel algorithms.
+- **N7 — Optional local observability.** Explicitly enabled runtime traces use the shared immutable
+  schema-v1 catalogue and private local JSONL only: no collector, endpoint, upload, arbitrary path/
+  attribute, or user-content/raw-error field. Tracing is off by default; invalid or compiled-out
+  integration is a no-op and cannot change command output or failure behavior (ADR 0029/G28).
 
 ## Scope (v1)
 

@@ -26,6 +26,9 @@ straight from a Claude Code or pi session).
   records strict rank provenance for its fixed pipeline. Runs pin binary/pipeline/corpus identity,
   capped tails stay explicitly unscored, query text is off by default, and reports state their
   selection bias. Ordinary search output is unchanged.
+- **Local offline performance traces.** Explicit `--trace`, environment, or strict YAML opt-in writes
+  privacy-projected, schema-validated JSONL to private local state for `jq`/DuckDB/batch analysis.
+  There is no endpoint, collector, upload, arbitrary output path, or query/note/raw-error field.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies; difficult boundary-spanning
   queries can opt into tokenizer-safe adjacent context with `--rerank-context 1|2`. Or use `--smart` for a
@@ -63,6 +66,8 @@ manually — `VERSION=X.Y.Z scripts/render-formula.sh > .../homebrew-tap/Formula
 to `vasovagal/homebrew-tap`. CI never writes the tap.)
 
 ### From source
+
+Requires Rust 1.96 or newer.
 
 ```sh
 cargo install --git https://github.com/vasovagal/vagus
@@ -139,6 +144,39 @@ attention is quadratic; radius 1 is the practical first try and radius 2 needs a
 vault.)* No daemon and no cloud round-trip on any
 path.
 
+## Local offline traces
+
+Tracing is **off by default** and never requires a collector. Enable one command with the global flag:
+
+```sh
+vagus --trace search "<query>"
+# Equivalent persistent/process opt-ins:
+VASOVAGAL_TRACE=true vagus status
+```
+
+Vagus resolves `--trace` first, then a present `VASOVAGAL_TRACE` (exact lowercase `true` or `false`,
+no whitespace), then `${XDG_CONFIG_HOME:-$HOME/.config}/vasovagal/vagus.yaml`:
+
+```yaml
+version: 1
+tracing:
+  enabled: true
+```
+
+The strict YAML has no optional/unknown fields. Missing config means disabled; malformed config,
+invalid environment, insecure storage, or subscriber conflict silently disables tracing without
+changing the command. Files are private local JSONL under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`, with bounded rotation/retention and
+partial-tail recovery. If that fixed directory overlaps the Markdown vault—including equal,
+descendant, and symlink-alias spellings—Vagus declines tracing before subscriber installation or path
+creation. Files contain only catalogued operation timing, random session/span IDs, safe enums/booleans,
+bounded aggregate counts, and reviewed error codes—never query/variant text, note
+content/metadata/paths, prompts/plugin arguments, hashes/cache keys, raw errors, or host/environment
+identity. See [ADR 0029](design/adr/0029-local-offline-tracing.md) and the shared
+[offline-analysis guide](https://github.com/vasovagal/vasovagal-tracing/blob/7afe13e46df63a3767d518ede7b733349dc09b14/docs/offline-analysis.md).
+A build without the default `local-tracing` feature still accepts `--trace` but performs no tracing
+activation/config/state access.
+
 ## Usage
 
 ```sh
@@ -149,6 +187,7 @@ vagus reindex               # full rebuild from the vault
 vagus reindex --since 5d    # force-refresh recent filesystem mtimes; preserve older embeddings
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
+vagus --trace search "<query>"  # opt-in private local JSONL performance trace
 vagus search "<query>" --since 3m  # keep notes created in the last three months
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)

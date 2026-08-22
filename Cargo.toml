@@ -6,6 +6,7 @@ resolver = "2"
 name = "vagus"
 version = "0.13.0"
 edition = "2024"
+rust-version = "1.96"
 description = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
 license = "MIT"
 repository = "https://github.com/vasovagal/vagus"
@@ -26,14 +27,18 @@ exclude = [
 ]
 
 [features]
-# `generate` ships the tier-1 local generative rewriter (candle + a Qwen3 GGUF). Default-on so
-# `cargo install` / release binaries include it; build `--no-default-features` for a lean,
-# candle-free binary (ADR 0016). The rewriter degrades gracefully when absent.
-default = ["generate"]
+# `generate` ships the tier-1 local generative rewriter (candle + a Qwen3 GGUF). `local-tracing`
+# compiles the privacy-projected, local-only tracing integration (ADR 0029). Both ship in official
+# builds; `--no-default-features` omits their dependencies and all tracing activation/instrumentation.
+default = ["generate", "local-tracing"]
 generate = ["dep:candle-core", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
+local-tracing = ["dep:tracing", "dep:tracing-subscriber", "dep:vasovagal-tracing"]
 
 [dependencies]
 vagus-plugin-protocol = { path = "crates/vagus-plugin-protocol", version = "0.1.0" }
+# Immutable pre-publication pin to the squash-merged shared exporter commit. Replace with a
+# reviewed registry dependency before merge (ADR 0029); never use a floating branch or path.
+vasovagal-tracing = { git = "https://github.com/vasovagal/vasovagal-tracing", rev = "7afe13e46df63a3767d518ede7b733349dc09b14", optional = true }
 anyhow = "1.0.102"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive"] }
@@ -52,6 +57,8 @@ tantivy = "0.26.1"
 # Cargo.lock also pins the transitive `numkong`. Re-verify the artifact with `otool -L`/`ldd` (G13).
 usearch = "=2.25.3"
 terminal_size = "0.4"
+tracing = { version = "0.1.44", optional = true, default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", optional = true, default-features = false, features = ["registry", "std"] }
 walkdir = "2.5.0"
 # tier-1 local generative rewriter (ADR 0016), behind the `generate` feature. CPU by default (no
 # ort/onnxruntime conflict; self-contained binary preserved — G13); macOS additionally enables the

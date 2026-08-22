@@ -1,0 +1,46 @@
+{
+  "acceptance_gates_passed": true,
+  "environment": {
+    "binary_sha256": "ccbf85d36d2467294f706fd55fc966b1c0463477463c7faba9a1ef45db3b3f44",
+    "host_rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "machine": "arm64",
+    "platform": "macOS-26.6-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7"
+  },
+  "incremental_index_unchanged_corpus": {
+    "allowed_overhead_ms": 10.0,
+    "baseline_median_ms": 31.439,
+    "gate_passed": true,
+    "overhead_ms": 5.148,
+    "overhead_percent": 16.374,
+    "pairs": 15,
+    "traced_median_ms": 36.586
+  },
+  "recorded_at_utc": "2026-08-22T07:08:15+00:00",
+  "schema_version": 1,
+  "search_bm25_no_index": {
+    "allowed_overhead_ms": 10.0,
+    "baseline_median_ms": 18.479,
+    "gate_passed": true,
+    "overhead_ms": 6.625,
+    "overhead_percent": 35.854,
+    "pairs": 15,
+    "traced_median_ms": 25.105
+  },
+  "traces": {
+    "file_count": 32,
+    "maximum_file_bytes": 11744,
+    "per_command_volume_gate_passed": true,
+    "query_text_absent": true,
+    "summary_count": 32,
+    "total_bytes": 350401,
+    "zero_rejections_errors_and_drops": true
+  },
+  "workload": {
+    "corpus_bytes": 231168,
+    "documents": 128,
+    "initial_index_ms": 33520.46,
+    "kind": "deterministic_synthetic_markdown",
+    "sections_per_document": 6
+  }
+}
