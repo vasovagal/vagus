@@ -1144,7 +1144,6 @@ fn smart_query(
         Some(crate::config::EMBED_DIMS),
     );
     let mut vector_queries = 0_usize;
-    let mut lexical_queries = 0_usize;
     let mut vector_results = 0_usize;
     let mut lexical_results = 0_usize;
     let lists = retrieve_trace.in_scope(
@@ -1221,7 +1220,6 @@ fn smart_query(
                             )
                         },
                     )?;
-                    lexical_queries += 1;
                     lexical_results += ids.len();
                     lists.push(ids);
                     t.retrieval_ms += ms_since(t0);
