@@ -172,6 +172,10 @@ Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeli
 `xrl/agents` `LAWS.md`: split-by-event (`ci.yml` on PR/main, `release.yml` on tags — no test re-run),
 native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
 
+A successful tag workflow also validates all three public release assets and updates
+`vasovagal.github.io` through the Vagus-specific `LANDING_PAGE_DEPLOY_KEY`, producing an idempotent
+`vagus bumped to X.Y.Z` site commit. The deploy key can write only the landing-page repository.
+
 **Every release propagates to the tap, same cycle.** A release is not done until
 `vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: wait for `release.yml` to publish
 the GitHub release, then render and push the formula (`VERSION=X.Y.Z scripts/render-formula.sh`,
