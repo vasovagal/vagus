@@ -9,6 +9,16 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/search` skill: tick survives a manual fallback.** If retrieval comes up empty and the agent
+  falls back to `find`/`grep`/a direct `Read` under `~/brain` to locate the cited note some other
+  way, the skill now still records a counter-only `vagus tick` for it. Previously the tick step was
+  only reachable from inside the retrieve→grade→present loop, so notes answered from off-script
+  lookups never got ticked — undercounting `vagus fame` with no error surfaced. Re-run
+  `vagus skills install` to pick up the change. Also adds a note pointing at the skill's canonical
+  source (this repo) so a stale installed copy gets fixed upstream instead of hand-patched in place.
+
 ### Changed
 
 - **Smaller release binaries.** Release builds are now stripped and compiled with ThinLTO in a single
