@@ -9,6 +9,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/create-note` skill: pi argument wording and a duplicate-on-retry warning.** pi appends
+  `/skill:create-note` arguments as plain text after the expanded skill block, not as `User:` text;
+  the skill and `skills/README.md` now say so. The skill also warns that `add-note` writes the note
+  before indexing it, so a killed or timed-out call can leave the note in `00-Inbox/` without printing
+  its path. Check the inbox before retrying, because a retry creates a duplicate. Re-run
+  `vagus skills install` to pick up the change.
+
 ## [0.14.0] — 2026-09-12
 
 ### Fixed

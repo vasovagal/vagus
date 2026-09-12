@@ -46,5 +46,5 @@ done
 
 (`vagus skills install` deliberately **skips symlinks**, so this dev setup and the installed copies
 don't fight.) The shared frontmatter follows the Agent Skills standard; pi ignores additional
-Claude Code fields it does not use. Explicit pi invocations append arguments as `User:` text rather
-than substituting Claude Code's 0-based `$0` placeholder.
+Claude Code fields it does not use. Explicit pi invocations append arguments as plain text after the
+expanded skill block rather than substituting Claude Code's 0-based `$0` placeholder.
