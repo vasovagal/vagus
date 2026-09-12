@@ -81,5 +81,5 @@ extern "C" fn on_sigint(_signal: libc::c_int) {
         // SAFETY: _exit(2) is async-signal-safe and skips destructors, like the default action.
         unsafe { libc::_exit(130) };
     }
-    say(b"\nvagus: stopping after the current file and committing progress (Ctrl-C again to abort)\n");
+    say(b"\nvagus: finishing current task and exiting. hit ctrl-c again to exit immediately\n");
 }

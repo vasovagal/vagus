@@ -6,8 +6,9 @@
 //! **Durability (ADR 0029).** SQLite autocommits as a run goes, but tantivy persists only on
 //! `commit()`. A processed file's row is therefore written `pending` and blessed only by the checkpoint
 //! commit (every [`CHECKPOINT_FILES`] indexed files or [`CHECKPOINT_INTERVAL`]) that makes its BM25 docs
-//! durable. A killed run loses at most the uncommitted batch, and the next run redoes exactly the
-//! `pending` rows. The usearch sidecar is not saved at checkpoints: the f32 BLOBs are the durable
+//! durable. A killed run loses at most the uncommitted batch's BM25 docs: the next run revisits exactly
+//! the `pending` rows, keeping their stored embeddings when a fresh chunking matches them. The usearch
+//! sidecar is not saved at checkpoints: the f32 BLOBs are the durable
 //! vectors, and a `vec_dirty` flag makes the next run repack the sidecar from them.
 
 use std::collections::HashSet;
@@ -83,6 +84,9 @@ pub struct IndexStats {
     pub full_reindex: bool,
     /// An `AutoRefresh` found an unfinished rebuild and left the index untouched for `vagus index`.
     pub deferred: bool,
+    /// Of `refreshed`: files from an uncommitted batch whose stored chunks and embeddings were reused
+    /// instead of re-embedded (ADR 0029).
+    pub reused: usize,
 }
 
 /// Per-step wall-clock timings (milliseconds) for the index sub-steps, accumulated across every
@@ -308,6 +312,9 @@ enum FileOutcome {
     New,
     Changed,
     Refreshed,
+    /// Left `pending` by a killed batch with stored rows that match a fresh chunking: search docs
+    /// restored, embeddings kept.
+    Reused,
 }
 
 fn run_with(
@@ -559,6 +566,31 @@ fn run_with(
                 t.chunk_ms += elapsed_ms(t0);
             }
 
+            // A file left `pending` by a killed batch usually already holds exactly what this redo
+            // would write; only its tantivy docs never became durable. Keep the embeddings when the
+            // stored rows provably match (see `reusable_embeddings`). An explicit `--since` selection
+            // asks for a forced rebuild, and NULL-embedding repairs fail the match, so both re-embed.
+            if incomplete
+                && !window_selected
+                && let Some(stored) = reusable_embeddings(&db, &rel, &chunks)?
+            {
+                db.set_note_filters(&rel, Some(created_at), fm.source.as_deref())?;
+                // Pending rows imply `vec_dirty`, so the sidecar is normally repacked from the BLOBs
+                // after the loop. Mirror the vectors anyway in case it is being mutated in place.
+                if let Some(vi) = vindex.as_ref() {
+                    for (id, vector) in &stored {
+                        vi.remove(key_for(id))?;
+                        vi.add(key_for(id), vector)?;
+                    }
+                }
+                let t0 = Instant::now();
+                lex.replace_file(&writer, &rel, &chunks)?;
+                if let Some(t) = timings.as_mut() {
+                    t.tantivy_add_ms += elapsed_ms(t0);
+                }
+                break 'file FileOutcome::Reused;
+            }
+
             let t0 = Instant::now();
             // The OLD chunk ids (pre-replacement) drive incremental vector removal (G5): on a changed
             // file the new chunk set can differ, so we remove every old key then add every new one.
@@ -618,6 +650,10 @@ fn run_with(
             FileOutcome::New => stats.new += 1,
             FileOutcome::Changed => stats.changed += 1,
             FileOutcome::Refreshed => stats.refreshed += 1,
+            FileOutcome::Reused => {
+                stats.refreshed += 1;
+                stats.reused += 1;
+            }
         }
         if outcome == FileOutcome::Unchanged {
             continue;
@@ -626,8 +662,13 @@ fn run_with(
         if batch.len() >= checkpoint_files || last_checkpoint.elapsed() >= checkpoint_interval {
             checkpoint(&db, &mut writer, &mut batch, timings.as_deref_mut())?;
             last_checkpoint = Instant::now();
+            let reused = if stats.reused > 0 {
+                format!(" ({} reused)", stats.reused)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "vagus: {}/{total} files checked, {} indexed, {embedded_chunks} chunks embedded ({}); progress committed",
+                "vagus: {}/{total} files checked, {} indexed{reused}, {embedded_chunks} chunks embedded ({}); progress committed",
                 position + 1,
                 stats.new + stats.changed + stats.refreshed,
                 human_elapsed(run_started.elapsed())
@@ -665,6 +706,12 @@ fn run_with(
     if bm25_healed > 0 {
         eprintln!(
             "vagus: restored full-text docs for {bm25_healed} note(s) from stored chunks (no re-embedding)"
+        );
+    }
+    if stats.reused > 0 {
+        eprintln!(
+            "vagus: reused stored chunks and embeddings for {} note(s) from an interrupted batch (no re-embedding)",
+            stats.reused
         );
     }
     if bm25_stale > 0 {
@@ -711,6 +758,43 @@ fn checkpoint(
         t.commit_ms += elapsed_ms(t0);
     }
     Ok(())
+}
+
+/// The stored embeddings of `rel`, if its rows provably hold what a full redo of `chunks` would write
+/// (ADR 0029): the same chunk set (id, ord, kind, heading, body) with every embedding present at full
+/// dimension.
+///
+/// Why that is enough: an embedding is a function of the chunk body alone under the pinned identity
+/// (G4 refuses an incremental run across a model change; a chunk-version change forces a wipe), and a
+/// non-NULL embedding is only ever written for the body stored beside it — `replace_chunks` inserts
+/// rows NULL in one transaction, and `set_embedding` fills them from that same chunk list. So equal
+/// bodies mean equal vectors, whichever run or crash left the rows. A matching sha proves nothing:
+/// `upsert_file_pending` stamps the new hash before `replace_chunks`, so a crash between them leaves
+/// the new hash over the OLD, fully embedded rows. Comparing bodies catches exactly that.
+#[allow(clippy::type_complexity)]
+fn reusable_embeddings(
+    db: &Db,
+    rel: &str,
+    chunks: &[Chunk],
+) -> Result<Option<Vec<(String, Vec<f32>)>>> {
+    let stored = db.chunk_rows_with_embeddings(rel)?;
+    if stored.len() != chunks.len() {
+        return Ok(None);
+    }
+    let mut vectors = Vec::with_capacity(stored.len());
+    // `chunk_markdown` assigns ords sequentially and rows come back ORDER BY ord: compare by position.
+    for ((row, embedding), fresh) in stored.into_iter().zip(chunks) {
+        let same = row.id == fresh.id
+            && row.ord == fresh.ord
+            && row.kind == fresh.kind
+            && row.heading_path == fresh.heading_path
+            && row.body == fresh.body;
+        match embedding {
+            Some(vector) if same && vector.len() == EMBED_DIMS => vectors.push((row.id, vector)),
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(vectors))
 }
 
 /// Record, once per run and before the first SQLite vector change, that the sidecar on disk is
@@ -1145,6 +1229,16 @@ mod tests {
             .run(&cfg, IndexMode::Incremental, usize::MAX)
             .unwrap();
         assert_eq!(stats.refreshed, 3, "all three uncommitted files redone");
+        assert_eq!(
+            stats.reused, 2,
+            "the two fully embedded notes keep their vectors"
+        );
+        assert_eq!(
+            resume.calls.get(),
+            1,
+            "only the note whose embedding never finished re-embeds (ADR 0022)"
+        );
+        assert!(resume.embedded("charlieword"));
         assert_eq!(stats.unchanged, 0);
         for word in words {
             assert!(bm25_finds(&cfg, word), "{word} is searchable by BM25");
@@ -1321,7 +1415,167 @@ mod tests {
         let resume = Fake::default();
         resume.run(&cfg, IndexMode::Incremental, 1).unwrap();
         assert!(!resume.embedded("alphaword"));
-        assert!(resume.embedded("bravoword") && resume.embedded("charlieword"));
+        assert!(
+            !resume.embedded("bravoword"),
+            "fully embedded leftover is reused"
+        );
+        assert!(
+            resume.embedded("charlieword"),
+            "NULL-embedding leftover re-embeds"
+        );
+        assert_stores_agree(&cfg);
+    }
+
+    /// Every stored vector of `path` is in the usearch sidecar and finds itself at cosine ~1.
+    fn vectors_findable(cfg: &Config, path: &str) -> bool {
+        let db = Db::open(&cfg.db_path()).unwrap();
+        let index = UsearchIndex::view(&cfg.vector_path(), EMBED_DIMS).unwrap();
+        let rows = db.chunk_rows_with_embeddings(path).unwrap();
+        !rows.is_empty()
+            && rows.iter().all(|(chunk, vector)| {
+                let hits = index.search(vector.as_ref().unwrap(), 64).unwrap();
+                hits.iter()
+                    .any(|(key, cosine)| *key == key_for(&chunk.id) && *cosine > 0.99)
+            })
+    }
+
+    /// What a crash right after `upsert_file_pending` leaves: the file's current hash and mtime,
+    /// flagged pending, over whatever chunk rows were already stored.
+    fn stamp_pending(cfg: &Config, rel: &str) {
+        let note = cfg.vault.join(rel);
+        let db = Db::open(&cfg.db_path()).unwrap();
+        db.upsert_file_pending(
+            rel,
+            mtime_secs(&note).unwrap(),
+            &sha256_hex(&fs::read(&note).unwrap()),
+            now_unix(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_killed_batch_with_unchanged_content_resumes_without_re_embedding() {
+        let words = ["alphaword", "bravoword", "charlieword", "deltaword"];
+        let (_dir, cfg) = content_vault("index-reuse-batch", &words);
+        // One batch; die embedding the fourth note, so three notes sit fully embedded but uncommitted.
+        let crash = Fake {
+            crash_on_call: Some(4),
+            ..Fake::default()
+        };
+        assert!(crash.run(&cfg, IndexMode::Full, usize::MAX).is_err());
+        // Drop the half-done note, leaving nothing the model is needed for.
+        fs::remove_file(cfg.vault.join("deltaword.md")).unwrap();
+
+        let resume = Fake::default();
+        let stats = resume
+            .run(&cfg, IndexMode::Incremental, usize::MAX)
+            .unwrap();
+        assert_eq!(resume.calls.get(), 0, "stored embeddings reused");
+        assert_eq!((stats.reused, stats.refreshed, stats.removed), (3, 3, 1));
+        for word in &words[..3] {
+            assert!(bm25_finds(&cfg, word), "{word} is searchable by BM25");
+            assert!(
+                vectors_findable(&cfg, &format!("{word}.md")),
+                "{word} is searchable by vector"
+            );
+        }
+        assert_stores_agree(&cfg);
+    }
+
+    #[test]
+    fn a_crash_between_the_pending_upsert_and_replace_chunks_re_embeds() {
+        let (_dir, cfg) = content_vault("index-reuse-trap", &["alphaword", "bravoword"]);
+        Fake::default().run(&cfg, IndexMode::Full, 64).unwrap();
+        fs::write(
+            cfg.vault.join("alphaword.md"),
+            "# alphaword\n\nRevised after indexing, now about zuluword.\n",
+        )
+        .unwrap();
+        // The new hash lands over the OLD rows, whose embeddings are complete.
+        stamp_pending(&cfg, "alphaword.md");
+        Db::open(&cfg.db_path())
+            .unwrap()
+            .meta_set(META_VEC_DIRTY, "1")
+            .unwrap();
+
+        let resume = Fake::default();
+        let stats = resume.run(&cfg, IndexMode::Incremental, 64).unwrap();
+        assert_eq!(resume.calls.get(), 1, "stale rows are not reused");
+        assert!(resume.embedded("zuluword"));
+        assert_eq!((stats.reused, stats.refreshed, stats.unchanged), (0, 1, 1));
+        assert!(bm25_finds(&cfg, "zuluword"));
+        assert_stores_agree(&cfg);
+    }
+
+    #[test]
+    fn content_edited_after_the_kill_re_embeds_instead_of_reusing() {
+        let words = ["alphaword", "bravoword", "charlieword", "deltaword"];
+        let (_dir, cfg) = content_vault("index-reuse-edited", &words);
+        let crash = Fake {
+            crash_on_call: Some(4),
+            ..Fake::default()
+        };
+        assert!(crash.run(&cfg, IndexMode::Full, usize::MAX).is_err());
+        fs::remove_file(cfg.vault.join("deltaword.md")).unwrap();
+        fs::write(
+            cfg.vault.join("bravoword.md"),
+            "# bravoword\n\nEdited after the crash, now about yankeeword.\n",
+        )
+        .unwrap();
+
+        let resume = Fake::default();
+        let stats = resume
+            .run(&cfg, IndexMode::Incremental, usize::MAX)
+            .unwrap();
+        assert_eq!(resume.calls.get(), 1);
+        assert!(resume.embedded("yankeeword"));
+        assert!(!resume.embedded("alphaword") && !resume.embedded("charlieword"));
+        assert_eq!(stats.reused, 2);
+        assert!(bm25_finds(&cfg, "yankeeword"));
+        assert_stores_agree(&cfg);
+    }
+
+    #[test]
+    fn reuse_rewrites_note_level_created_at_and_source() {
+        let (_dir, cfg) = content_vault("index-reuse-filters", &["alphaword"]);
+        Fake::default().run(&cfg, IndexMode::Full, 64).unwrap();
+        // Same body, new lifecycle frontmatter: identical chunks, different filter columns.
+        fs::write(
+            cfg.vault.join("alphaword.md"),
+            "---\ncreated: 2020-01-02T03:04\nsource: slack\n---\n# alphaword\n\nThis note is about alphaword.\n",
+        )
+        .unwrap();
+        stamp_pending(&cfg, "alphaword.md");
+        // Deliberately no `vec_dirty`: exercises the in-place sidecar path as well as the repack.
+
+        let resume = Fake::default();
+        let stats = resume.run(&cfg, IndexMode::Incremental, 64).unwrap();
+        assert_eq!(resume.calls.get(), 0);
+        assert_eq!(stats.reused, 1);
+        let db = Db::open(&cfg.db_path()).unwrap();
+        let (created_at, source): (Option<i64>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT created_at, source FROM chunks WHERE path='alphaword.md' LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            created_at,
+            Some(note_created_at_secs(Some("2020-01-02T03:04"), 0.0))
+        );
+        assert_eq!(source.as_deref(), Some("slack"));
+        assert_eq!(
+            db.count(
+                "SELECT count(DISTINCT coalesce(created_at,-1) || '|' || coalesce(source,'')) FROM chunks WHERE path='alphaword.md'"
+            )
+            .unwrap(),
+            1,
+            "every chunk of the note carries the same filters"
+        );
+        drop(db);
+        assert!(vectors_findable(&cfg, "alphaword.md"));
         assert_stores_agree(&cfg);
     }
 }

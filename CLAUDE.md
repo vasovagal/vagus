@@ -40,7 +40,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    ⇒ rebuilt from the BLOBs, no re-embed). NULL chunk embeddings force a full per-file retry despite
    matching mtime/hash, and forced-refresh vector mutations must be saved. Tantivy commits at
    checkpoints (ADR 0029): a `files` row stays `pending` until the commit covering it and is redone
-   like a NULL-embedding row; a tantivy-doc ≠ chunk count triggers a census that restores BM25 from
+   like a NULL-embedding row, keeping its embeddings only if a fresh chunking matches its stored rows
+   exactly; a tantivy-doc ≠ chunk count triggers a census that restores BM25 from
    stored chunks; only explicit `index`/`reindex` resume an interrupted rebuild (search/add-note/file
    warn instead); Ctrl-C commits a checkpoint and exits with a resume hint.
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —

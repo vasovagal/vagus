@@ -154,6 +154,27 @@ fn median(values: &mut [i64]) -> Option<f64> {
     })
 }
 
+/// Decode an f32 little-endian embedding BLOB (a trailing partial chunk is ignored).
+fn f32_blob(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
+}
+
+/// Map `id, ord, kind, heading_path, body` (the first five columns) back to a [`Chunk`].
+fn chunk_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
+    Ok(Chunk {
+        id: r.get(0)?,
+        ord: r.get::<_, i64>(1)? as usize,
+        kind: crate::chunk::ChunkKind::from_i64(r.get(2)?),
+        heading_path: r.get(3)?,
+        body: r.get(4)?,
+    })
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -454,16 +475,40 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, ord, kind, heading_path, body FROM chunks WHERE path=?1 ORDER BY ord",
         )?;
+        let rows = stmt.query_map(params![path], chunk_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A file's stored chunks with their embeddings (`None` while NULL), in note order. The reuse
+    /// check compares these against a fresh chunking before trusting the vectors (ADR 0029).
+    #[allow(clippy::type_complexity)]
+    pub fn chunk_rows_with_embeddings(&self, path: &str) -> Result<Vec<(Chunk, Option<Vec<f32>>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ord, kind, heading_path, body, embedding FROM chunks WHERE path=?1 ORDER BY ord",
+        )?;
         let rows = stmt.query_map(params![path], |r| {
-            Ok(Chunk {
-                id: r.get(0)?,
-                ord: r.get::<_, i64>(1)? as usize,
-                kind: crate::chunk::ChunkKind::from_i64(r.get(2)?),
-                heading_path: r.get(3)?,
-                body: r.get(4)?,
-            })
+            Ok((
+                chunk_from_row(r)?,
+                r.get::<_, Option<Vec<u8>>>(5)?
+                    .map(|bytes| f32_blob(&bytes)),
+            ))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Rewrite the note-level filter columns (ADR 0017) on every chunk of `path`, for a redo that keeps
+    /// the stored chunks while the note's `created`/`source` frontmatter or mtime fallback may have moved.
+    pub fn set_note_filters(
+        &self,
+        path: &str,
+        created_at: Option<i64>,
+        source: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chunks SET created_at=?1, source=?2 WHERE path=?3",
+            params![created_at, source, path],
+        )?;
+        Ok(())
     }
 
     /// path -> stored chunk count, for the BM25 census against tantivy's per-path doc counts.
@@ -528,13 +573,7 @@ impl Db {
         let mut out = Vec::new();
         for row in rows {
             let (id, bytes) = row?;
-            let v: Vec<f32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect();
-            out.push((id, v));
+            out.push((id, f32_blob(&bytes)));
         }
         Ok(out)
     }

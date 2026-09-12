@@ -40,10 +40,25 @@ search into hours of embedding.
 
 - **Checkpoints.** The indexer commits tantivy every 64 indexed files or 30 seconds, whichever comes
   first, and at the end of the run. A new, changed, or forced file's row is upserted with
-  `files.pending = 1` before its chunks; a checkpoint commits tantivy and then sets `pending = 0`. A
-  killed run loses at most the uncommitted batch. Pending rows join the implicit repair set, so the next
-  run redoes exactly them and never re-embeds a file a checkpoint already covered. The cadence is a
-  constant, not configuration.
+  `files.pending = 1` before its chunks; a checkpoint commits tantivy and then sets `pending = 0` for
+  exactly the paths in its batch (rows an earlier killed run left pending stay pending until a run
+  redoes them). Pending rows join the implicit repair set, so the next run revisits exactly them and
+  never touches a file a checkpoint already covered. The cadence is a constant, not configuration.
+- **Reuse, not re-embed** (amended 2026-09-12). Most of a killed batch is already fully embedded in
+  SQLite; only its tantivy docs never became durable. On the redo of a pending row the indexer
+  re-chunks the current text (cheap) and keeps the stored embeddings only if the stored rows match
+  that chunk set exactly — same count, and per position the same id, ord, kind, heading, and body —
+  with every embedding present at full dimension. It then re-adds the tantivy docs, rewrites the
+  note-level `created_at`/`source` columns, and (if the sidecar is being mutated in place) re-adds the
+  vectors; otherwise it falls through to the full redo. This is sound because an embedding is a
+  function of the chunk body under the pinned identity, and a non-NULL embedding is only ever written
+  for the body stored beside it (`replace_chunks` inserts NULL rows in one transaction;
+  `set_embedding` fills them from the same chunk list). A matching sha/mtime would not be:
+  `upsert_file_pending` stamps the new hash before `replace_chunks`, so a crash between the two
+  leaves the new hash over the old, fully embedded rows — the body comparison rejects exactly that.
+  Reuse cannot cross an identity change: G4 refuses an incremental run across an embedding change,
+  and a chunk-version change forces the wipe. NULL-embedding repairs fail the match and re-embed, and
+  an explicit `reindex --since` selection always does the full redo.
 - **Vectors.** The usearch sidecar is not saved at checkpoints. The f32 BLOBs are the durable vectors
   (G5), and rewriting a whole sidecar every 30 seconds would dominate a large vault. Instead
   `meta.vec_dirty` is set before a run's first SQLite vector change and cleared after the end-of-run
@@ -60,8 +75,10 @@ search into hours of embedding.
     (`IndexMode::AutoRefresh`) does **not** resume. It prints one stderr line pointing at `vagus index`,
     touches nothing, and search runs over the partial index. Resuming means embedding the rest of the
     vault; that has to be something the user asked for, not a side effect of looking something up.
-- **Graceful Ctrl-C.** During an index run the first SIGINT sets a flag checked between files. The run
-  finishes the current file, commits a checkpoint, skips deletions (its walk is incomplete) and the
+- **Graceful Ctrl-C.** During an index run the first SIGINT prints `vagus: finishing current task and
+  exiting. hit ctrl-c again to exit immediately` and sets a flag checked between files. The run
+  finishes the current file (on a huge note that can take minutes; the message says what is happening
+  rather than making an embed interruptible), commits a checkpoint, skips deletions (its walk is incomplete) and the
   vector save, and exits 130 with a resume hint. A second SIGINT exits immediately. Outside an index run
   the handler restores the default disposition and re-raises, so every other command still dies on
   Ctrl-C. SIGTERM and SIGKILL are not intercepted; checkpoints bound what they lose.
@@ -83,8 +100,9 @@ search into hours of embedding.
 
 ## Consequences
 
-- A kill loses at most 30 seconds or 64 files of embedding, and a killed reindex resumes from its last
-  checkpoint. An index in the 2026-09-10 state repairs itself on its next `vagus index` or search
+- A kill throws away at most the embedding of the note in flight (plus any note whose embeddings were
+  only partly written); the rest of an uncommitted batch is reused, and a killed reindex resumes from
+  its last checkpoint. An index in the 2026-09-10 state repairs itself on its next `vagus index` or search
   refresh: the 518 missing docs are re-added from SQLite without touching the model.
 - G6's single `commit()` becomes one commit per checkpoint. Long runs produce more small segments;
   tantivy's merge policy and the final `wait_merging_threads` bound them, and `vagus compact` remains

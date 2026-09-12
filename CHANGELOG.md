@@ -15,14 +15,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   was written file by file while tantivy committed once at the very end, so a killed run could leave
   notes fully embedded but missing from BM25 for good: every later run skipped them by mtime, and
   `vagus doctor` still printed `[ok]`. Index runs now commit every 64 files or 30 seconds and mark a
-  note current only after the commit that covers it; the next run redoes the uncommitted batch. An
-  index already in that state repairs itself on the next `vagus index` or search refresh, from stored
+  note current only after the commit that covers it. The next run restores the uncommitted batch,
+  keeping its stored embeddings unless a note changed or its embedding never finished. An index
+  already in that state repairs itself on the next `vagus index` or search refresh, from stored
   chunks, without re-embedding. (ADR 0029)
 
 ### Added
 
-- **Resumable, graceful long index runs.** Ctrl-C during an index run finishes the current file,
-  commits, and exits with a resume hint (press again to abort at once). An interrupted `vagus reindex`
+- **Resumable, graceful long index runs.** Ctrl-C during an index run finishes the current note,
+  commits, and exits with a resume hint (press again to exit immediately). An interrupted `vagus reindex`
   picks up from its last checkpoint on the next `vagus index` or `vagus reindex` instead of starting
   over. `vagus search`, `add-note`, and `file` warn and leave an unfinished rebuild alone rather than
   quietly embedding the rest of the vault. Long runs print progress on stderr, and `vagus doctor` now
