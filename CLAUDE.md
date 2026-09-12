@@ -38,7 +38,11 @@ canonical invariant list and is **binding** — the summary below must stay in s
    usearch vectors (`remove(key_for(id))` — ADR 0019). Same `chunk_id`/`vec_key` keys drive all three.
    The f32 BLOBs are authoritative; the `.usearch` sidecar is a rebuildable derived cache (missing/stale
    ⇒ rebuilt from the BLOBs, no re-embed). NULL chunk embeddings force a full per-file retry despite
-   matching mtime/hash, and forced-refresh vector mutations must be saved.
+   matching mtime/hash, and forced-refresh vector mutations must be saved. Tantivy commits at
+   checkpoints (ADR 0029): a `files` row stays `pending` until the commit covering it and is redone
+   like a NULL-embedding row; a tantivy-doc ≠ chunk count triggers a census that restores BM25 from
+   stored chunks; only explicit `index`/`reindex` resume an interrupted rebuild (search/add-note/file
+   warn instead); Ctrl-C commits a checkpoint and exits with a resume hint.
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —
    always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or
    `FASTEMBED_CACHE_DIR`). Plain `vagus doctor` is filesystem-presence-only and must never instantiate

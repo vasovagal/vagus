@@ -80,3 +80,6 @@ silently breaking an invariant.
   becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.
 - `0028-searchable-producer-metadata.md` — valid non-owned JSON frontmatter becomes dedicated,
   kind-separated BM25/semantic chunks; lifecycle fields stay filter-only; adds G9g and chunk version 6.
+- `0029-checkpointed-resumable-indexing.md` — tantivy commits every 64 files/30 s and blesses
+  `files.pending` rows only after the commit; `vec_dirty` repacks usearch; only explicit `index`/`reindex`
+  resume an interrupted rebuild; graceful Ctrl-C; BM25 census self-heal + doctor check; amends G5/G6.

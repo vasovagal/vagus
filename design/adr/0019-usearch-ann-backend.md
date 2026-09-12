@@ -2,7 +2,10 @@
 
 - **Status:** Accepted (2026-06-07); **amended 2026-07-30** — exact scan is automatic below
   10,000 embedded chunks after a corpus-grounded HNSW miss, and `--exact` is enforced in every mode;
-  **amended 2026-07-31** — forced-refresh mutations count toward the one end-of-run sidecar save.
+  **amended 2026-07-31** — forced-refresh mutations count toward the one end-of-run sidecar save;
+  **amended 2026-09-12** by [ADR 0029](./0029-checkpointed-resumable-indexing.md) — tantivy now commits
+  at checkpoints while the sidecar is still saved once per run, and a `vec_dirty` flag left by an
+  interrupted run forces the rebuild-from-BLOBs instead of trusting size drift alone.
   Supersedes the "brute-force exact cosine; no ANN crate yet" stance of
   [ADR 0003](./0003-search-stack.md) for the *vector* component (BM25 + RRF remain unchanged).
 
