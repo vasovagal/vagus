@@ -25,7 +25,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::chunk::{Chunk, chunk_markdown, parse_frontmatter};
 use crate::config::{CHUNK_VERSION, Config, EMBED_DIMS, EMBED_MODEL, VEC_INDEX_VERSION};
 use crate::db::Db;
-use crate::embed::Embedder;
+use crate::embed::{DOC_RECIPE, Embedder, PRE_PINNING_RECIPE};
 use crate::lex::Lex;
 use crate::util::{key_for, note_created_at_secs, now_unix, sha256_hex};
 use crate::vector::{UsearchIndex, VectorIndex};
@@ -43,6 +43,8 @@ const META_REBUILD_PENDING: &str = "rebuild_pending";
 /// `meta` flag: SQLite vectors changed after the usearch sidecar was last saved, so the next run
 /// repacks the sidecar from the BLOBs instead of trusting it.
 const META_VEC_DIRTY: &str = "vec_dirty";
+/// `meta` key: the [`crate::embed::DocRecipe::identity`] the stored vectors were built by (G4).
+const META_EMBED_RECIPE: &str = "embed_recipe";
 
 /// How an index run treats the existing derived stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +150,18 @@ pub fn leftovers(db: &Db) -> Result<Leftovers> {
         rebuild_unfinished: db.meta_get(META_REBUILD_PENDING)?.is_some(),
         vectors_stale: db.meta_get(META_VEC_DIRTY)?.is_some(),
     })
+}
+
+/// The recipe the stored vectors were built by, when it differs from this binary's [`DOC_RECIPE`]
+/// (G4). An index pinned before `embed_recipe` existed has no key and is compared as
+/// [`PRE_PINNING_RECIPE`]; one that never pinned an identity has nothing to differ.
+pub fn recipe_change(db: &Db) -> Result<Option<String>> {
+    let stored = match db.meta_get(META_EMBED_RECIPE)? {
+        Some(recipe) => recipe,
+        None if db.meta_get("embed_model")?.is_some() => PRE_PINNING_RECIPE.identity(),
+        None => return Ok(None),
+    };
+    Ok((stored != DOC_RECIPE.identity()).then_some(stored))
 }
 
 fn index_lock_path(cfg: &Config) -> PathBuf {
@@ -376,6 +390,7 @@ fn run_with(
     let resume = rebuild_unfinished
         && db.meta_get("embed_model")?.as_deref() == Some(EMBED_MODEL)
         && db.meta_get("embed_dims")?.as_deref() == Some(dims.as_str())
+        && recipe_change(&db)?.is_none()
         && db.meta_get("chunk_version")?.as_deref() == Some(CHUNK_VERSION)
         && (!mode.is_full() || Lex::open(&cfg.tantivy_dir()).is_ok());
     if resume {
@@ -407,15 +422,21 @@ fn run_with(
     let lex = Lex::open(&cfg.tantivy_dir())?;
     let mut writer = lex.writer()?;
 
-    // Guardrail G4: pin / validate the embedding identity.
+    // Guardrail G4: pin / validate the embedding identity: model, dims, and the document recipe. A
+    // pre-pinning index whose recipe still matches gets the key backfilled here, with no rebuild.
     if !full_reindex
         && let (Some(m), Some(d)) = (db.meta_get("embed_model")?, db.meta_get("embed_dims")?)
         && (m != EMBED_MODEL || d != dims)
     {
         bail!("embedding identity changed ({m} {d} -> {EMBED_MODEL} {dims}); run `vagus reindex`");
     }
+    let recipe = DOC_RECIPE.identity();
+    if !full_reindex && let Some(stored) = recipe_change(&db)? {
+        bail!("embedding recipe changed ({stored} -> {recipe}); run `vagus reindex`");
+    }
     db.meta_set("embed_model", EMBED_MODEL)?;
     db.meta_set("embed_dims", &dims)?;
+    db.meta_set(META_EMBED_RECIPE, &recipe)?;
     db.meta_set("tantivy_version", "0.26")?;
     db.meta_set("chunk_version", CHUNK_VERSION)?;
 
@@ -765,7 +786,7 @@ fn checkpoint(
 /// dimension.
 ///
 /// Why that is enough: an embedding is a function of the chunk body alone under the pinned identity
-/// (G4 refuses an incremental run across a model change; a chunk-version change forces a wipe), and a
+/// (G4 refuses incremental runs across a model or recipe change; chunk-version changes wipe), and a
 /// non-NULL embedding is only ever written for the body stored beside it — `replace_chunks` inserts
 /// rows NULL in one transaction, and `set_embedding` fills them from that same chunk list. So equal
 /// bodies mean equal vectors, whichever run or crash left the rows. A matching sha proves nothing:
@@ -848,6 +869,7 @@ mod tests {
 
     use super::*;
     use crate::chunk::ChunkKind;
+    use crate::embed::DocRecipe;
 
     #[test]
     fn index_timings_serializes_with_stable_keys() {
@@ -1576,6 +1598,148 @@ mod tests {
         );
         drop(db);
         assert!(vectors_findable(&cfg, "alphaword.md"));
+        assert_stores_agree(&cfg);
+    }
+
+    /// Stamps the index as built by another document recipe: scenario A's prefix change.
+    fn pin_another_recipe(cfg: &Config) {
+        let recipe = DocRecipe {
+            prefix: "title: {title} | text: ",
+            ..DOC_RECIPE
+        };
+        Db::open(&cfg.db_path())
+            .unwrap()
+            .meta_set(META_EMBED_RECIPE, &recipe.identity())
+            .unwrap();
+    }
+
+    fn pinned_recipe(cfg: &Config) -> Option<String> {
+        Db::open(&cfg.db_path())
+            .unwrap()
+            .meta_get(META_EMBED_RECIPE)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_changed_embedding_recipe_refuses_incremental_runs_and_reindex_rebuilds() {
+        let (_dir, cfg) = content_vault("index-recipe-changed", &["alphaword", "bravoword"]);
+        Fake::default().run(&cfg, IndexMode::Full, 64).unwrap();
+        pin_another_recipe(&cfg);
+        // Its vectors would land next to the old recipe's.
+        fs::write(
+            cfg.vault.join("charlieword.md"),
+            "# charlieword\n\nThis note is about charlieword.\n",
+        )
+        .unwrap();
+
+        for mode in [
+            IndexMode::Incremental,
+            IndexMode::AutoRefresh,
+            IndexMode::Since { cutoff: 0 },
+        ] {
+            let refused = Fake::default();
+            let error = refused.run(&cfg, mode, 64).unwrap_err().to_string();
+            assert!(
+                error.contains("embedding recipe changed") && error.contains("run `vagus reindex`"),
+                "{mode:?}: {error}"
+            );
+            assert_eq!(refused.calls.get(), 0, "{mode:?} embeds nothing");
+        }
+        assert!(
+            !bm25_finds(&cfg, "charlieword"),
+            "refused runs index nothing"
+        );
+
+        let rebuild = Fake::default();
+        let stats = rebuild.run(&cfg, IndexMode::Full, 64).unwrap();
+        assert!(stats.full_reindex);
+        assert_eq!(
+            rebuild.calls.get(),
+            3,
+            "every note re-embeds under this recipe"
+        );
+        assert_eq!(pinned_recipe(&cfg), Some(DOC_RECIPE.identity()));
+        assert_stores_agree(&cfg);
+    }
+
+    #[test]
+    fn an_interrupted_rebuild_neither_resumes_nor_reuses_vectors_across_a_recipe_change() {
+        // Scenario B: a reindex dies with two notes fully embedded but uncommitted, then the recipe
+        // changes. Without the change both would resume on reuse alone (see the backfill test).
+        let words = ["alphaword", "bravoword", "charlieword"];
+        let (_dir, cfg) = content_vault("index-recipe-resume", &words);
+        let crash = Fake {
+            crash_on_call: Some(3),
+            ..Fake::default()
+        };
+        assert!(crash.run(&cfg, IndexMode::Full, usize::MAX).is_err());
+        fs::remove_file(cfg.vault.join("charlieword.md")).unwrap();
+        pin_another_recipe(&cfg);
+
+        let refused = Fake::default();
+        let error = refused
+            .run(&cfg, IndexMode::Incremental, usize::MAX)
+            .unwrap_err();
+        assert!(error.to_string().contains("run `vagus reindex`"), "{error}");
+        assert_eq!(refused.calls.get(), 0);
+        let db = Db::open(&cfg.db_path()).unwrap();
+        assert_eq!(leftovers(&db).unwrap().pending_files, 3, "nothing blessed");
+        drop(db);
+
+        let rebuild = Fake::default();
+        let stats = rebuild.run(&cfg, IndexMode::Full, usize::MAX).unwrap();
+        assert!(
+            stats.full_reindex,
+            "`vagus reindex` restarts instead of resuming"
+        );
+        assert_eq!(rebuild.calls.get(), 2, "no stored vector is reused");
+        assert_eq!(pinned_recipe(&cfg), Some(DOC_RECIPE.identity()));
+        assert_stores_agree(&cfg);
+    }
+
+    #[test]
+    fn an_index_from_before_the_recipe_was_pinned_backfills_it_without_re_embedding() {
+        // vagus 0.13.1 and earlier pinned no `embed_recipe`; their vectors came from
+        // PRE_PINNING_RECIPE. While that equals DOC_RECIPE the upgrade is free. Once DOC_RECIPE
+        // moves, these runs must refuse instead, and this test flips with it.
+        let words = ["alphaword", "bravoword", "charlieword"];
+        let forget_recipe = |cfg: &Config| {
+            Db::open(&cfg.db_path())
+                .unwrap()
+                .meta_delete(META_EMBED_RECIPE)
+                .unwrap();
+        };
+
+        // A complete index, refreshed by the first search after the upgrade.
+        let (_dir, cfg) = content_vault("index-recipe-backfill", &words);
+        Fake::default().run(&cfg, IndexMode::Full, 64).unwrap();
+        forget_recipe(&cfg);
+        let upgraded = Fake::default();
+        let stats = upgraded.run(&cfg, IndexMode::AutoRefresh, 64).unwrap();
+        assert_eq!(upgraded.calls.get(), 0, "no embed calls");
+        assert!(!stats.full_reindex);
+        assert_eq!(stats.unchanged, 3);
+        assert_eq!(
+            pinned_recipe(&cfg),
+            Some(DOC_RECIPE.identity()),
+            "backfilled"
+        );
+        assert_stores_agree(&cfg);
+
+        // An interrupted rebuild from before pinning resumes and reuses its vectors.
+        let (_resume_dir, cfg) = content_vault("index-recipe-backfill-resume", &words);
+        let crash = Fake {
+            crash_on_call: Some(3),
+            ..Fake::default()
+        };
+        assert!(crash.run(&cfg, IndexMode::Full, usize::MAX).is_err());
+        fs::remove_file(cfg.vault.join("charlieword.md")).unwrap();
+        forget_recipe(&cfg);
+        let resume = Fake::default();
+        let stats = resume.run(&cfg, IndexMode::Full, usize::MAX).unwrap();
+        assert!(!stats.full_reindex, "resumed, not restarted");
+        assert_eq!((stats.reused, resume.calls.get()), (2, 0));
+        assert_eq!(pinned_recipe(&cfg), Some(DOC_RECIPE.identity()));
         assert_stores_agree(&cfg);
     }
 }

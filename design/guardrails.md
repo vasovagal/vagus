@@ -42,8 +42,15 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 ## Index correctness
 
-- **G4 — Pin embedding identity.** `meta` table stores `embed_model`, `embed_dims`, `tantivy_version`.
-  Any mismatch ⇒ refuse incremental indexing, require `reindex`. Never mix embedding spaces. (Currently
+- **G4 — Pin embedding identity.** `meta` table stores `embed_model`, `embed_dims`, `embed_recipe`,
+  `tantivy_version`. `embed_recipe` is `embed::DOC_RECIPE`'s identity: every input that shapes a stored
+  document vector (model id and fastembed variant, dims, document prefix, max length, L2
+  normalization), read by the embedder from that one value, so editing any of them is a mismatch. The
+  query prefix is not in it: query vectors are never stored. Any mismatch ⇒ refuse incremental
+  indexing (the automatic refresh in `search`/`add-note`/`file`/plugins hits the same refusal), never
+  resume an interrupted rebuild or reuse stored vectors across it, `doctor` flags it; require `reindex`.
+  An index pinned before `embed_recipe` existed is compared as the frozen `PRE_PINNING_RECIPE` and
+  backfilled when it matches. Never mix embedding spaces. (Currently
   `google/embeddinggemma-300m` / **768** — [ADR 0006](./adr/0006-embeddings-local-no-daemon.md). Bumping
   `CHUNK_VERSION` alongside an identity change makes the one-time reindex automatic.)
 - **G5 — All stores move together.** On a changed/deleted file, delete its tantivy docs
@@ -105,7 +112,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G9 — embedder prefixes.** Apply the model's prompt template, query- vs document-side, and **don't
   double-prefix** (respect what the lib already applies). EmbeddingGemma (fastembed does *not*
   auto-template it): query `task: search result | query: {text}`, document `title: none | text: {text}`
-  — note documents *are* prefixed now (bge left them raw). L2-normalize after (G7).
+  — note documents *are* prefixed now (bge left them raw). L2-normalize after (G7). The document
+  prefix is part of G4's `embed_recipe`, so changing it forces `reindex`; the query prefix is not.
   ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md))
 - **G9a — CWD-scoped exclusion.** Search elides hits whose vault path matches an "inherited"
   `.vagus/config.json` exclude word found by walking up from the CWD (code dirs only, never the

@@ -3,7 +3,8 @@
 - **Status:** Accepted (2026-05-29); **amended 2026-05-30** to adopt EmbeddingGemma-300M (was
   bge-small-en-v1.5). The "local, no daemon, fastembed/ort, swappable backend" decision is unchanged —
   only the model identity changed. **Amended 2026-07-30:** ordinary `doctor` is network-incapable;
-  model download/validation requires explicit `doctor --fetch-models`.
+  model download/validation requires explicit `doctor --fetch-models`. **Amended 2026-09-12:** G4 pins
+  the whole document-embedding recipe, not just model + dims.
 
 ## Context
 
@@ -44,6 +45,31 @@ checks only and never calls `TextEmbedding::try_new`, including for a partial ca
 `doctor --fetch-models` is the consent boundary: it constructs/downloads the embedder and reranker,
 runs one inference through each, verifies the embedder dimensions/finite values, and exits nonzero if
 either model fails. This refines G10 without changing normal first-use lazy download behavior.
+
+### 2026-09-12 document-recipe amendment
+
+G4 pinned `embed_model` and `embed_dims`, but the document prefix, the 2048-token limit, and L2
+normalization shape every stored vector too. Changing one would have kept every unchanged note's old
+vector — the mtime/hash skip never re-embeds it, and ADR 0029's pending-row reuse keeps stored vectors
+whose bodies match — while new notes land beside them in a different space. Ranking degrades and
+nothing reports it.
+
+`embed::DOC_RECIPE` now holds every document-side input: model id, fastembed variant, dims, prefix, max
+length, normalization. The embedder reads its settings from it, and `vagus index` pins
+`DocRecipe::identity()` as `meta.embed_recipe`. The identity destructures every field, so a new field
+cannot be left out. A mismatch is handled exactly like a model change: incremental and windowed runs
+and the automatic refresh refuse, an interrupted rebuild restarts instead of resuming, `doctor` shows
+`[!!]`, and `reindex` rebuilds. The query prefix is not part of the recipe; query vectors are computed
+per search and never stored.
+
+An index pinned before the key existed is compared as the frozen `PRE_PINNING_RECIPE` (unchanged since
+0.2.0) and backfilled with no rebuild while that matches. Comparing a missing key against the *current*
+recipe would instead stamp a future recipe onto old vectors for anyone who skips this release.
+
+Not pinned: what fastembed does for the variant (ONNX file, pooling, tokenizer config), the Hugging
+Face files behind it, and `index::embedding_documents`' chunk-to-text mapping (today the body verbatim,
+rolled via `CHUNK_VERSION`). A fastembed bump that changes the first two for `EmbeddingGemma300M` goes
+unnoticed.
 
 ## Consequences
 

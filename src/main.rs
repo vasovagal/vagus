@@ -645,6 +645,15 @@ fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
         .unwrap_or_else(|| "(unset)".into());
     let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
     line("embed identity", id_ok, &format!("{model} / {dims}"));
+    let recipe = embed::DOC_RECIPE.identity();
+    match index::recipe_change(&db)? {
+        None => line("embed recipe", true, &recipe),
+        Some(stored) => line(
+            "embed recipe",
+            false,
+            &format!("index built by {stored}; this binary embeds {recipe} — run `vagus reindex`"),
+        ),
+    }
 
     let seg = lex::Lex::open(&cfg.tantivy_dir()).and_then(|lex| lex.segment_stats());
     let seg_detail = match &seg {

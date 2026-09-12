@@ -28,9 +28,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
    Vagus-owned fields. Index/search never edits notes; indexing may derive searchable, kind-separated
    chunks from valid non-owned producer JSON while lifecycle frontmatter stays out of chunk text
    (ADR 0028).
-4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `tantivy_version` in the
-   `meta` table. On any mismatch, refuse incremental indexing and require `vagus reindex`. Never mix
-   vectors from different models/dims — it silently corrupts ranking. Current identity:
+4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `embed_recipe` +
+   `tantivy_version` in the `meta` table. `embed_recipe` is `embed::DOC_RECIPE`'s identity — model,
+   fastembed variant, dims, document prefix, max length, normalization — the one value the embedder
+   reads (the query prefix is not in it; query vectors are never stored). On any mismatch, refuse
+   incremental indexing, resume and reuse nothing, and require `vagus reindex`. Never mix
+   vectors from different models, dims, or recipes — it silently corrupts ranking. Current identity:
    `google/embeddinggemma-300m` / **768** (768-dim, 2048-ctx). Bump `CHUNK_VERSION` alongside any
    identity change so the one-time reindex is automatic.
 5. **Keep all three stores consistent off one hash-diff.** On a changed/deleted file: delete its tantivy
@@ -62,7 +65,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    confidence; a positive floor drops unknown hits post-truncation with no backfill and never changes
    ranking/default output (ADR 0026/G9e). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
-   now) and **don't double-prefix**.
+   now; the document prefix is pinned by G4's `embed_recipe`, the query prefix is not) and **don't
+   double-prefix**.
 8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
    cosine component uses exact brute force automatically below 10,000 embedded chunks and the embedded,
    statically linked **usearch HNSW** index above that; `--exact` forces the oracle in every mode—see

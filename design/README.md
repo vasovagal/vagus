@@ -35,7 +35,8 @@ silently breaking an invariant.
   alias-aware path checks; `init --icloud` uses fail-closed, no-note-migration setup.
 - `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
 - `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default; plain doctor
-  never downloads, while explicit `--fetch-models` validates both ONNX models.
+  never downloads, while explicit `--fetch-models` validates both ONNX models; G4 pins the full
+  document-embedding recipe (prefix, length, normalization), not just model + dims.
 - `0007-lean-on-frankensearch.md` — depend/vendor the retrieval engine (pending smoke test).
 - `0008-naming.md` — `vagus` / `vasovagal`.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
