@@ -217,6 +217,7 @@ fn bm25_runner_uses_current_index_and_emits_reproducible_contract() {
             "corpus_sha256",
             "embed_dims",
             "embed_model",
+            "embed_recipe",
             "embedded_chunks",
             "indexed_chunks",
             "indexed_files",

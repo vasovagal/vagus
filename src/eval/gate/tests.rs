@@ -54,6 +54,7 @@ fn report(policy: &str, binary: &str, ndcg_delta: f64, recall_delta: f64) -> Eva
                 embedded_chunks: 20,
                 embed_model: Some("model".to_owned()),
                 embed_dims: Some("768".to_owned()),
+                embed_recipe: Some("recipe".to_owned()),
                 chunk_version: Some("5".to_owned()),
                 tantivy_version: Some("0.26".to_owned()),
                 vec_backend: Some("usearch".to_owned()),

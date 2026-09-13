@@ -19,6 +19,14 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   keeping its stored embeddings unless a note changed or its embedding never finished. An index
   already in that state repairs itself on the next `vagus index` or search refresh, from stored
   chunks, without re-embedding. (ADR 0029)
+- **Changing how vagus embeds documents now forces a rebuild instead of silently mixing vectors.** The
+  index pinned the embedding model and dimensions but not the document prompt prefix, token limit, or
+  normalization. A release that changed one would have kept every unchanged note's old vectors next to
+  new notes' vectors, ranking the old notes worse while `vagus doctor` said `[ok]`. The index now pins
+  the whole document recipe: `vagus index` refuses with a `vagus reindex` hint, the automatic refresh
+  in `vagus search` skips, an interrupted rebuild won't resume or reuse vectors across the change, and
+  `vagus doctor` flags it. Existing indexes record the recipe on their next run without re-embedding.
+  (G4, ADR 0006)
 
 ### Added
 

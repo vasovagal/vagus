@@ -56,7 +56,8 @@ search into hours of embedding.
   `set_embedding` fills them from the same chunk list). A matching sha/mtime would not be:
   `upsert_file_pending` stamps the new hash before `replace_chunks`, so a crash between the two
   leaves the new hash over the old, fully embedded rows — the body comparison rejects exactly that.
-  Reuse cannot cross an identity change: G4 refuses an incremental run across an embedding change,
+  Reuse cannot cross an identity change: G4 refuses an incremental run across an embedding change
+  (model, dims, or document recipe — ADR 0006's 2026-09-12 amendment),
   and a chunk-version change forces the wipe. NULL-embedding repairs fail the match and re-embed, and
   an explicit `reindex --since` selection always does the full redo.
 - **Vectors.** The usearch sidecar is not saved at checkpoints. The f32 BLOBs are the durable vectors
@@ -69,7 +70,8 @@ search into hours of embedding.
   completed run clears it. While it is set:
   - `vagus index` resumes: plain incremental reconciliation over the partial index.
   - `vagus reindex` (and `reindex --since`) also resumes instead of wiping, provided the stored
-    embedding identity and chunk version still match and the tantivy directory opens. Otherwise it
+    embedding identity (model, dims, document recipe) and chunk version still match and the tantivy
+    directory opens. Otherwise it
     restarts. The committed files are exactly what a restart would re-embed.
   - The implicit refresh in `vagus search`, `add-note`, `file`, and plugin captures
     (`IndexMode::AutoRefresh`) does **not** resume. It prints one stderr line pointing at `vagus index`,
