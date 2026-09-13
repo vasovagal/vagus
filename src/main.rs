@@ -14,6 +14,7 @@ mod export;
 mod frontmatter;
 mod index;
 mod init;
+mod interrupt;
 mod lex;
 mod notes;
 mod path_safety;
@@ -385,6 +386,18 @@ enum VectorsAction {
 }
 
 fn main() -> Result<()> {
+    let result = run_cli();
+    // A Ctrl-C'd index run already committed its progress; say how to resume and exit like SIGINT.
+    if let Err(error) = &result
+        && let Some(stopped) = error.downcast_ref::<index::Interrupted>()
+    {
+        eprintln!("vagus: {stopped}");
+        std::process::exit(130);
+    }
+    result
+}
+
+fn run_cli() -> Result<()> {
     let cli = Cli::parse();
     // Pure report comparison: no vault/config/model/index is needed or touched.
     if let Command::EvalGate {
@@ -708,6 +721,49 @@ fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
         "index counts",
         embedded == chunks,
         &format!("{files} files, {chunks} chunks, {embedded} embedded"),
+    );
+    // G5/ADR 0029: every chunk needs its BM25 doc. A killed pre-checkpoint run left whole notes
+    // embedded but missing from tantivy while every other line read [ok].
+    let running = index::run_in_progress(cfg);
+    let in_flight = if running {
+        " (an index run is in progress)"
+    } else {
+        ""
+    };
+    if let Ok(stats) = &seg {
+        let docs = i64::from(stats.docs);
+        let detail = if docs == chunks {
+            format!("{docs} docs for {chunks} chunks")
+        } else {
+            format!(
+                "{docs} docs for {chunks} chunks — {} out of step; run `vagus index` to repair{in_flight}",
+                (chunks - docs).abs()
+            )
+        };
+        line("full-text docs", docs == chunks, &detail);
+    }
+    let leftovers = index::leftovers(&db)?;
+    let mut unfinished = Vec::new();
+    if leftovers.rebuild_unfinished {
+        unfinished.push("unfinished rebuild".to_string());
+    }
+    if leftovers.pending_files > 0 {
+        unfinished.push(format!("{} uncommitted file(s)", leftovers.pending_files));
+    }
+    if leftovers.vectors_stale {
+        unfinished.push("vector sidecar awaiting repack".to_string());
+    }
+    let checkpoint_detail = if unfinished.is_empty() {
+        "no interrupted run".to_string()
+    } else if running {
+        format!("{}{in_flight}", unfinished.join(", "))
+    } else {
+        format!("{} — run `vagus index` to resume", unfinished.join(", "))
+    };
+    line(
+        "index checkpoint",
+        unfinished.is_empty(),
+        &checkpoint_detail,
     );
     line(
         "ticks",

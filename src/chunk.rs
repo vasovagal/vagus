@@ -44,6 +44,15 @@ impl ChunkKind {
             Self::ProducerMetadata => 1,
         }
     }
+
+    /// Inverse of [`Self::as_i64`] for rows read back from SQLite.
+    pub fn from_i64(value: i64) -> Self {
+        if value == Self::ProducerMetadata.as_i64() {
+            Self::ProducerMetadata
+        } else {
+            Self::Content
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

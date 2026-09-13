@@ -50,15 +50,25 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   (`delete_term(path)` → `commit()`), its SQLite vector rows (no FK/triggers), **and** its usearch
   vectors (`remove(key_for(id))`, [ADR 0019](./adr/0019-usearch-ann-backend.md)). One mtime+sha256
   hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
-  usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
-  rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
-  A file with NULL chunk embeddings bypasses mtime/hash shortcuts and retries the full replacement;
-  forced-refresh mutations must count when deciding to save usearch. The G25 user-data tables are
+  usearch key count == embedded chunks and tantivy live docs == chunks). The f32 BLOBs are
+  authoritative; the `.usearch` sidecar is a rebuildable derived cache (G2) — a missing/mismatched or
+  `vec_dirty` sidecar rebuilds from the BLOBs, no re-embed. A file with NULL chunk embeddings, or a
+  `files.pending` row whose checkpoint never committed, bypasses mtime/hash shortcuts and retries the
+  replacement; a pending row keeps its stored embeddings only when a fresh chunking matches its rows
+  exactly (id, ord, kind, heading, body) and none is NULL, and otherwise re-embeds; forced-refresh mutations must count when deciding to save usearch. When tantivy's
+  live doc count disagrees with the chunk count, a per-path census restores current notes' BM25 docs
+  from their stored chunks (no re-embed) and deletes docs for paths SQLite no longer holds
+  ([ADR 0029](./adr/0029-checkpointed-resumable-indexing.md)). The G25 user-data tables are
   intentionally **outside** this three-store hash-diff; `doctor`
   cross-checks orphaned counter and event paths informationally.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
-  the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
-  many adds + one commit.
+  the exact `path` term, then re-`add_document` the new chunks. Commits happen at checkpoints (every 64
+  indexed files or 30 s, and at the end of the run), and a file's SQLite row is never marked current
+  (`pending = 0`) before the commit that covers it, so a killed run loses at most the uncommitted
+  batch's BM25 docs. One advisory `index.lock` admits a single index run per data dir. An interrupted rebuild is
+  resumed only by explicit `vagus index`/`vagus reindex`, never by the implicit refresh in
+  `search`/`add-note`/`file`; Ctrl-C commits a checkpoint before exiting
+  ([ADR 0029](./adr/0029-checkpointed-resumable-indexing.md)).
 - **G7 — Normalize vectors at insert** so cosine = dot product.
 - **G20 — Chunk budget is tied to the embedder's context window.** Sections over budget are sub-split
   on paragraph boundaries (greedily packed, overlap re-prepended); fenced code blocks stay **atomic**

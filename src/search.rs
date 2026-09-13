@@ -1180,8 +1180,11 @@ pub fn run(
     let index_refreshed = if no_index {
         false
     } else {
-        match index::run(cfg, index::IndexMode::Incremental) {
-            Ok(_) => true,
+        // AutoRefresh: an interrupted rebuild is left for an explicit `vagus index` (ADR 0029).
+        match index::run(cfg, index::IndexMode::AutoRefresh) {
+            Ok(stats) => !stats.deferred,
+            // Ctrl-C during the refresh stops the whole search, not just the refresh.
+            Err(error) if error.is::<index::Interrupted>() => return Err(error),
             Err(error) => {
                 eprintln!("vagus: index refresh skipped ({error})");
                 false
