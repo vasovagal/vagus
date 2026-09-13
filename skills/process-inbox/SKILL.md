@@ -6,6 +6,11 @@ disable-model-invocation: true
 user-invocable: true
 ---
 
+<!-- Canonical source: github.com/vasovagal/vagus, skills/process-inbox/SKILL.md, embedded in the
+     vagus binary. `vagus skills install` writes ~/.claude/skills/process-inbox/ and
+     ~/.pi/agent/skills/process-inbox/; the next install replaces a hand-edited copy and moves
+     the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
+
 # Process the inbox
 
 Help the user empty `~/brain/00-Inbox/` by filing each note into PARA. This **moves files**, so always

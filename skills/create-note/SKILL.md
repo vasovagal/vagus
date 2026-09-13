@@ -8,6 +8,11 @@ disable-model-invocation: false
 user-invocable: true
 ---
 
+<!-- Canonical source: github.com/vasovagal/vagus, skills/create-note/SKILL.md, embedded in the
+     vagus binary. `vagus skills install` writes ~/.claude/skills/create-note/ and
+     ~/.pi/agent/skills/create-note/; the next install replaces a hand-edited copy and moves
+     the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
+
 # Create note
 
 Capture a note from this conversation into the vagus inbox (`~/brain/00-Inbox/`) and index it.
