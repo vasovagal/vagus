@@ -8,9 +8,10 @@ disable-model-invocation: false
 user-invocable: true
 ---
 
-<!-- Canonical source: github.com/vasovagal/vagus, skills/search/SKILL.md — embedded in the vagus
-     binary and written out by `vagus skills install`. Fix bugs there via a PR; hand-editing the
-     installed copy under ~/.claude/skills/search/ is silently overwritten on the next install. -->
+<!-- Canonical source: github.com/vasovagal/vagus, skills/search/SKILL.md, embedded in the
+     vagus binary. `vagus skills install` writes ~/.claude/skills/search/ and
+     ~/.pi/agent/skills/search/; the next install replaces a hand-edited copy and moves
+     the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
 
 # Search the vault (tier-2 agent judge)
 

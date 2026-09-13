@@ -27,8 +27,11 @@ Install is idempotent and safe to re-run. Pi loads the installed skills in new s
 
 ### Contributing to a skill
 
-Edit `skills/<name>/SKILL.md` here and rebuild — that updates the embedded copy. To live-test your
-edits without rebuilding/installing each time, symlink the source into your skills dir instead:
+Edit `skills/<name>/SKILL.md` here and rebuild — that updates the embedded copy. Every `SKILL.md`
+opens with a canonical-source comment pointing back here: agents audit the installed copies in place,
+and the next `vagus skills install` replaces a hand edit there and moves it to `SKILL.md.bak`. To
+live-test your edits without rebuilding/installing each time, symlink the source into your skills dir
+instead:
 
 ```sh
 # Claude Code
@@ -46,5 +49,5 @@ done
 
 (`vagus skills install` deliberately **skips symlinks**, so this dev setup and the installed copies
 don't fight.) The shared frontmatter follows the Agent Skills standard; pi ignores additional
-Claude Code fields it does not use. Explicit pi invocations append arguments as `User:` text rather
-than substituting Claude Code's 0-based `$0` placeholder.
+Claude Code fields it does not use. Explicit pi invocations append arguments as plain text after the
+expanded skill block rather than substituting Claude Code's 0-based `$0` placeholder.

@@ -9,6 +9,19 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bundled skills: pi argument wording, a create-note duplicate-on-retry warning, and
+  canonical-source headers.** pi appends `/skill:create-note` arguments as plain text after the
+  expanded skill block, not as `User:` text; the skill and `skills/README.md` now say so. The
+  create-note skill also warns that `add-note` writes the note before indexing it, so a killed or
+  timed-out call can leave the note in `00-Inbox/` without printing its path. Check the inbox before
+  retrying, because a retry creates a duplicate. Every bundled skill now opens with the same
+  canonical-source comment naming `skills/<name>/SKILL.md` in this repo, so drift found in an
+  installed copy gets fixed here. It replaces the search skill's old comment, which named only the
+  Claude Code copy and said a hand edit was silently overwritten; `vagus skills install` actually
+  moves it to `SKILL.md.bak`. Re-run `vagus skills install` to pick up the changes.
+
 ## [0.14.0] — 2026-09-12
 
 ### Fixed
