@@ -145,7 +145,7 @@ reranker or embedder fails. A directory name containing `jina`/`rerank` is not c
 
 - G17 is amended: a deterministic cross-encoder scorer is allowed in core (like the embedder); the
   no-LLM line now governs *generative* models (see G17/G19).
-- `--rerank` is the shared rerank lever for tier-1 (shell) and tier-2. The bounded `/search` skill
+- `--rerank` is the shared rerank lever for tier-1 (shell) and tier-2. The bounded `/vagus-search` skill
   pre-reranks 10 exact candidates at context radius zero, then independently judges the matched full
   bodies (ADR 0012 amendment); optional small-to-big model input never enlarges agent context.
 - First reranker model → an ADR-gated addition (G11). `doctor` reports whether it's cached without

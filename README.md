@@ -37,14 +37,16 @@ straight from a Claude Code or pi session).
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the search index is
   a throwaway cache (local usage counters/provenance are the explicit exception).
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  the create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
+  the vagus-create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
   provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields; that producer
   metadata is searchable by BM25 and meaning, so queries such as `parakeet` find model provenance.
-- **Assisted, never automatic filing.** The process-inbox skill proposes a PARA home per note; you
+- **Assisted, never automatic filing.** The vagus-process-inbox skill proposes a PARA home per note; you
   approve.
-- **Claude Code and pi skills built in.** Create-note, search, and process-inbox skills ship
+- **Claude Code and pi skills built in.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` ship
   inside the binary — `vagus skills install --agent <claude|pi>` writes them to the selected
-  agent's global skills directory.
+  agent's global skills directory. Generic “make a note” / “save this” requests default to Vagus;
+  “my notes” questions retrieve rather than create. Explicit repo files, release notes, or another
+  notes app override the default. See [skill routing and upgrades](./skills/README.md).
 - **Self-contained.** One ~40 MB static binary (ONNX Runtime linked in — `otool -L` shows
   only system dylibs). No Python, no Node, no background process.
 
@@ -113,7 +115,7 @@ vagus skills install --agent pi      # pi: ~/.pi/agent/skills
 vagus skills list --agent pi         # show pi install status
 ```
 
-The bundled search and process-inbox skills translate user time windows directly into `--since`
+The bundled `vagus-search` and `vagus-process-inbox` skills translate user time windows directly into `--since`
 filters (for example, “last three months” → `3m`) instead of making the agent post-filter results.
 The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
 leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an

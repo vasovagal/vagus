@@ -26,13 +26,13 @@ lifecycle move is a **whole-folder `mv`**, so per-project folders matter.
 
 - **Capture** — save anything that resonates, immediately, to **one place: the inbox**. Bar = "does this
   resonate?", not "will I use it?".
-- **Organize** — move inbox items into PARA by actionability. This is `vagus`'s assisted `/process-inbox`.
+- **Organize** — move inbox items into PARA by actionability. This is `vagus`'s assisted `/vagus-process-inbox`.
 - **Distill** — progressively summarize (bold → highlight → one-line summary) so future-you skims fast.
 - **Express** — turn notes into output. The point of the whole system.
 
 **The inbox is temporary staging.** Its job is to decouple fast, emotional capture from deliberate
 filing. Success = periodically processing it toward empty (a weekly review cadence). `vagus`'s
-`00-Inbox/` is exactly this; `/process-inbox` is the ritual, made low-effort by having Claude propose
+`00-Inbox/` is exactly this; `/vagus-process-inbox` is the ritual, made low-effort by having Claude propose
 destinations.
 
 ## Vault conventions adopted

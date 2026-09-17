@@ -85,6 +85,6 @@ oracle in every mode. The f32 BLOBs remain authoritative and `.usearch` remains 
 
 | Option | Effort | Control | Risk |
 |---|---|---|---|
-| **Assisted, on demand** (`/process-inbox`, user approves) | low | high | low — **chosen** |
+| **Assisted, on demand** (`/vagus-process-inbox`, user approves) | low | high | low — **chosen** |
 | Automatic on capture | none | none | files move unexpectedly |
 | Manual only (`mv`) | n/a | total | nothing learns; still searchable |

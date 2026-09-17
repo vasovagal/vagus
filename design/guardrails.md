@@ -171,7 +171,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   ([ADR 0028](./adr/0028-searchable-producer-metadata.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
-  (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
+  (2) the bundled search skill (`/vagus-search` in Claude Code, `/skill:vagus-search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
   fixed **unfiltered** primary path emits G9f provenance and atomically records only cited notes
@@ -179,7 +179,11 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   omit the G9f wrapper because metadata-filtered provenance is forbidden, and record primary cited
   paths counter-only; retries remain unticked. The *channel* picks the tier — no escalation prompts or
   routine tier-2 fan-out. The skill keeps rerank-context radius 0; optional wider model input never
-  expands the ten matched bodies shown to the agent.
+  expands the ten matched bodies shown to the agent. No third retrieval via filesystem tools after
+  the retry; a Read of an already retrieved candidate is grading, not a new search. Generic personal
+  note requests default to Vagus by intent (capture vs retrieval); explicit destinations override
+  this default, and questions never authorize note creation. `vagus-process-inbox` stays manual-only
+  with per-move confirmation.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
   fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins

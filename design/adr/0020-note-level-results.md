@@ -10,7 +10,7 @@ The unit of retrieval is a **chunk** (`chunk_id = sha256(path + "#" + ord)` — 
 and `--limit` truncates the ranked *chunk* list. A long note that matches broadly can occupy several
 of the top slots, so `--limit 10` may surface only 3–4 distinct notes. The human display already
 groups hits by note (`PER_FILE_CAP=3` + "+N more in this note"), but that is cosmetic: the limit and
-the `--json` array stayed chunk-level, and the `/search` skill's then-`--limit 20` could deliver 20
+the `--json` array stayed chunk-level, and the `/vagus-search` skill's then-`--limit 20` could deliver 20
 chunks spanning far fewer notes. (ADR 0012 later reduced the skill budget to 10 distinct notes.)
 
 In practice the user asking for "10 hits" almost always means **10 different notes** — "the file
@@ -47,7 +47,7 @@ nothing may perturb the deterministic RRF floor (G7/G8).
 - **`siblings` is an additive optional Hit field** (`skip_serializing_if`, like
   `created`/`source` — G9a): the count of additional ranked chunks from the same note folded into
   the kept hit, present only in note mode and only when > 0. It powers the "+N more in this note"
-  display line and gives the `/search` skill a breadth signal.
+  display line and gives the `/vagus-search` skill a breadth signal.
 - **Pool deepening.** Dedup compresses chunks → notes, so note mode always retrieves the deep pool
   (`(limit*4).max(30)` — the existing rerank/filter sizing). Only `--chunks` without
   rerank/filters retrieves exactly `limit`, preserving the old hot path.
@@ -58,7 +58,7 @@ nothing may perturb the deterministic RRF floor (G7/G8).
 
 - Default `--json` *content* changes (one best-chunk hit per note); the *shape* is unchanged per
   G9a (field set + one additive optional field). The only known `--json` consumer is the in-repo
-  `/search` skill, updated in the same change; `--chunks` is the compatibility escape hatch.
+  `/vagus-search` skill, updated in the same change; `--chunks` is the compatibility escape hatch.
 - `rrf()` and rerank are untouched (G8); dedup is structurally identical to scope/frontmatter
   filtering — adds **G9c**. ADR 0023's later suffix-only gate is likewise outside dedup/fusion and
   adds G9d.
