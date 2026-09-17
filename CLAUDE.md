@@ -88,13 +88,16 @@ canonical invariant list and is **binding** — the summary below must stay in s
 12. **Three tiers, "no versioned runtime" identity.** vagus is a self-contained Rust *universe* (no
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
-    = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
-    `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
+    = shell + local models, offline; (2) the bundled search skill (`/vagus-search` in Claude Code,
+    `/skill:vagus-search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
     only, max 6 presented, one fallback only if none survive. Its fixed unfiltered primary atomically
     logs provenance and counters for cited notes without query content; explicit user time windows use
     native `--since`, preserve it on retry, and record primary citations counter-only because filtered
     provenance is forbidden. Advanced search is **in core**,
-    **not** a plugin — plugins (G18) are for networked capture only.
+    **not** a plugin — plugins (G18) are for networked capture only. No filesystem search after the
+    single retry; a candidate Read is grading only. Generic personal-note intent defaults to Vagus:
+    capture writes, retrieval questions do not. Explicit destinations override the default;
+    `vagus-process-inbox` remains manual-only with per-move confirmation.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Searchable producer JSON
     follows the same budget in a separate chunk kind, including whitespace-free hard splits, and
@@ -146,8 +149,8 @@ brew tap and choose their own home/vault paths; follow the README when helping t
 ~/brain -> ~/Library/Mobile Documents/com~apple~CloudDocs/Brain   # the vault (markdown only, in iCloud)
 ~/.local/share/vagus/       # index: tantivy/ + meta.db + config.toml   (OUTSIDE iCloud)
 ~/Library/Caches/vagus/models/   # cached ONNX models: embedder + optional reranker  (OUTSIDE iCloud)
-~/.claude/skills/{create-note,search,process-inbox}/   # Claude Code skill installs
-~/.pi/agent/skills/{create-note,search,process-inbox}/  # pi skill installs (both shell out to `vagus`)
+~/.claude/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/   # Claude Code skill installs
+~/.pi/agent/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/  # pi skill installs (both shell out to `vagus`)
 ```
 
 ## Build / test / run

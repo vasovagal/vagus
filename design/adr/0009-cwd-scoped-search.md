@@ -39,7 +39,7 @@ trees, never in the vault:
   only stderr carries the notice.
 - Config files live **outside** the iCloud vault ([guardrail G1](../guardrails.md): the vault holds
   Markdown only).
-- The bundled `/search` skill picks this up **transparently** because it already runs `vagus search`
+- The bundled `/vagus-search` skill picks this up **transparently** because it already runs `vagus search`
   from the user's CWD.
 
 ## Alternatives considered & rejected

@@ -221,7 +221,7 @@ pub fn add_note(
     let filename = format!("{}-{}.md", now.format("%Y%m%d-%H%M%S"), slugify(title));
     let path = dir.join(&filename);
 
-    // Body from stdin when piped (e.g. the create-note skill's heredoc).
+    // Body from stdin when piped (e.g. the vagus-create-note skill's heredoc).
     let piped = !std::io::stdin().is_terminal();
     let mut body = String::new();
     if piped {

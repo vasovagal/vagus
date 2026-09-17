@@ -66,5 +66,5 @@ ours for control + a clean dep tree and use frankensearch/qmd only as references
     (`vagus search --rerank`), riding this same `ort` stack — it does **not** touch `rrf()`
     ([ADR 0015](./0015-cross-encoder-rerank.md)).
   - Generative expansion/HyDE runs **locally in core** (tier-1, feature-gated candle,
-    [ADR 0016](./0016-local-generative-rewriter.md)) **or** via **Opus in the `/search` skill**
+    [ADR 0016](./0016-local-generative-rewriter.md)) **or** via **Opus in the `/vagus-search` skill**
     (tier-2). See the three-tier contract ([ADR 0012](./0012-three-tier-retrieval.md)) and G17/G19.

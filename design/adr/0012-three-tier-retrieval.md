@@ -17,7 +17,7 @@ We want `tobi/qmd`-class retrieval quality without abandoning vagus's identity (
 no managed runtime — [ADR 0014](./0014-self-contained-universe.md)). qmd's edge over a plain BM25 +
 vector + RRF core is three add-ons: **query expansion**, **HyDE**, and **cross-encoder reranking**.
 
-A *two-tier* model was first proposed (CLI = an LLM-free ceiling; the `/search` skill = SOTA via Opus).
+A *two-tier* model was first proposed (CLI = an LLM-free ceiling; the `/vagus-search` skill = SOTA via Opus).
 But that caps the terminal experience at pure RRF and only delivers smarts when Claude is in the loop.
 The author wants the shell to be genuinely good **on its own** — "if you're in the shell, use the
 better-than-nothing local models" — *and* the skill to be SOTA when Opus is present. Both tiers should
@@ -32,13 +32,13 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank**; optional tokenizer-safe radius 1/2 context | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | bundled search Agent Skill (`/search` in Claude Code; `/skill:search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6 + cited-note tick; strict provenance on the unfiltered primary, native `--since` + counter-only ticks for explicit time windows, and one uninstrumented fallback if none survive | Opus |
+| **2 — skill + Opus** | bundled search Agent Skill (`/vagus-search` in Claude Code; `/skill:vagus-search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6 + cited-note tick; strict provenance on the unfiltered primary, native `--since` + counter-only ticks for explicit time windows, and one uninstrumented fallback if none survive | Opus |
 
 The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
 standards-compatible `SKILL.md` is embedded once and installed by
 `vagus skills install --agent <claude|pi>` into the harness's global discovery directory. Claude Code
 remains the backward-compatible default target; pi honors `PI_CODING_AGENT_DIR` and loads the skill
-under its `/skill:search` command. Opus remains the intended tier-2 model regardless of harness.
+under its `/skill:vagus-search` command. Opus remains the intended tier-2 model regardless of harness.
 
 - **Tiers 1 and 2 share the retrieval + rerank core but have different budgets.** Tier 1 owns the
   typed `lex:/vec:/hyde:` generative rewrite. Tier 2 normally spends its stronger host-model reasoning
@@ -64,12 +64,26 @@ under its `/skill:search` command. Opus remains the intended tier-2 model regard
   window, the skill removes the temporal phrase when a meaningful topic remains and passes the shared
   `--since` duration to the first retrieval and its one allowed fallback. Unqualified “recent” starts
   at `1m` (30 days) and is disclosed in the answer. The filter is note creation time, not a date
-  mentioned in a body. The process-inbox skill applies the same rule to `vagus inbox --since`.
+  mentioned in a body. The vagus-process-inbox skill applies the same rule to `vagus inbox --since`.
 - **ADR 0021 provenance observes tier 2; it does not rank.** The fixed unfiltered primary command
   emits a self-verifying run plus honest capped-prefix/tail rank states without changing any result.
   Metadata-filtered searches cannot claim that contract, so a `--since` primary emits ordinary JSON
   and records cited paths counter-only; query text remains off, and fallback searches remain unticked.
   Result reports are selection-biased diagnostics, never ADR 0024 evaluation evidence.
+
+## Skill naming and activation clarification
+
+The bundled names are `vagus-search`, `vagus-create-note`, and `vagus-process-inbox`. Generic
+personal-note wording defaults to Vagus by intent: capture requests write; questions retrieve and
+never authorize creation. Explicit destinations (repo documentation, release notes, another notes
+app) override that default. Inbox processing remains manual-only with per-move approval (ADR 0005).
+The installer retires only byte-exact recognized legacy copies after a non-overwriting backup;
+unknown/custom files and symlinks require manual reconciliation (see `skills/README.md`).
+
+The one-retry bound is unchanged: no additional `find`/`grep`/direct-Read search after it. Reading an
+already retrieved candidate to resolve ambiguity is grading, not another retrieval path. Only
+primary presented notes are ticked under the existing provenance/counter contract; retries stay
+unticked. This removes contradictory skill guidance rather than changing counters or time filters.
 
 ## 2026-07-29 bounded-skill evidence
 

@@ -44,7 +44,8 @@ silently breaking an invariant.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
 - `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
   channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 contract and pushes explicit
-  time windows into native `--since` retrieval.
+  time windows into native `--since` retrieval. Namespaced skills default generic personal-note
+  intent to Vagus, with explicit destination overrides and conservative legacy-name migration.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit

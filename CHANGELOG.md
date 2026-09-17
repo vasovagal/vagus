@@ -9,6 +9,23 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **Namespaced note skills with broader intent triggers.** `vagus-create-note`, `vagus-search`, and
+  manual-only `vagus-process-inbox` replace the generic skill names. “Make a note” / “save this”
+  default to Vagus capture; “my notes” retrieval does not authorize creation. Explicit repo files,
+  release notes, and other notes apps override the default; filing still requires per-move approval.
+  Reinstall after upgrading to receive the changes. The installer backs up and retires recognized
+  unmodified legacy skills, but preserves unknown/custom copies and symlinks with a manual
+  reconciliation warning. CLI command names are unchanged.
+
+### Fixed
+
+- **Bounded search skill fallback.** Removed contradictory instructions to search again via
+  `find`/`grep`/`Read` after the one allowed retry. Primary presented notes retain their existing
+  provenance/counter bookkeeping; the bounded retry remains unticked and preserves any exact
+  `--since` window.
+
 ## [0.14.1] — 2026-09-12
 
 ### Fixed

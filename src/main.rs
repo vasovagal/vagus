@@ -253,7 +253,7 @@ enum Command {
         /// Instead of moving, suggest destinations.
         #[arg(long)]
         suggest: bool,
-        /// With --suggest, emit JSON (for the /process-inbox skill). With --stats, emit the
+        /// With --suggest, emit JSON (for the /vagus-process-inbox skill). With --stats, emit the
         /// per-step timing breakdown as one stable JSON object instead of the table.
         #[arg(long)]
         json: bool,
@@ -280,7 +280,7 @@ enum Command {
     },
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
-    /// Manage the bundled Claude Code / pi skills (create-note / search / process-inbox).
+    /// Manage the bundled Claude Code / pi skills (vagus-create-note / vagus-search / vagus-process-inbox).
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
@@ -292,7 +292,7 @@ enum Command {
     },
     /// List discovered `vagus-<name>` plugins on your PATH.
     Plugins,
-    /// Record a usage tick for one or more notes (used by the /search skill after presenting results).
+    /// Record a usage tick for one or more notes (used by the /vagus-search skill after presenting results).
     Tick {
         /// Vault-relative note paths (as printed in search hits); absolute paths inside the vault are
         /// accepted. Optional when --events carries the presented paths and rank provenance.
@@ -1150,7 +1150,7 @@ FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox
   vagus file 00-Inbox/<note>.md --suggest             where might it go? (--thought-process = why)
   vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
-  (agent skill: /process-inbox in Claude Code; /skill:process-inbox in pi)
+  (agent skill: /vagus-process-inbox in Claude Code; /skill:vagus-process-inbox in pi)
 
 PARA — file by how ACTIONABLE it is (first match wins):
   10-Projects   a goal with an end + deadline       ("Launch v2")
