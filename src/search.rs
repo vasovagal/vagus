@@ -36,42 +36,6 @@ const RRF_K: f32 = 60.0;
 /// experiment must report a different policy id without changing this default silently.
 pub const FUSION_POLICY: &str = "rrf_k60";
 
-/// Owns one smart-search prewarm worker and joins it on every scope exit, including `?`/unwind.
-#[cfg(feature = "generate")]
-struct ScopedWorker<T> {
-    handle: Option<JoinHandle<T>>,
-}
-
-#[cfg(feature = "generate")]
-impl<T> ScopedWorker<T> {
-    fn new(handle: JoinHandle<T>) -> Self {
-        Self {
-            handle: Some(handle),
-        }
-    }
-
-    fn join(&mut self) -> Option<std::thread::Result<T>> {
-        self.handle.take().map(JoinHandle::join)
-    }
-}
-
-#[cfg(feature = "generate")]
-impl<T> Drop for ScopedWorker<T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// Both independent model prewarms share one lexical scope, so neither can outlive smart fallback or
-/// tracing shutdown even when rewrite/retrieval/hydration exits early.
-#[cfg(feature = "generate")]
-struct SmartPrewarm {
-    embedder: ScopedWorker<Result<Embedder>>,
-    reranker: ScopedWorker<Result<Reranker>>,
-}
-
 fn fusion_supports_adaptive_tidy(policy: &str) -> bool {
     policy == "rrf_k60"
 }
@@ -210,7 +174,7 @@ fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Mode {
     /// BM25 + semantic, fused with RRF.
     Hybrid,
@@ -218,16 +182,6 @@ pub enum Mode {
     Bm25,
     /// Semantic (embeddings) only.
     Vec,
-}
-
-impl Mode {
-    fn trace_name(self) -> &'static str {
-        match self {
-            Self::Hybrid => "hybrid",
-            Self::Bm25 => "lexical",
-            Self::Vec => "semantic",
-        }
-    }
 }
 
 #[derive(Serialize, Clone)]
@@ -325,15 +279,6 @@ pub(crate) struct QueryMeta {
     /// Actual hydrated fused pool and actually scored prefix.
     pub candidate_pool: usize,
     pub rerank_cap: usize,
-}
-
-/// Internal query result that keeps the aggregate postprocess span alive across the caller's score,
-/// relevance, and adaptive-tidy projections.
-struct TracedQueryResult {
-    hits: Vec<Hit>,
-    elided: usize,
-    meta: QueryMeta,
-    postprocess_trace: crate::offline_trace::Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -507,6 +452,7 @@ fn passes_min_relevance(hit: &Hit, floor: f32) -> bool {
 /// Resolve a ranked `(vec_key, cosine)` list from a [`crate::vector::VectorIndex`] back to
 /// `(chunk_id, cosine)`, preserving rank order and dropping any key with no surviving chunk row
 /// (ADR 0019). usearch returns u64 keys; the reverse map lives in the indexed `chunks.vec_key` column.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "vector.search", skip_all, fields(backend = vindex.backend_name(), limit)))]
 fn vec_topk(
     vindex: &dyn crate::vector::VectorIndex,
     db: &Db,
@@ -516,49 +462,34 @@ fn vec_topk(
     let hits = vindex.search(qv, limit)?;
     let keys: Vec<u64> = hits.iter().map(|(k, _)| *k).collect();
     let map = db.chunk_ids_for_keys(&keys)?;
-    Ok(hits
+    let ranked: Vec<_> = hits
         .into_iter()
         .filter_map(|(k, cos)| map.get(&k).map(|id| (id.clone(), cos)))
-        .collect())
+        .collect();
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = ?ranked, "vector results");
+    Ok(ranked)
 }
 
 /// Semantic top-k: embed the query, then rank via the vector index — usearch HNSW, or the exact
 /// brute-force backend when `exact`, on a small corpus, or before the sidecar exists (ADR 0019).
 /// Returns (chunk_id, cosine) in rank order.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "semantic.retrieve", skip_all, fields(limit, exact_requested = exact)))]
 fn vec_search(
     cfg: &Config,
     db: &Db,
     query: &str,
     limit: usize,
     exact: bool,
-    trace_parent: &crate::offline_trace::Span,
 ) -> Result<Vec<(String, f32)>> {
-    let load_trace = crate::offline_trace::model_load(
-        trace_parent,
-        "fastembed",
-        "embedding",
-        Some(crate::config::EMBED_DIMS),
-    );
-    let mut emb = load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-        Embedder::new(&cfg.cache_dir)
-    })?;
-    drop(load_trace);
-    let infer_trace = crate::offline_trace::model_infer(
-        trace_parent,
-        "fastembed",
-        "embedding",
-        Some(crate::config::EMBED_DIMS),
-    );
-    infer_trace.item_count(1);
-    let qv = infer_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-        emb.embed_query(query)
-    })?; // normalized; query text is never attached to either span
-    drop(infer_trace);
+    let mut emb = Embedder::new(&cfg.cache_dir)?;
+    let qv = emb.embed_query(query)?; // normalized
     let vindex = crate::vector::open_for_search(cfg, db, exact)?;
     vec_topk(vindex.as_ref(), db, &qv, limit)
 }
 
 /// Reciprocal Rank Fusion over several ranked id-lists (1-based rank). Returns (id, fused_score).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "fusion", skip_all, fields(policy = FUSION_POLICY, lists = lists.len(), limit)))]
 fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     let mut score: HashMap<String, f32> = HashMap::new();
     for list in lists {
@@ -572,11 +503,14 @@ fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     // into note selection and full-body context. Scores/formula remain exactly G8 RRF k=60.
     fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     fused.truncate(limit);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = ?fused, "fusion results");
     fused
 }
 
 /// Resolve ranked `Scored` into displayable hits (joining SQLite for path/heading/body). `keep_body`
 /// retains the full chunk body on the hit (for `--full` output and for cross-encoder reranking).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "hydrate", skip_all, fields(count = ranked.len(), keep_body)))]
 fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for s in ranked {
@@ -608,6 +542,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
             });
         }
     }
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = %serde_json::to_string(&hits).unwrap_or_default(), "hydrated candidates");
     Ok(hits)
 }
 
@@ -615,6 +551,7 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
 /// byte-for-byte body clone with no extra DB lookup. An opt-in radius reconstructs only each hit's
 /// adjacent in-note chunks, then delegates exact tokenizer-budget fitting to the loaded reranker
 /// (ADR 0015). Returned Hit bodies/snippets remain the matched center chunk.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "rerank.prepare", skip_all, fields(count = hits.len(), context_radius = reranker.context_radius())))]
 fn rerank_documents(
     db: &Db,
     reranker: &Reranker,
@@ -662,6 +599,7 @@ fn rerank_documents(
 /// `chunks` skips note-level dedup, returning raw chunk hits (ADRs 0015/0020). A retained finite
 /// original-query cosine also populates internal `Hit.relevance`; `run` controls opt-in rendering.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "query", skip_all, fields(mode = ?mode, limit, rerank, rerank_context, exact_requested = exact, chunks, filtered = since.is_some() || source.is_some(), scoped = !scope.is_empty(), full)))]
 pub fn query(
     cfg: &Config,
     q: &str,
@@ -678,71 +616,8 @@ pub fn query(
     chunks: bool,
     score_floor: bool,
 ) -> Result<(Vec<Hit>, usize, QueryMeta)> {
-    let trace = crate::offline_trace::search(
-        mode.trace_name(),
-        exact,
-        false,
-        rerank,
-        if since.is_some() || source.is_some() {
-            "other"
-        } else {
-            "all"
-        },
-    );
-    let scope_trace = crate::offline_trace::search_scope(&trace, mode.trace_name());
-    let result = trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
-        query_traced(
-            cfg,
-            q,
-            mode,
-            limit,
-            scope,
-            full,
-            rerank,
-            rerank_context,
-            since,
-            source,
-            exact,
-            timings,
-            chunks,
-            score_floor,
-            &trace,
-            &scope_trace,
-        )
-    });
-    match result {
-        Ok(traced) => {
-            traced.postprocess_trace.result_count(traced.hits.len());
-            drop(traced.postprocess_trace);
-            scope_trace.ok();
-            drop(scope_trace);
-            trace.candidate_count(traced.meta.candidate_pool);
-            trace.result_count(traced.hits.len());
-            Ok((traced.hits, traced.elided, traced.meta))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn query_traced(
-    cfg: &Config,
-    q: &str,
-    mode: Mode,
-    limit: usize,
-    scope: &Scope,
-    full: bool,
-    rerank: bool,
-    rerank_context: usize,
-    since: Option<i64>,
-    source: Option<&str>,
-    exact: bool,
-    timings: bool,
-    chunks: bool,
-    score_floor: bool,
-    trace_parent: &crate::offline_trace::Span,
-    scope_trace: &crate::offline_trace::Span,
-) -> Result<TracedQueryResult> {
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, "query input");
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
@@ -760,224 +635,137 @@ fn query_traced(
     } else {
         pool
     };
-    let mode_name = mode.trace_name();
-    let retrieve_trace = crate::offline_trace::search_retrieve(trace_parent, mode_name);
-    retrieve_trace.candidate_count(source_limit);
     let t0 = Instant::now();
-    let ranked: Vec<Scored> = retrieve_trace.in_scope(
-        crate::offline_trace::ErrorCode::BackendUnavailable,
-        || -> Result<Vec<Scored>> {
-            Ok(match mode {
-                Mode::Bm25 => {
-                    let bm25_trace = crate::offline_trace::search_bm25(&retrieve_trace, mode_name);
-                    bm25_trace.candidate_count(pool);
-                    let bm = bm25_trace.in_scope(
-                        crate::offline_trace::ErrorCode::BackendUnavailable,
-                        || {
-                            let lex = Lex::open(&cfg.tantivy_dir())?;
-                            lex.search(q, pool)
-                        },
-                    )?;
-                    bm25_trace.result_count(bm.len());
-                    bm.into_iter()
-                        .enumerate()
-                        .map(|(i, (id, bm25))| Scored {
-                            id,
-                            score: bm25,
-                            rrf: None,
-                            cosine: None,
-                            bm25: Some(bm25),
-                            bm25_rank: Some(i + 1),
-                            cosine_rank: None,
-                            fusion_rank: None,
-                        })
-                        .collect()
-                }
-                Mode::Vec => {
-                    let vector_trace =
-                        crate::offline_trace::search_vector(&retrieve_trace, mode_name);
-                    vector_trace.candidate_count(pool);
-                    let ve = vector_trace
-                        .in_scope(crate::offline_trace::ErrorCode::BackendUnavailable, || {
-                            vec_search(cfg, &db, q, pool, exact, &vector_trace)
-                        })?;
-                    vector_trace.result_count(ve.len());
-                    ve.into_iter()
-                        .enumerate()
-                        .map(|(i, (id, cosine))| Scored {
-                            id,
-                            score: cosine,
-                            rrf: None,
-                            cosine: Some(cosine),
-                            bm25: None,
-                            bm25_rank: None,
-                            cosine_rank: Some(i + 1),
-                            fusion_rank: None,
-                        })
-                        .collect()
-                }
-                Mode::Hybrid => {
-                    // Pull a deeper candidate set from each retriever, then fuse — keeping each
-                    // raw score so the fused hit can report its cosine + BM25 components.
-                    let bm25_trace = crate::offline_trace::search_bm25(&retrieve_trace, mode_name);
-                    bm25_trace.candidate_count(source_limit);
-                    let bm = bm25_trace.in_scope(
-                        crate::offline_trace::ErrorCode::BackendUnavailable,
-                        || {
-                            let lex = Lex::open(&cfg.tantivy_dir())?;
-                            lex.search(q, source_limit)
-                        },
-                    )?;
-                    bm25_trace.result_count(bm.len());
-
-                    let vector_trace =
-                        crate::offline_trace::search_vector(&retrieve_trace, mode_name);
-                    vector_trace.candidate_count(source_limit);
-                    let ve = vector_trace
-                        .in_scope(crate::offline_trace::ErrorCode::BackendUnavailable, || {
-                            vec_search(cfg, &db, q, source_limit, exact, &vector_trace)
-                        })?;
-                    vector_trace.result_count(ve.len());
-
-                    let bm25_of: HashMap<&str, f32> =
-                        bm.iter().map(|(id, score)| (id.as_str(), *score)).collect();
-                    let cos_of: HashMap<&str, f32> =
-                        ve.iter().map(|(id, score)| (id.as_str(), *score)).collect();
-                    let bm_rank_of: HashMap<&str, usize> = bm
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (id, _))| (id.as_str(), i + 1))
-                        .collect();
-                    let cos_rank_of: HashMap<&str, usize> = ve
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (id, _))| (id.as_str(), i + 1))
-                        .collect();
-                    let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
-                    let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
-
-                    let rrf_trace = crate::offline_trace::search_rrf(&retrieve_trace, mode_name);
-                    rrf_trace.candidate_count(bm_ids.len() + ve_ids.len());
-                    let fused = {
-                        let _entered = rrf_trace.enter();
-                        rrf(&[bm_ids, ve_ids], pool)
-                    };
-                    rrf_trace.result_count(fused.len());
-                    rrf_trace.ok();
-                    fused
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (id, score))| Scored {
-                            cosine: cos_of.get(id.as_str()).copied(),
-                            bm25: bm25_of.get(id.as_str()).copied(),
-                            bm25_rank: bm_rank_of.get(id.as_str()).copied(),
-                            cosine_rank: cos_rank_of.get(id.as_str()).copied(),
-                            fusion_rank: Some(i + 1),
-                            rrf: Some(score),
-                            score,
-                            id,
-                        })
-                        .collect()
-                }
+    let ranked: Vec<Scored> = match mode {
+        Mode::Bm25 => {
+            let lex = Lex::open(&cfg.tantivy_dir())?;
+            lex.search(q, pool)?
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, bm25))| Scored {
+                    id,
+                    score: bm25,
+                    rrf: None,
+                    cosine: None,
+                    bm25: Some(bm25),
+                    bm25_rank: Some(i + 1),
+                    cosine_rank: None,
+                    fusion_rank: None,
+                })
+                .collect()
+        }
+        Mode::Vec => vec_search(cfg, &db, q, pool, exact)?
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, cosine))| Scored {
+                id,
+                score: cosine,
+                rrf: None,
+                cosine: Some(cosine),
+                bm25: None,
+                bm25_rank: None,
+                cosine_rank: Some(i + 1),
+                fusion_rank: None,
             })
-        },
-    )?;
-    retrieve_trace.result_count(ranked.len());
+            .collect(),
+        Mode::Hybrid => {
+            // Pull a deeper candidate set from each retriever, then fuse — keeping each retriever's
+            // raw score so the fused hit can report its cosine + BM25 components.
+            let lex = Lex::open(&cfg.tantivy_dir())?;
+            let bm = lex.search(q, source_limit)?; // (id, bm25), BM25 rank order
+            let ve = vec_search(cfg, &db, q, source_limit, exact)?; // (id, cosine), rank order
+            let bm25_of: HashMap<&str, f32> = bm.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            let cos_of: HashMap<&str, f32> = ve.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            let bm_rank_of: HashMap<&str, usize> = bm
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.as_str(), i + 1))
+                .collect();
+            let cos_rank_of: HashMap<&str, usize> = ve
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.as_str(), i + 1))
+                .collect();
+            let bm_ids: Vec<String> = bm.iter().map(|(id, _)| id.clone()).collect();
+            let ve_ids: Vec<String> = ve.iter().map(|(id, _)| id.clone()).collect();
+            rrf(&[bm_ids, ve_ids], pool)
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, r))| Scored {
+                    cosine: cos_of.get(id.as_str()).copied(),
+                    bm25: bm25_of.get(id.as_str()).copied(),
+                    bm25_rank: bm_rank_of.get(id.as_str()).copied(),
+                    cosine_rank: cos_rank_of.get(id.as_str()).copied(),
+                    fusion_rank: Some(i + 1),
+                    rrf: Some(r),
+                    score: r,
+                    id,
+                })
+                .collect()
+        }
+    };
     t.retrieval_ms = ms_since(t0);
-    drop(retrieve_trace);
-
-    // Bodies are needed for `--full` output and (transiently) to feed the cross-encoder. This span
-    // covers the bounded SQLite hydration joins, never a span per row.
+    // Bodies are needed for `--full` output and (transiently) to feed the cross-encoder.
     let keep_body = full || rerank;
-    let hydrate_trace = crate::offline_trace::search_hydrate(trace_parent, mode_name);
-    hydrate_trace.candidate_count(ranked.len());
     let t0 = Instant::now();
-    let mut hits = hydrate_trace.in_scope(crate::offline_trace::ErrorCode::Storage, || {
-        hydrate(&db, ranked, keep_body)
-    })?;
-    hydrate_trace.result_count(hits.len());
-    drop(hydrate_trace);
+    let mut hits = hydrate(&db, ranked, keep_body)?;
     let candidate_pool = hits.len();
     let mut actual_rerank_cap = 0;
     t.fuse_ms = ms_since(t0);
 
-    // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF untouched).
-    let rerank_trace =
-        crate::offline_trace::search_rerank(trace_parent, mode_name, exact, false, rerank);
-    let rerank_status = rerank_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
+    // Tier-1 rerank: re-score the fused pool against full bodies, then reorder (RRF — G8 — untouched).
     if rerank && !hits.is_empty() {
         let t0 = Instant::now();
-        let load_trace =
-            crate::offline_trace::model_load(&rerank_trace, "fastembed", "reranker", None);
-        let mut rr = load_trace
-            .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                Reranker::new(&cfg.cache_dir, rerank_context)
-            })?;
-        drop(load_trace);
+        let mut rr = Reranker::new(&cfg.cache_dir, rerank_context)?;
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
         actual_rerank_cap = cap;
-        rerank_trace.candidate_count(cap);
         let t0 = Instant::now();
         let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
-        let infer_trace =
-            crate::offline_trace::model_infer(&rerank_trace, "fastembed", "reranker", None);
-        infer_trace.item_count(docs.len());
-        let order = infer_trace
-            .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                rr.rerank(q, &docs)
-            })?; // neither query nor document content is recorded
-        drop(infer_trace);
+        let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
         hits = apply_rerank_prefix(hits, cap, order);
-        rerank_trace.result_count(hits.len());
-        rerank_status.ok();
         t.rerank_ms = ms_since(t0);
-    } else {
-        rerank_status.skipped();
     }
-    drop(rerank_trace);
 
-    let postprocess_trace = crate::offline_trace::search_postprocess(trace_parent, mode_name);
-    postprocess_trace.candidate_count(hits.len());
-    let mut hits = postprocess_trace.in_scope(
-        crate::offline_trace::ErrorCode::Other,
-        || -> Result<Vec<Hit>> {
-            // Frontmatter filters, note dedup, and truncation are separate order-preserving stages.
-            let mut hits = apply_filters(hits, since, source);
-            if !chunks {
-                hits = dedupe_notes(hits);
-            }
-            hits.truncate(limit);
-            if !full {
-                for hit in &mut hits {
-                    hit.body = None;
-                }
-            }
-            Ok(hits)
-        },
-    )?;
+    // Post-rank frontmatter filter (ADR 0017): a SEPARATE stage on the already-ranked hits (after
+    // fusion and any rerank reordering), exactly like `apply_scope` — it preserves their order and
+    // leaves `rrf()` pure (G7/G8). Runs BEFORE truncation so a filtered query still fills `limit`
+    // from the deeper pool pulled above.
+    #[cfg(feature = "local-tracing")]
+    let _postprocess = tracing::info_span!(target: "vagus::timing", "postprocess").entered();
+    let mut hits = apply_filters(hits, since, source);
+
+    // Note-level dedup (ADR 0020): one best-chunk hit per note, so the truncation below makes
+    // `--limit` count distinct notes. `--chunks` keeps every ranked chunk.
+    if !chunks {
+        hits = dedupe_notes(hits);
+    }
+
+    // Truncate to the requested limit, then drop any body we only kept transiently for reranking so
+    // the default `--json` shape stays byte-identical (G9a).
+    hits.truncate(limit);
+    if !full {
+        for h in &mut hits {
+            h.body = None;
+        }
+    }
     t.total_ms = ms_since(t_total);
     if timings {
         t.print(if rerank { "rerank" } else { "plain" });
     }
-    let scope_candidates = hits.len();
-    let (hits, elided) = {
-        let _entered = scope_trace.enter();
-        apply_scope(std::mem::take(&mut hits), scope)
-    };
-    scope_trace.candidate_count(scope_candidates);
-    scope_trace.result_count(hits.len());
-    Ok(TracedQueryResult {
+    let (hits, elided) = apply_scope(hits, scope);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), elided, source_limit, fusion_limit = pool, candidate_pool, rerank_cap = actual_rerank_cap, "query results");
+    Ok((
         hits,
         elided,
-        meta: QueryMeta {
+        QueryMeta {
             source_limit,
             fusion_limit: pool,
             candidate_pool,
             rerank_cap: actual_rerank_cap,
         },
-        postprocess_trace,
-    })
+    ))
 }
 
 /// Post-rank `--since`/`--source` filter (ADR 0017). Mirrors `apply_scope`: prunes already-ranked
@@ -1078,6 +866,7 @@ fn apply_rerank_prefix(hits: Vec<Hit>, cap: usize, order: Vec<(usize, f32)>) -> 
 /// Offline, no coding agent — the local sibling of the Opus search skill.
 #[cfg(feature = "generate")]
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "smart.query", skip_all, fields(limit, rerank_context, exact_requested = exact, chunks, filtered = since.is_some() || source.is_some(), scoped = !scope.is_empty(), full)))]
 fn smart_query(
     cfg: &Config,
     q: &str,
@@ -1091,21 +880,15 @@ fn smart_query(
     timings: bool,
     chunks: bool,
     score_floor: bool,
-    trace_parent: &crate::offline_trace::Span,
-    scope_trace: &crate::offline_trace::Span,
-) -> Result<TracedQueryResult> {
+) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, "query input");
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let pool = (limit * 4).max(RERANK_POOL_MIN);
     let db = Db::open(&cfg.db_path())?;
-    let rewrite_trace = crate::offline_trace::search_rewrite(trace_parent, true);
-    let retrieve_trace = crate::offline_trace::search_retrieve(trace_parent, "smart");
-    let vector_trace = crate::offline_trace::search_vector(&retrieve_trace, "smart");
-    let rerank_trace =
-        crate::offline_trace::search_rerank(trace_parent, "smart", exact, true, true);
-    let rerank_status = rerank_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
 
     // Fix B: warm the two ONNX models (embedder ~2s, reranker ~0.15s) on background threads so their
     // cold load overlaps the multi-second LLM decode below instead of running serially after it. The
@@ -1114,78 +897,76 @@ fn smart_query(
     // the process (G14). Trades a little peak RAM (all three models briefly resident) for latency. On a
     // worker panic we rebuild on the main thread, so run_query's "smart unavailable → --rerank"
     // graceful fallback still holds.
-    let mut prewarm = SmartPrewarm {
-        embedder: ScopedWorker::new({
-            let cache = cfg.cache_dir.clone();
-            crate::offline_trace::spawn_with_parent(&vector_trace, move |parent| {
-                let load_trace = crate::offline_trace::model_load(
-                    &parent,
-                    "fastembed",
-                    "embedding",
-                    Some(crate::config::EMBED_DIMS),
-                );
-                load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                    Embedder::new(&cache)
-                })
-            })
-        }),
-        reranker: ScopedWorker::new({
-            let cache = cfg.cache_dir.clone();
-            crate::offline_trace::spawn_with_parent(&rerank_trace, move |parent| {
-                let load_trace =
-                    crate::offline_trace::model_load(&parent, "fastembed", "reranker", None);
-                load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                    Reranker::new(&cache, rerank_context)
-                })
-            })
-        }),
+    let mut emb_warm: Option<JoinHandle<Result<Embedder>>> = Some({
+        let cache = cfg.cache_dir.clone();
+        #[cfg(feature = "local-tracing")]
+        let (dispatcher, parent) = (
+            tracing::dispatcher::get_default(Clone::clone),
+            tracing::Span::current(),
+        );
+        std::thread::spawn(move || {
+            #[cfg(feature = "local-tracing")]
+            let _dispatcher = tracing::dispatcher::set_default(&dispatcher);
+            #[cfg(feature = "local-tracing")]
+            let _parent = parent.enter();
+            Embedder::new(&cache)
+        })
+    });
+    let rr_warm: JoinHandle<Result<Reranker>> = {
+        let cache = cfg.cache_dir.clone();
+        #[cfg(feature = "local-tracing")]
+        let (dispatcher, parent) = (
+            tracing::dispatcher::get_default(Clone::clone),
+            tracing::Span::current(),
+        );
+        std::thread::spawn(move || {
+            #[cfg(feature = "local-tracing")]
+            let _dispatcher = tracing::dispatcher::set_default(&dispatcher);
+            #[cfg(feature = "local-tracing")]
+            let _parent = parent.enter();
+            Reranker::new(&cache, rerank_context)
+        })
     };
 
     // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
     //    the cache first (Fix C); a hit skips the LLM entirely — load + decode — which is the big win
     //    for iterative re-querying. On a miss, run the local LLM (the long pole; the prewarm threads
     //    load meanwhile), then store the result. The Rewriter is dropped after expanding, freeing RAM.
-    let variants = rewrite_trace.in_scope(
-        crate::offline_trace::ErrorCode::DecodeFailed,
-        || -> Result<Vec<Variant>> {
-            let cache_key = crate::rewrite::expansion_cache_key(q);
-            let cached: Option<Vec<Variant>> = db
-                .expansion_cache_get(&cache_key)?
-                .and_then(|json| serde_json::from_str(&json).ok());
-            Ok(match cached {
-                // Cache hit: rewrite_load_ms / rewrite_decode_ms stay 0.0 — no model was touched.
-                Some(variants) => variants,
-                None => {
-                    let t0 = Instant::now();
-                    let load_trace =
-                        crate::offline_trace::model_load(&rewrite_trace, "other", "other", None);
-                    let mut rewriter = load_trace
-                        .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                            Rewriter::new(&cfg.cache_dir)
-                        })?;
-                    drop(load_trace);
-                    t.rewrite_load_ms = ms_since(t0);
-                    let t0 = Instant::now();
-                    let decode_trace =
-                        crate::offline_trace::model_decode(&rewrite_trace, "other", "other");
-                    let variants = decode_trace
-                        .in_scope(crate::offline_trace::ErrorCode::DecodeFailed, || {
-                            rewriter.expand(q)
-                        })?;
-                    decode_trace.item_count(variants.len());
-                    drop(decode_trace);
-                    t.rewrite_decode_ms = ms_since(t0);
-                    // Best-effort cache write; a failure here just means the next run regenerates.
-                    if let Ok(json) = serde_json::to_string(&variants) {
-                        let _ = db.expansion_cache_put(&cache_key, &json);
-                    }
-                    variants
-                }
-            })
-        },
-    )?;
-    rewrite_trace.result_count(variants.len());
-    drop(rewrite_trace);
+    #[cfg(feature = "local-tracing")]
+    let _rewrite = tracing::info_span!(target: "vagus::timing", "rewrite").entered();
+    let cache_key = crate::rewrite::expansion_cache_key(q);
+    #[cfg(feature = "local-tracing")]
+    let _rewrite_cache = tracing::info_span!(target: "vagus::timing", "rewrite.cache").entered();
+
+    let cached: Option<Vec<Variant>> = db
+        .expansion_cache_get(&cache_key)?
+        .and_then(|json| serde_json::from_str(&json).ok());
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", hit = cached.is_some(), "rewrite cache");
+    #[cfg(feature = "local-tracing")]
+    drop(_rewrite_cache);
+    let variants = match cached {
+        // Cache hit: rewrite_load_ms / rewrite_decode_ms stay 0.0 — no model was touched.
+        Some(v) => v,
+        None => {
+            let t0 = Instant::now();
+            let mut rw = Rewriter::new(&cfg.cache_dir)?;
+            t.rewrite_load_ms = ms_since(t0);
+            let t0 = Instant::now();
+            let v = rw.expand(q)?;
+            t.rewrite_decode_ms = ms_since(t0);
+            // Best-effort cache write; a failure here just means the next run regenerates.
+            if let Ok(json) = serde_json::to_string(&v) {
+                let _ = db.expansion_cache_put(&cache_key, &json);
+            }
+            v
+        }
+    };
+
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, variants = %serde_json::to_string(&variants).unwrap_or_default(), "rewrite output");
+    #[cfg(feature = "local-tracing")]
+    drop(_rewrite);
 
     // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each
     //    vec/hyde variant via vector. Load the embedder + open the vector index once (lazily).
@@ -1194,139 +975,73 @@ fn smart_query(
         plans.push((!matches!(v.kind, Kind::Lex), v.text.as_str()));
     }
 
-    let plan_count = plans.len();
-    retrieve_trace.candidate_count(plan_count.saturating_mul(pool));
-    vector_trace.candidate_count(plan_count.saturating_mul(pool));
-    let bm25_trace = crate::offline_trace::search_bm25(&retrieve_trace, "smart");
-    bm25_trace.candidate_count(plan_count.saturating_mul(pool));
-    let infer_trace = crate::offline_trace::model_infer(
-        &vector_trace,
-        "fastembed",
-        "embedding",
-        Some(crate::config::EMBED_DIMS),
-    );
-    let mut vector_queries = 0_usize;
-    let mut vector_results = 0_usize;
-    let mut lexical_results = 0_usize;
-    let lists = retrieve_trace.in_scope(
-        crate::offline_trace::ErrorCode::BackendUnavailable,
-        || -> Result<Vec<Vec<String>>> {
-            let lex = Lex::open(&cfg.tantivy_dir())?;
-            let mut emb: Option<Embedder> = None;
-            let mut vindex: Option<Box<dyn crate::vector::VectorIndex>> = None;
-            let mut lists: Vec<Vec<String>> = Vec::new();
-            for (is_vec, text) in plans {
-                if is_vec {
-                    if emb.is_none() {
-                        let t0 = Instant::now();
-                        // Collect the explicitly parented prewarm worker. A panic falls back to a
-                        // foreground load under the same vector stage.
-                        let embedder = match prewarm.embedder.join() {
-                            Some(Ok(result)) => result?,
-                            Some(Err(_)) | None => {
-                                let load_trace = crate::offline_trace::model_load(
-                                    &vector_trace,
-                                    "fastembed",
-                                    "embedding",
-                                    Some(crate::config::EMBED_DIMS),
-                                );
-                                load_trace.in_scope(
-                                    crate::offline_trace::ErrorCode::ModelUnavailable,
-                                    || Embedder::new(&cfg.cache_dir),
-                                )?
-                            }
-                        };
-                        emb = Some(embedder);
-                        // Forward the explicit oracle flag in every tier.
-                        vindex = Some(crate::vector::open_for_search(cfg, &db, exact)?);
-                        t.embed_load_ms += ms_since(t0);
-                    }
-                    let t0 = Instant::now();
-                    let qv = infer_trace
-                        .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                            emb.as_mut().unwrap().embed_query(text)
-                        })?;
-                    vector_queries += 1;
-                    let vi = vindex.as_deref().expect("vector index opened above");
-                    let ids: Vec<String> = vec_topk(vi, &db, &qv, pool)?
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect();
-                    vector_results += ids.len();
-                    lists.push(ids);
-                    t.retrieval_ms += ms_since(t0);
-                } else {
-                    let t0 = Instant::now();
-                    let ids = bm25_trace.in_scope(
-                        crate::offline_trace::ErrorCode::BackendUnavailable,
-                        || {
-                            Ok::<Vec<String>, anyhow::Error>(
-                                lex.search(text, pool)?
-                                    .into_iter()
-                                    .map(|(id, _)| id)
-                                    .collect(),
-                            )
-                        },
-                    )?;
-                    lexical_results += ids.len();
-                    lists.push(ids);
-                    t.retrieval_ms += ms_since(t0);
-                }
+    let lex = Lex::open(&cfg.tantivy_dir())?;
+    let mut emb: Option<Embedder> = None;
+    let mut vindex: Option<Box<dyn crate::vector::VectorIndex>> = None;
+    let mut lists: Vec<Vec<String>> = Vec::new();
+    for (is_vec, text) in plans {
+        if is_vec {
+            if emb.is_none() {
+                let t0 = Instant::now();
+                // Collect the prewarmed embedder (Fix B); join is instant if the thread finished
+                // during the LLM decode. A worker panic falls back to a foreground build.
+                let e = match emb_warm.take() {
+                    Some(h) => match h.join() {
+                        Ok(r) => r?,
+                        Err(_) => Embedder::new(&cfg.cache_dir)?,
+                    },
+                    None => Embedder::new(&cfg.cache_dir)?,
+                };
+                emb = Some(e);
+                // Forward the explicit oracle flag in every tier. Automatic exact selection still
+                // handles personal-scale corpora; `--smart --exact` must also force it above cutoff.
+                vindex = Some(crate::vector::open_for_search(cfg, &db, exact)?);
+                t.embed_load_ms += ms_since(t0);
             }
-            // Release the embedder and mmap before widened quadratic-attention inference.
-            drop(vindex);
-            drop(emb);
-            Ok(lists)
-        },
-    )?;
-    let retrieved_count: usize = lists.iter().map(Vec::len).sum();
-    retrieve_trace.result_count(retrieved_count);
-    vector_trace.result_count(vector_results);
-    vector_trace.ok();
-    bm25_trace.result_count(lexical_results);
-    bm25_trace.ok();
-    infer_trace.item_count(vector_queries);
-    if vector_queries == 0 {
-        infer_trace.skipped();
-    } else {
-        infer_trace.ok();
+            let t0 = Instant::now();
+            let qv = emb.as_mut().unwrap().embed_query(text)?;
+            let vi = vindex.as_deref().expect("vector index opened above");
+            lists.push(
+                vec_topk(vi, &db, &qv, pool)?
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            );
+            t.retrieval_ms += ms_since(t0);
+        } else {
+            let t0 = Instant::now();
+            lists.push(
+                lex.search(text, pool)?
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            );
+            t.retrieval_ms += ms_since(t0);
+        }
     }
-    drop(infer_trace);
-    drop(vector_trace);
-    drop(bm25_trace);
+    // Retrieval is complete. Release the embedder before widened quadratic-attention inference;
+    // keeping two ONNX sessions resident buys no latency now and materially raises `--smart
+    // --rerank-context` peak memory. The vector sidecar is likewise no longer needed.
+    drop(vindex);
+    drop(emb);
 
-    // 3) Fuse all lists, then hydrate with bounded SQLite joins.
+    // 3) Fuse all lists, hydrate with bodies.
     let t0 = Instant::now();
-    let rrf_trace = crate::offline_trace::search_rrf(&retrieve_trace, "smart");
-    rrf_trace.candidate_count(retrieved_count);
-    let ranked: Vec<Scored> = {
-        let _entered = rrf_trace.enter();
-        rrf(&lists, pool)
-            .into_iter()
-            .enumerate()
-            .map(|(i, (id, score))| Scored {
-                id,
-                score,
-                rrf: Some(score),
-                cosine: None,
-                bm25: None,
-                bm25_rank: None,
-                cosine_rank: None,
-                fusion_rank: Some(i + 1),
-            })
-            .collect()
-    };
-    rrf_trace.result_count(ranked.len());
-    rrf_trace.ok();
-    drop(rrf_trace);
-    drop(retrieve_trace);
-    let hydrate_trace = crate::offline_trace::search_hydrate(trace_parent, "smart");
-    hydrate_trace.candidate_count(ranked.len());
-    let mut hits = hydrate_trace.in_scope(crate::offline_trace::ErrorCode::Storage, || {
-        hydrate(&db, ranked, true)
-    })?;
-    hydrate_trace.result_count(hits.len());
-    drop(hydrate_trace);
+    let ranked: Vec<Scored> = rrf(&lists, pool)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, r))| Scored {
+            id,
+            score: r,
+            rrf: Some(r),
+            cosine: None,
+            bm25: None,
+            bm25_rank: None,
+            cosine_rank: None,
+            fusion_rank: Some(i + 1),
+        })
+        .collect();
+    let mut hits = hydrate(&db, ranked, true)?;
     let candidate_pool = hits.len();
     let mut actual_rerank_cap = 0;
     t.fuse_ms = ms_since(t0);
@@ -1334,87 +1049,58 @@ fn smart_query(
     // 4) Rerank against the ORIGINAL query on full bodies, then reorder.
     if !hits.is_empty() {
         let t0 = Instant::now();
-        // Collect the explicitly parented prewarm worker. A panic falls back under the same stage.
-        let mut reranker = match prewarm.reranker.join() {
-            Some(Ok(result)) => result?,
-            Some(Err(_)) | None => {
-                let load_trace =
-                    crate::offline_trace::model_load(&rerank_trace, "fastembed", "reranker", None);
-                load_trace.in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                    Reranker::new(&cfg.cache_dir, rerank_context)
-                })?
-            }
+        // Collect the prewarmed reranker (Fix B); a worker panic falls back to a foreground build.
+        let mut rr = match rr_warm.join() {
+            Ok(r) => r?,
+            Err(_) => Reranker::new(&cfg.cache_dir, rerank_context)?,
         };
         t.rerank_load_ms = ms_since(t0);
         let cap = rerank_cap(limit, hits.len(), score_floor);
         actual_rerank_cap = cap;
-        rerank_trace.candidate_count(cap);
         let t0 = Instant::now();
-        let docs = rerank_documents(&db, &reranker, q, &hits[..cap])?;
-        let infer_trace =
-            crate::offline_trace::model_infer(&rerank_trace, "fastembed", "reranker", None);
-        infer_trace.item_count(docs.len());
-        let order = infer_trace
-            .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                reranker.rerank(q, &docs)
-            })?; // query and bodies remain model inputs only, never attributes
-        drop(infer_trace);
+        let docs = rerank_documents(&db, &rr, q, &hits[..cap])?;
+        let order = rr.rerank(q, &docs)?; // (prefix_index, raw_logit), best-first
         hits = apply_rerank_prefix(hits, cap, order);
-        rerank_trace.result_count(hits.len());
-        rerank_status.ok();
         t.rerank_ms = ms_since(t0);
-    } else {
-        // The prewarm was already launched; collect it now (the scope guard also covers errors).
-        let _ = prewarm.reranker.join();
-        rerank_status.skipped();
     }
-    drop(rerank_trace);
 
-    let postprocess_trace = crate::offline_trace::search_postprocess(trace_parent, "smart");
-    postprocess_trace.candidate_count(hits.len());
-    let mut hits = postprocess_trace.in_scope(
-        crate::offline_trace::ErrorCode::Other,
-        || -> Result<Vec<Hit>> {
-            // Same order-preserving filter/dedup/truncate stages as the plain path.
-            let mut hits = apply_filters(hits, since, source);
-            if !chunks {
-                hits = dedupe_notes(hits);
-            }
-            hits.truncate(limit);
-            if !full {
-                for hit in &mut hits {
-                    hit.body = None;
-                }
-            }
-            Ok(hits)
-        },
-    )?;
+    // Post-rank `--since`/`--source` filter (ADR 0017) — the same separate stage as the plain path,
+    // before truncation so the deeper smart pool can still fill `limit`. RRF/rerank order untouched.
+    #[cfg(feature = "local-tracing")]
+    let _postprocess = tracing::info_span!(target: "vagus::timing", "postprocess").entered();
+    let mut hits = apply_filters(hits, since, source);
+    // Note-level dedup (ADR 0020), same stage order as the plain path (pool is already 4x here).
+    if !chunks {
+        hits = dedupe_notes(hits);
+    }
+    hits.truncate(limit);
+    if !full {
+        for h in &mut hits {
+            h.body = None;
+        }
+    }
     t.total_ms = ms_since(t_total);
     if timings {
         t.print("smart");
     }
-    let scope_candidates = hits.len();
-    let (hits, elided) = {
-        let _entered = scope_trace.enter();
-        apply_scope(std::mem::take(&mut hits), scope)
-    };
-    scope_trace.candidate_count(scope_candidates);
-    scope_trace.result_count(hits.len());
-    Ok(TracedQueryResult {
+    let (hits, elided) = apply_scope(hits, scope);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), elided, source_limit = pool, fusion_limit = pool, candidate_pool, rerank_cap = actual_rerank_cap, "query results");
+    Ok((
         hits,
         elided,
-        meta: QueryMeta {
+        QueryMeta {
             source_limit: pool,
             fusion_limit: pool,
             candidate_pool,
             rerank_cap: actual_rerank_cap,
         },
-        postprocess_trace,
-    })
+    ))
 }
 
 /// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
 /// "Remove + notice" semantics: filters the already-ranked top results in place (no backfill).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "scope", skip_all, fields(enabled = !scope.is_empty(), count = hits.len())))]
 fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
     if scope.is_empty() {
         return (hits, 0);
@@ -1448,9 +1134,7 @@ fn run_query(
     timings: bool,
     chunks: bool,
     score_floor: bool,
-    trace_parent: &crate::offline_trace::Span,
-    scope_trace: &crate::offline_trace::Span,
-) -> Result<TracedQueryResult> {
+) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     #[cfg(feature = "generate")]
     if smart {
         match smart_query(
@@ -1466,22 +1150,24 @@ fn run_query(
             timings,
             chunks,
             score_floor,
-            trace_parent,
-            scope_trace,
         ) {
             Ok(r) => return Ok(r),
             Err(e) => {
+                #[cfg(feature = "local-tracing")]
+                tracing::info!(target: "vagus::timing", outcome = "fallback", "smart unavailable; using rerank");
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
             }
         }
     }
     #[cfg(not(feature = "generate"))]
     if smart {
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::timing", outcome = "fallback", "generate feature absent; using rerank");
         eprintln!(
             "vagus: built without the local rewriter (`generate` feature); --smart falls back to --rerank"
         );
     }
-    query_traced(
+    query(
         cfg,
         q,
         mode,
@@ -1496,12 +1182,19 @@ fn run_query(
         timings,
         chunks,
         score_floor,
-        trace_parent,
-        scope_trace,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(
+    feature = "local-tracing",
+    tracing::instrument(
+        target = "vagus::timing",
+        name = "search",
+        skip_all,
+        fields(smart, no_index, json, exhaustive)
+    )
+)]
 pub fn run(
     cfg: &Config,
     q: &str,
@@ -1525,72 +1218,6 @@ pub fn run(
     timings: bool,
     chunks: bool,
     exhaustive: bool,
-) -> Result<()> {
-    let trace = crate::offline_trace::search(
-        mode.trace_name(),
-        exact,
-        smart,
-        rerank || smart,
-        if since.is_some() || source.is_some() {
-            "other"
-        } else {
-            "all"
-        },
-    );
-    trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
-        run_traced(
-            cfg,
-            q,
-            mode,
-            json,
-            tick_provenance,
-            limit,
-            no_index,
-            verbose,
-            all,
-            full,
-            rerank,
-            rerank_context,
-            min_score,
-            show_relevance,
-            min_relevance,
-            smart,
-            since,
-            source,
-            exact,
-            timings,
-            chunks,
-            exhaustive,
-            &trace,
-        )
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_traced(
-    cfg: &Config,
-    q: &str,
-    mode: Mode,
-    json: bool,
-    tick_provenance: bool,
-    limit: usize,
-    no_index: bool,
-    verbose: bool,
-    all: bool,
-    full: bool,
-    rerank: bool,
-    rerank_context: usize,
-    min_score: Option<f32>,
-    show_relevance: bool,
-    min_relevance: Option<f32>,
-    smart: bool,
-    since: Option<i64>,
-    source: Option<&str>,
-    exact: bool,
-    timings: bool,
-    chunks: bool,
-    exhaustive: bool,
-    trace_parent: &crate::offline_trace::Span,
 ) -> Result<()> {
     if rerank_context > 0 && !rerank && !smart {
         bail!("--rerank-context requires --rerank or --smart");
@@ -1626,31 +1253,22 @@ fn run_traced(
     // Keep results fresh: an incremental refresh before searching so a just-edited or just-dropped
     // note is findable. Cheap when nothing changed (mtime fast-path; the model only loads if a file
     // actually changed). `--no-index` skips it.
-    let refresh_trace = crate::offline_trace::search_refresh(trace_parent, mode.trace_name());
     let index_refreshed = if no_index {
-        refresh_trace.skipped();
         false
     } else {
-        let refresh_result = {
-            let _entered = refresh_trace.enter();
-            index::run(cfg, index::IndexMode::Incremental)
-        };
-        match refresh_result {
-            Ok(stats) => {
-                refresh_trace.candidate_count(stats.scanned);
-                refresh_trace
-                    .result_count(stats.new + stats.changed + stats.refreshed + stats.removed);
-                refresh_trace.ok();
-                true
-            }
+        #[cfg(feature = "local-tracing")]
+        let _index_refresh =
+            tracing::info_span!(target: "vagus::timing", "index.refresh").entered();
+        match index::run(cfg, index::IndexMode::Incremental) {
+            Ok(_) => true,
             Err(error) => {
-                refresh_trace.fallback();
                 eprintln!("vagus: index refresh skipped ({error})");
                 false
             }
         }
     };
-    drop(refresh_trace);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", index_refreshed, "refresh outcome");
     // Fingerprint the executable before retrieval as well as the index. A concurrent binary
     // replacement must not make the completed run claim code bytes this process did not execute.
     let provenance_binary = tick_provenance
@@ -1659,24 +1277,18 @@ fn run_traced(
     let provenance_before = tick_provenance
         .then(|| provenance_index_snapshot(cfg))
         .transpose()?;
-    // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses it.
-    // The trace records only the fixed `all`/`other` policy class—never CWD or config paths/words.
-    let scope_trace = crate::offline_trace::search_scope(trace_parent, mode.trace_name());
+    // Discover directory-scoped exclusions by walking up from the CWD, unless `--all` bypasses scoping.
     let scope = if all {
-        scope_trace.skipped();
         Scope::none()
     } else {
-        scope_trace.in_scope(
-            crate::offline_trace::ErrorCode::Configuration,
-            Scope::discover,
-        )?
+        Scope::discover()?
     };
     // A `--min-score` floor that can actually drop hits lifts the rerank cap (rerank the whole pool)
     // so the tail shares the head's sigmoid scale — otherwise the relative-to-top floor would drop
     // every tail-filled slot (raw RRF score vs sigmoid top). A zero/absent floor drops nothing, so it
     // keeps the fast capped path.
     let score_floor = min_score.is_some_and(|f| f > 0.0);
-    let traced = run_query(
+    let (mut hits, elided, query_meta) = run_query(
         cfg,
         q,
         mode,
@@ -1692,74 +1304,67 @@ fn run_traced(
         timings,
         chunks,
         score_floor,
-        trace_parent,
-        &scope_trace,
     )?;
-    let TracedQueryResult {
-        mut hits,
-        elided,
-        meta: query_meta,
-        postprocess_trace,
-    } = traced;
-    drop(scope_trace);
+    #[cfg(feature = "local-tracing")]
+    let _postprocess_output =
+        tracing::info_span!(target: "vagus::timing", "postprocess.output").entered();
+    // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
+    // below stays out of the way.
+    if let Some(floor) = min_score {
+        let top = hits.first().map(|h| h.score).unwrap_or(1.0);
+        hits.retain(|h| rel(h.score, top) as f32 >= floor);
+    }
+    // Optional bounded semantic floor (ADR 0026/G9e). It is deliberately post-dedup/truncation,
+    // matching --min-score: no backfill, and a positive floor drops hits with no finite cosine.
+    if let Some(floor) = min_relevance {
+        hits.retain(|hit| passes_min_relevance(hit, floor));
+    }
 
-    // Keep the same aggregate postprocess span active through every final score/floor/tidiness and
-    // relevance projection rather than ending it after only filter/dedup/truncation.
-    let tidy_omitted = {
-        let _entered = postprocess_trace.enter();
-        // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
-        // below stays out of the way.
-        if let Some(floor) = min_score {
-            let top = hits.first().map(|h| h.score).unwrap_or(1.0);
-            hits.retain(|h| rel(h.score, top) as f32 >= floor);
-        }
-        // Optional bounded semantic floor (ADR 0026/G9e). It is deliberately post-dedup/truncation,
-        // matching --min-score: no backfill, and a positive floor drops hits with no finite cosine.
-        if let Some(floor) = min_relevance {
-            hits.retain(|hit| passes_min_relevance(hit, floor));
-        }
-
-        // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a
-        // ceiling, not a quota. A robust RRF knee may only drop an order-preserving suffix.
-        let tidy_omitted = if !exhaustive
-            && fusion_supports_adaptive_tidy(FUSION_POLICY)
-            && min_score.is_none()
-            && min_relevance.is_none()
-            && matches!(mode, Mode::Hybrid)
-            && !rerank
-            && !smart
-            && !chunks
-            && hits.len() == limit
-        {
-            let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
-            let protected_through = source_champion_through(&hits);
-            let keep = if scores.len() == hits.len() {
-                tidy_rrf_prefix_len(&scores, protected_through)
-            } else {
-                hits.len()
-            };
-            let omitted = hits.len() - keep;
-            hits.truncate(keep);
-            omitted
+    // Context tidiness (ADR 0023/G9d): for the plain tier-0 hybrid note path, `--limit` is a ceiling,
+    // not a quota. If a robust RRF score knee separates a high-signal prefix from a real tail, drop
+    // only that suffix. Unsupported/mixed-score modes fail open; --exhaustive restores the old fill.
+    let tidy_omitted = if !exhaustive
+        && fusion_supports_adaptive_tidy(FUSION_POLICY)
+        && min_score.is_none()
+        && min_relevance.is_none()
+        && matches!(mode, Mode::Hybrid)
+        && !rerank
+        && !smart
+        && !chunks
+        && hits.len() == limit
+    {
+        let scores: Vec<f32> = hits.iter().filter_map(|h| h.rrf).collect();
+        let protected_through = source_champion_through(&hits);
+        let keep = if scores.len() == hits.len() {
+            tidy_rrf_prefix_len(&scores, protected_through)
         } else {
-            0
+            hits.len()
         };
-
-        // Preserve default JSON while projecting explicit relevance only after every rank decision.
-        for hit in &mut hits {
-            if relevance_requested {
-                hit.relevance_policy = Some(crate::relevance::POLICY);
-            } else {
-                hit.relevance = None;
-                hit.relevance_policy = None;
-            }
-        }
-        tidy_omitted
+        let omitted = hits.len() - keep;
+        hits.truncate(keep);
+        omitted
+    } else {
+        0
     };
-    postprocess_trace.result_count(hits.len());
-    drop(postprocess_trace);
-    trace_parent.candidate_count(query_meta.candidate_pool);
-    trace_parent.result_count(hits.len());
+
+    // Preserve both default human rendering and the stable default JSON Hit shape. Relevance exists
+    // only under explicit opt-in (a floor implies opt-in); ranking/filter decisions above are done.
+    for hit in &mut hits {
+        if relevance_requested {
+            hit.relevance_policy = Some(crate::relevance::POLICY);
+        } else {
+            hit.relevance = None;
+            hit.relevance_policy = None;
+        }
+    }
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), tidy_omitted, "output results");
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", results = %serde_json::to_string(&hits).unwrap_or_default(), "final results");
+    #[cfg(feature = "local-tracing")]
+    drop(_postprocess_output);
+    #[cfg(feature = "local-tracing")]
+    let _output = tracing::info_span!(target: "vagus::timing", "output").entered();
     if tick_provenance {
         let provenance_after = provenance_index_snapshot(cfg)?;
         if provenance_before.as_ref() != Some(&provenance_after) {
@@ -2088,38 +1693,6 @@ mod scope_filter_tests {
             chunk_id: format!("id:{path}#{ord}"),
             ..hit(path)
         }
-    }
-
-    #[cfg(feature = "generate")]
-    #[test]
-    fn smart_prewarm_scope_joins_both_workers_on_injected_early_failure() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        fn fail_after_launch(
-            embed_finished: Arc<AtomicBool>,
-            rerank_finished: Arc<AtomicBool>,
-        ) -> Result<()> {
-            let _prewarm = SmartPrewarm {
-                embedder: ScopedWorker::new(std::thread::spawn(move || {
-                    embed_finished.store(true, Ordering::Release);
-                    Err::<Embedder, _>(anyhow::anyhow!("injected embed failure"))
-                })),
-                reranker: ScopedWorker::new(std::thread::spawn(move || {
-                    rerank_finished.store(true, Ordering::Release);
-                    Err::<Reranker, _>(anyhow::anyhow!("injected rerank failure"))
-                })),
-            };
-            bail!("injected rewrite failure")
-        }
-
-        let embed_finished = Arc::new(AtomicBool::new(false));
-        let rerank_finished = Arc::new(AtomicBool::new(false));
-        assert!(
-            fail_after_launch(Arc::clone(&embed_finished), Arc::clone(&rerank_finished)).is_err()
-        );
-        assert!(embed_finished.load(Ordering::Acquire));
-        assert!(rerank_finished.load(Ordering::Acquire));
     }
 
     #[test]

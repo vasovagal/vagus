@@ -76,6 +76,15 @@ pub struct UsearchIndex {
 
 impl UsearchIndex {
     /// Open an existing sidecar read-only via mmap (`view`) — instant cold-start for querying.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "vector.open",
+            skip_all,
+            fields(backend = "usearch", writable = false)
+        )
+    )]
     pub fn view(path: &Path, dims: usize) -> Result<Self> {
         let index = Index::new(&options(dims)).context("usearch: create index")?;
         index
@@ -85,6 +94,15 @@ impl UsearchIndex {
     }
 
     /// Open for mutation: load an existing sidecar fully into RAM if present, else start empty.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "vector.open",
+            skip_all,
+            fields(backend = "usearch", writable = true)
+        )
+    )]
     pub fn open_writable(path: &Path, dims: usize) -> Result<Self> {
         let index = Index::new(&options(dims)).context("usearch: create index")?;
         if path.exists() {
@@ -97,6 +115,15 @@ impl UsearchIndex {
 
     /// Build a fresh index from every f32 BLOB in the DB (no re-embed). The one-time backfill / reindex
     /// path: keys are derived from chunk ids, so this is a pure repack of the authoritative vectors.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "vector.rebuild",
+            skip_all,
+            fields(dims)
+        )
+    )]
     pub fn rebuild_from_db(db: &Db, dims: usize) -> Result<Self> {
         let all = db.all_embeddings()?;
         let index = Index::new(&options(dims)).context("usearch: create index")?;
@@ -130,6 +157,10 @@ impl UsearchIndex {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "vector.persist", skip_all)
+    )]
     pub fn save(&self, path: &Path) -> Result<()> {
         self.index
             .save(&path.to_string_lossy())
@@ -179,6 +210,15 @@ pub struct BruteForceIndex {
 }
 
 impl BruteForceIndex {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "vector.open",
+            skip_all,
+            fields(backend = "exact", dims)
+        )
+    )]
     pub fn load(db: &Db, dims: usize) -> Result<Self> {
         let all = db.all_embeddings()?;
         let mut keys = Vec::with_capacity(all.len());
@@ -234,13 +274,17 @@ impl VectorIndex for BruteForceIndex {
 /// Choose the query-time backend. Exact brute force when `exact` is forced, when the sidecar is
 /// missing, or below the exact cutoff; otherwise the mmap'd usearch HNSW view. Any usearch open error
 /// falls back to brute force so search never hard-fails (G2: the BLOBs are always sufficient).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "vector.select", skip_all, fields(exact_requested = exact)))]
 pub fn open_for_search(cfg: &Config, db: &Db, exact: bool) -> Result<Box<dyn VectorIndex>> {
     let path = cfg.vector_path();
     let embedded = db.count("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")? as usize;
     if !use_exact_scan(embedded, exact) && path.exists() {
         match UsearchIndex::view(&path, EMBED_DIMS) {
             Ok(idx) => return Ok(Box::new(idx)),
-            Err(_) => { /* fall through to the exact backend */ }
+            Err(_) => {
+                #[cfg(feature = "local-tracing")]
+                tracing::info!(target: "vagus::timing", outcome = "fallback", "vector open failed; using exact");
+            }
         }
     }
     Ok(Box::new(BruteForceIndex::load(db, EMBED_DIMS)?))

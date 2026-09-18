@@ -11,19 +11,12 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Added
 
-- **Privacy-projected local offline tracing.** Official builds include an off-by-default
-  `local-tracing` integration shared with Corti. Enable Vagus with global `--trace`, exact
-  `VASOVAGAL_TRACE=true`, or strict `~/.config/vasovagal/vagus.yaml`; it writes secure, rotated,
-  schema-validated JSONL under local state for offline analysis with no collector/network path and no
-  query, note, path, prompt, raw-error, or host-identity fields. Invalid/compiled-out support is a
-  silent no-op, and traced/untraced command output stays unchanged. (ADR 0029/G28)
-
-### Fixed
-
-- Local tracing now fails closed before path creation when its fixed state directory resolves inside
-  the Markdown vault, including missing-path and symlink-alias spellings. External plugins that exit
-  nonzero now retain their exact output/status while Vagus closes the command span and writes the
-  graceful trace summary first. (ADR 0029/G1/G28)
+- **Opt-in search performance tracing.** `--trace` writes private standard JSONL timings, counts,
+  settings and outcomes. `--trace-profile research` explicitly enables sensitive query, rewrite,
+  candidate/score/path and model-input events; `--trace-otlp` explicitly exports via standard OTLP
+  HTTP/protobuf settings. Default output/status are unchanged; failures warn on stderr and shutdown
+  is bounded/best-effort. Replaces the proposed shared-schema/YAML/local-only integration with
+  ordinary tracing spans and subscribers; no retention or delivery guarantee. (ADR 0029/G28)
 
 ### Changed
 

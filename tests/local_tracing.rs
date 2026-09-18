@@ -1,559 +1,552 @@
+//! Synthetic search and a real loopback OTLP HTTP receiver. Never loads/downloads a model.
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tantivy::doc;
 
-static NEXT_SANDBOX: AtomicU64 = AtomicU64::new(0);
+static NEXT: AtomicU64 = AtomicU64::new(0);
+const QUERY: &str = "syntheticquerymarker";
+const BODY: &str = "syntheticquerymarker privatebodymarker";
+const NOTE: &str = "00-Inbox/privatepathmarker.md";
 
-struct Sandbox {
-    root: PathBuf,
-}
-
+struct Sandbox(PathBuf);
 impl Sandbox {
-    fn new(label: &str) -> Self {
-        let sequence = NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed);
-        let raw = std::env::temp_dir().join(format!(
-            "vagus-local-tracing-{label}-{}-{sequence}",
-            std::process::id()
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "vagus-tracing-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir_all(&raw).unwrap();
-        // macOS exposes /tmp through a symlink. The shared exporter intentionally rejects symlink
-        // path components, so use the canonical spelling for every isolated test path.
-        let root = raw.canonicalize().unwrap();
-        for child in ["home", "vault", "config"] {
-            fs::create_dir_all(root.join(child)).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        let this = Self(path.canonicalize().unwrap());
+        for child in ["vault", "home", "data"] {
+            fs::create_dir_all(this.0.join(child)).unwrap();
         }
-        Self { root }
+        this
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_vagus"));
-        command
-            .env("HOME", self.root.join("home"))
-            .env("VAGUS_VAULT", self.root.join("vault"))
-            .env("VAGUS_DATA_DIR", self.root.join("data"))
-            .env("VAGUS_CACHE_DIR", self.root.join("cache"))
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_STATE_HOME", self.root.join("state"))
-            .env("NO_COLOR", "1")
-            .env_remove("VASOVAGAL_TRACE");
-        command
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_vagus"));
+        // No host endpoint, authorization, or proxy can affect this synthetic test.
+        cmd.env_clear()
+            .env("HOME", self.0.join("home"))
+            .env("VAGUS_VAULT", self.0.join("vault"))
+            .env("VAGUS_DATA_DIR", self.0.join("data"))
+            .env("VAGUS_CACHE_DIR", self.0.join("cache"))
+            .env("XDG_STATE_HOME", self.0.join("state"))
+            .env("NO_COLOR", "1");
+        cmd
     }
 
-    fn config_path(&self) -> PathBuf {
-        self.root.join("config/vasovagal/vagus.yaml")
+    fn search(&self) -> Command {
+        let mut cmd = self.command();
+        cmd.args([
+            "search",
+            QUERY,
+            "--mode",
+            "bm25",
+            "--no-index",
+            "--all",
+            "--json",
+            "--full",
+        ]);
+        cmd
     }
 
-    fn trace_files(&self) -> Vec<PathBuf> {
-        fn visit(path: &Path, output: &mut Vec<PathBuf>) {
-            let Ok(entries) = fs::read_dir(path) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    visit(&path, output);
-                } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
-                    output.push(path);
-                }
-            }
-        }
-        let mut files = Vec::new();
-        // Search the whole sandbox so a regression that writes through a vault/state alias is visible
-        // rather than hidden by the normal `state/` spelling.
-        visit(&self.root, &mut files);
-        files.sort();
-        files.dedup();
-        files
+    fn fixture(&self) {
+        // Create Vagus's real schema, then seed a single synthetic lexical hit without embedding.
+        assert!(self.search().output().unwrap().status.success());
+        let db = rusqlite::Connection::open(self.0.join("data/meta.db")).unwrap();
+        db.execute(
+            "INSERT INTO files(path,mtime,sha256,indexed_at) VALUES (?1,0,'synthetic',0)",
+            [NOTE],
+        )
+        .unwrap();
+        db.execute("INSERT INTO chunks(id,path,ord,kind,heading_path,body) VALUES ('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',?1,0,0,'privateheadingmarker',?2)", [NOTE, BODY]).unwrap();
+        let index = tantivy::Index::open_in_dir(self.0.join("data/tantivy")).unwrap();
+        let schema = index.schema();
+        let mut writer = index
+            .writer::<tantivy::TantivyDocument>(50_000_000)
+            .unwrap();
+        writer
+            .add_document(tantivy::doc!(
+                schema.get_field("path").unwrap() => NOTE,
+                schema.get_field("chunk_id").unwrap() => "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                schema.get_field("heading").unwrap() => "privateheadingmarker",
+                schema.get_field("body").unwrap() => BODY,
+            ))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+    }
+
+    #[cfg(feature = "local-tracing")]
+    fn trace(&self, profile: &str) -> PathBuf {
+        self.0.join(format!("traces/{profile}.jsonl"))
     }
 }
-
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
-
-fn search(command: &mut Command, cli_trace: bool) -> Output {
-    if cli_trace {
-        command.arg("--trace");
-    }
-    command.args([
-        "search",
-        "PRIVATE QUERY MUST NOT LEAK",
-        "--mode",
-        "bm25",
-        "--no-index",
-        "--json",
-    ]);
-    command.output().unwrap()
+fn equal(a: &Output, b: &Output) {
+    assert_eq!(a.status.code(), b.status.code());
+    assert_eq!(a.stdout, b.stdout);
+    assert_eq!(a.stderr, b.stderr);
 }
 
-#[cfg(all(feature = "local-tracing", unix))]
+#[cfg(feature = "local-tracing")]
 mod enabled {
-    use std::collections::HashMap;
-
     use super::*;
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use prost::Message;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::time::{Duration, Instant};
 
-    fn records(sandbox: &Sandbox) -> Vec<serde_json::Value> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let files = sandbox.trace_files();
-        assert_eq!(files.len(), 1, "trace files: {files:?}");
+    fn records(path: &std::path::Path) -> Vec<serde_json::Value> {
         assert_eq!(
-            fs::metadata(&files[0]).unwrap().permissions().mode() & 0o777,
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
         assert_eq!(
-            fs::metadata(files[0].parent().unwrap())
+            fs::metadata(path.parent().unwrap())
                 .unwrap()
                 .permissions()
                 .mode()
                 & 0o777,
             0o700
         );
-        let bytes = fs::read(&files[0]).unwrap();
-        assert!(bytes.len() < 5 * 1024 * 1024);
-        assert!(
-            !bytes
-                .windows(b"PRIVATE QUERY".len())
-                .any(|window| window == b"PRIVATE QUERY")
-        );
-        let records: Vec<serde_json::Value> = bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                vasovagal_tracing::validate_line_v1(line).unwrap();
-                serde_json::from_slice(line).unwrap()
-            })
-            .collect();
-        let summary = records
-            .iter()
-            .find(|record| record["record_type"] == "session_summary")
-            .unwrap();
-        for counter in [
-            "rejected_operations",
-            "rejected_fields",
-            "rejected_types",
-            "privacy_violations",
-            "oversized_records",
-            "writer_errors",
-            "queue_drops",
-        ] {
-            assert_eq!(
-                summary["counters"][counter], 0,
-                "nonzero {counter}: {summary}"
-            );
-        }
-        records
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect()
     }
 
-    fn install_probe_plugin(sandbox: &Sandbox, exit_code: i32) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn real_search_json_profiles_preserve_output_and_partition_content() {
+        let s = Sandbox::new();
+        s.fixture();
+        let baseline = s.search().output().unwrap();
+        assert!(baseline.status.success());
+        assert!(String::from_utf8_lossy(&baseline.stdout).contains(NOTE));
+        assert!(!s.0.join("state").exists());
+        for profile in ["safe", "research"] {
+            let output = s
+                .search()
+                .args(["--trace-profile", profile, "--trace-file"])
+                .arg(s.trace(profile))
+                .output()
+                .unwrap();
+            equal(&baseline, &output);
+            let values = records(&s.trace(profile));
+            let text = fs::read_to_string(s.trace(profile)).unwrap();
+            for marker in [
+                QUERY,
+                "privatebodymarker",
+                "privatepathmarker",
+                "privateheadingmarker",
+            ] {
+                assert_eq!(
+                    text.contains(marker),
+                    profile == "research",
+                    "marker {marker}"
+                );
+            }
+            let names: Vec<_> = values
+                .iter()
+                .filter(|r| r["fields"]["message"] == "new")
+                .filter_map(|r| r["span"]["name"].as_str())
+                .collect();
+            for name in [
+                "command",
+                "config.load",
+                "storage.validate",
+                "search",
+                "query",
+                "lexical.search",
+                "hydrate",
+                "postprocess",
+                "output",
+            ] {
+                assert!(names.contains(&name), "missing {name}: {names:?}");
+            }
+            let hydration = values
+                .iter()
+                .find(|r| r["span"]["name"] == "hydrate" && r["fields"]["message"] == "new")
+                .unwrap();
+            let parents: Vec<_> = hydration["spans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["name"].as_str())
+                .collect();
+            assert_eq!(parents, ["command", "search", "query"]);
+            // Contiguous spans close before output; no long-lived aggregate re-entry accounting.
+            let post_end = values
+                .iter()
+                .position(|r| {
+                    r["span"]["name"] == "postprocess" && r["fields"]["message"] == "close"
+                })
+                .unwrap();
+            let output_start = values
+                .iter()
+                .position(|r| r["span"]["name"] == "output" && r["fields"]["message"] == "new")
+                .unwrap();
+            assert!(post_end < output_start);
+            assert_eq!(values.last().unwrap()["span"]["name"], "command");
+        }
+    }
 
-        let bin = sandbox.root.join("bin");
+    #[test]
+    fn eval_query_correlation_does_not_change_report_or_leak_safe_content() {
+        let s = Sandbox::new();
+        s.fixture();
+        let labels = s.0.join("labels.jsonl");
+        fs::write(&labels, format!("{{\"query\":\"{QUERY}\",\"relevant\":[\"{NOTE}\"]}}\n{{\"query\":\"absentsyntheticterm\",\"relevant\":[]}}\n")).unwrap();
+        let run = |profile: Option<&str>| {
+            let mut cmd = s.command();
+            cmd.arg("eval")
+                .arg(&labels)
+                .args(["--mode", "bm25", "--json"]);
+            if let Some(profile) = profile {
+                cmd.args(["--trace-profile", profile, "--trace-file"])
+                    .arg(s.trace(profile));
+            }
+            cmd.output().unwrap()
+        };
+        let baseline = run(None);
+        assert!(
+            baseline.status.success(),
+            "{}",
+            String::from_utf8_lossy(&baseline.stderr)
+        );
+        for profile in ["safe", "research"] {
+            equal(&baseline, &run(Some(profile)));
+            let values = records(&s.trace(profile));
+            let queries: Vec<_> = values
+                .iter()
+                .filter(|r| r["span"]["name"] == "eval.query" && r["fields"]["message"] == "new")
+                .collect();
+            assert_eq!(queries.len(), 2);
+            assert_eq!(queries[0]["span"]["query_id"], 0);
+            assert_eq!(queries[1]["span"]["query_id"], 1);
+            assert!(queries.iter().all(|r| {
+                r["spans"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p["name"] == "eval")
+            }));
+            let text = fs::read_to_string(s.trace(profile)).unwrap();
+            assert_eq!(text.contains(QUERY), profile == "research");
+        }
+    }
+
+    #[test]
+    fn empty_index_records_contiguous_stages_without_loading_models() {
+        let s = Sandbox::new();
+        let file = s.trace("index");
+        let output = s
+            .command()
+            .args(["--trace-file"])
+            .arg(&file)
+            .arg("index")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let values = records(&file);
+        let names: Vec<_> = values
+            .iter()
+            .filter(|r| r["fields"]["message"] == "new")
+            .filter_map(|r| r["span"]["name"].as_str())
+            .collect();
+        for name in [
+            "index",
+            "index.snapshot",
+            "index.reconcile",
+            "lexical.commit",
+            "vector.rebuild",
+            "vector.persist",
+        ] {
+            assert!(names.contains(&name), "missing {name}");
+        }
+        assert!(!names.contains(&"model.load"));
+        assert!(!names.contains(&"model.inference"));
+    }
+
+    #[test]
+    fn invalid_file_and_vault_alias_fail_visibly_without_changing_result() {
+        let s = Sandbox::new();
+        s.fixture();
+        let baseline = s.search().output().unwrap();
+        symlink(s.0.join("vault"), s.0.join("alias")).unwrap();
+        for path in [
+            s.0.join("vault/missing/out.jsonl"),
+            s.0.join("alias/missing/out.jsonl"),
+            s.0.join("data/out.jsonl"),
+        ] {
+            let output = s.search().arg("--trace-file").arg(path).output().unwrap();
+            assert_eq!(output.status.code(), baseline.status.code());
+            assert_eq!(output.stdout, baseline.stdout);
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("tracing initialization failed")
+            );
+        }
+        assert!(!s.0.join("vault/missing").exists());
+        assert!(!s.0.join("data/out.jsonl").exists());
+        let file = s.trace("existing");
+        assert!(
+            s.search()
+                .arg("--trace-file")
+                .arg(&file)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let before = fs::read(&file).unwrap();
+        let output = s.search().arg("--trace-file").arg(&file).output().unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tracing initialization failed"));
+        assert_eq!(before, fs::read(file).unwrap());
+    }
+
+    #[test]
+    fn activation_is_explicit_and_legacy_flag_is_safe() {
+        let s = Sandbox::new();
+        let baseline = s.command().arg("tutorial").output().unwrap();
+        // Ambient endpoint/RUST_LOG cannot enable a subscriber or research fields.
+        let output = s
+            .command()
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+            .env("RUST_LOG", "trace")
+            .arg("tutorial")
+            .output()
+            .unwrap();
+        equal(&baseline, &output);
+        assert!(!s.0.join("state").exists());
+        let output = s.command().args(["--trace", "tutorial"]).output().unwrap();
+        equal(&baseline, &output);
+        assert_eq!(
+            fs::read_dir(s.0.join("state/vasovagal/traces/vagus"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let output = s
+            .command()
+            .env("VAGUS_TRACE_PROFILE", "invalid")
+            .arg("tutorial")
+            .output()
+            .unwrap();
+        assert_eq!(output.stdout, baseline.stdout);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tracing initialization failed"));
+    }
+
+    #[test]
+    fn plugin_exact_status_and_command_errors_survive_all_profiles() {
+        let s = Sandbox::new();
+        let bin = s.0.join("bin");
         fs::create_dir_all(&bin).unwrap();
         let plugin = bin.join("vagus-probe");
         fs::write(
             &plugin,
-            format!(
-                "#!/bin/sh\nprintf 'plugin-out:%s|%s\\n' \"$1\" \"$2\"\nprintf 'plugin-err:%s|%s\\n' \"$1\" \"$2\" >&2\nexit {exit_code}\n"
-            ),
+            "#!/bin/sh\nprintf '%s' \"$1\"\nprintf 'synthetic-error' >&2\nexit 42\n",
         )
         .unwrap();
         fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
-        bin
-    }
-
-    fn plugin_command(sandbox: &Sandbox, exit_code: i32, traced: bool) -> Output {
-        let bin = install_probe_plugin(sandbox, exit_code);
-        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![bin];
-        paths.extend(std::env::split_paths(&inherited_path));
-        let mut command = sandbox.command();
-        command.env("PATH", std::env::join_paths(paths).unwrap());
-        if traced {
-            command.arg("--trace");
-        }
-        command
-            .args(["probe", "alpha", "two words"])
-            .output()
-            .unwrap()
-    }
-
-    #[test]
-    fn cli_activation_preserves_output_validates_schema_and_parents_stages() {
-        let baseline = Sandbox::new("baseline");
-        let baseline_output = search(&mut baseline.command(), false);
-        assert!(baseline_output.status.success());
-        assert!(baseline.trace_files().is_empty());
-
-        let traced = Sandbox::new("cli");
-        // CLI activation must short-circuit even an invalid present environment value.
-        let mut command = traced.command();
-        command.env("VASOVAGAL_TRACE", " invalid ");
-        let traced_output = search(&mut command, true);
-        assert_eq!(traced_output.status.code(), baseline_output.status.code());
-        assert_eq!(traced_output.stdout, baseline_output.stdout);
-        assert_eq!(traced_output.stderr, baseline_output.stderr);
-
-        let records = records(&traced);
-        let starts: HashMap<&str, &serde_json::Value> = records
-            .iter()
-            .filter(|record| record["record_type"] == "span_start")
-            .filter_map(|record| {
-                record["operation"]
-                    .as_str()
-                    .map(|operation| (operation, record))
-            })
-            .collect();
-        let command = starts["vagus.command"];
-        let search = starts["vagus.search"];
-        let retrieve = starts["vagus.search.retrieve"];
-        let bm25 = starts["vagus.search.retrieve.bm25"];
-        assert_eq!(search["parent_span_id"], command["span_id"]);
-        assert_eq!(retrieve["parent_span_id"], search["span_id"]);
-        assert_eq!(bm25["parent_span_id"], retrieve["span_id"]);
-        assert_eq!(
-            command["attributes"],
-            serde_json::json!({"command": "search"})
-        );
-        assert!(records.iter().any(|record| {
-            record["record_type"] == "span_end"
-                && record["operation"] == "vagus.command"
-                && record["outcome"] == "ok"
-        }));
-    }
-
-    #[test]
-    fn index_phases_are_schema_valid_siblings_without_per_item_spans() {
-        let sandbox = Sandbox::new("index-phases");
-        let output = sandbox
+        let baseline = s
             .command()
-            .args(["--trace", "index"])
+            .env("PATH", &bin)
+            .args(["probe", "synthetic arg"])
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let records = records(&sandbox);
-        let starts: HashMap<&str, &serde_json::Value> = records
-            .iter()
-            .filter(|record| record["record_type"] == "span_start")
-            .filter_map(|record| {
-                record["operation"]
-                    .as_str()
-                    .map(|operation| (operation, record))
-            })
-            .collect();
-        let index = starts["vagus.index"];
-        for operation in [
-            "vagus.index.snapshot",
-            "vagus.index.reconcile",
-            "vagus.index.embed",
-            "vagus.index.lexical_commit",
-            "vagus.index.vector_persist",
-        ] {
-            assert_eq!(starts[operation]["parent_span_id"], index["span_id"]);
-        }
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| record["operation"] == "vagus.index.embed")
-                .count(),
-            2,
-            "one aggregate start/end span, never one per note or chunk"
-        );
-    }
-
-    #[test]
-    fn human_output_and_result_error_exit_are_unchanged() {
-        let tutorial = Sandbox::new("tutorial-compat");
-        let baseline = tutorial.command().arg("tutorial").output().unwrap();
-        let traced = tutorial
-            .command()
-            .args(["--trace", "tutorial"])
-            .output()
-            .unwrap();
-        assert_eq!(traced.status.code(), baseline.status.code());
-        assert_eq!(traced.stdout, baseline.stdout);
-        assert_eq!(traced.stderr, baseline.stderr);
-
-        let error = Sandbox::new("error-compat");
-        let args = [
-            "search",
-            "PRIVATE QUERY MUST NOT LEAK",
-            "--mode",
-            "bm25",
-            "--no-index",
-            "--json",
-            "--relevance",
-        ];
-        let baseline = error.command().args(args).output().unwrap();
-        let traced = error.command().arg("--trace").args(args).output().unwrap();
-        assert!(!baseline.status.success());
-        assert_eq!(traced.status.code(), baseline.status.code());
-        assert_eq!(traced.stdout, baseline.stdout);
-        assert_eq!(traced.stderr, baseline.stderr);
-        let records = records(&error);
-        assert!(records.iter().any(|record| {
-            record["record_type"] == "span_end"
-                && record["operation"] == "vagus.command"
-                && record["outcome"] == "error"
-                && record["error_code"] == "other"
-        }));
-    }
-
-    #[test]
-    fn successful_plugin_preserves_argv_bytes_status_and_graceful_summary() {
-        let baseline = Sandbox::new("plugin-success-baseline");
-        let baseline_output = plugin_command(&baseline, 0, false);
-        assert_eq!(baseline_output.status.code(), Some(0));
-        assert_eq!(baseline_output.stdout, b"plugin-out:alpha|two words\n");
-        assert_eq!(baseline_output.stderr, b"plugin-err:alpha|two words\n");
-
-        let traced = Sandbox::new("plugin-success-traced");
-        let traced_output = plugin_command(&traced, 0, true);
-        assert_eq!(traced_output.status.code(), baseline_output.status.code());
-        assert_eq!(traced_output.stdout, baseline_output.stdout);
-        assert_eq!(traced_output.stderr, baseline_output.stderr);
-        let records = records(&traced);
-        assert!(records.iter().any(|record| {
-            record["record_type"] == "span_end"
-                && record["operation"] == "vagus.command"
-                && record["outcome"] == "ok"
-        }));
-        assert!(
-            records
-                .iter()
-                .any(|record| record["record_type"] == "session_summary")
-        );
-    }
-
-    #[test]
-    fn nonzero_plugin_exits_only_after_root_end_and_graceful_summary() {
-        let baseline = Sandbox::new("plugin-failure-baseline");
-        let baseline_output = plugin_command(&baseline, 42, false);
-        assert_eq!(baseline_output.status.code(), Some(42));
-        assert_eq!(baseline_output.stdout, b"plugin-out:alpha|two words\n");
-        assert_eq!(baseline_output.stderr, b"plugin-err:alpha|two words\n");
-
-        let traced = Sandbox::new("plugin-failure-traced");
-        let traced_output = plugin_command(&traced, 42, true);
-        assert_eq!(traced_output.status.code(), baseline_output.status.code());
-        assert_eq!(traced_output.stdout, baseline_output.stdout);
-        assert_eq!(traced_output.stderr, baseline_output.stderr);
-        let records = records(&traced);
-        assert!(records.iter().any(|record| {
-            record["record_type"] == "span_end"
-                && record["operation"] == "vagus.command"
-                && record["outcome"] == "error"
-                && record["error_code"] == "other"
-        }));
-        assert!(
-            records
-                .iter()
-                .any(|record| record["record_type"] == "session_summary")
-        );
-    }
-
-    #[test]
-    fn equal_descendant_and_symlink_alias_trace_paths_are_inert() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-
-        let equal = Sandbox::new("vault-state-equal");
-        let equal_vault = equal.root.join("state/vasovagal/traces/vagus");
-        let baseline = equal
-            .command()
-            .env("VAGUS_VAULT", &equal_vault)
-            .arg("tutorial")
-            .output()
-            .unwrap();
-        let traced = equal
-            .command()
-            .env("VAGUS_VAULT", &equal_vault)
-            .args(["--trace", "tutorial"])
-            .output()
-            .unwrap();
-        assert_eq!(traced.status.code(), baseline.status.code());
-        assert_eq!(traced.stdout, baseline.stdout);
-        assert_eq!(traced.stderr, baseline.stderr);
-        assert!(!equal.root.join("state").exists());
-
-        let descendant = Sandbox::new("vault-state-descendant");
-        let baseline = descendant.command().arg("tutorial").output().unwrap();
-        let traced = descendant
-            .command()
-            .env("XDG_STATE_HOME", descendant.root.join("vault"))
-            .args(["--trace", "tutorial"])
-            .output()
-            .unwrap();
-        assert_eq!(traced.status.code(), baseline.status.code());
-        assert_eq!(traced.stdout, baseline.stdout);
-        assert_eq!(traced.stderr, baseline.stderr);
-        assert!(!descendant.root.join("vault/vasovagal").exists());
-
-        let alias = Sandbox::new("vault-state-symlink-alias");
-        let trace_dir = alias.root.join("state/vasovagal/traces/vagus");
-        fs::create_dir_all(&trace_dir).unwrap();
-        for directory in [
-            alias.root.join("state"),
-            alias.root.join("state/vasovagal"),
-            alias.root.join("state/vasovagal/traces"),
-            trace_dir.clone(),
-        ] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let vault_alias = alias.root.join("vault-alias");
-        symlink(&trace_dir, &vault_alias).unwrap();
-        let baseline = alias
-            .command()
-            .env("VAGUS_VAULT", &vault_alias)
-            .arg("tutorial")
-            .output()
-            .unwrap();
-        let traced = alias
-            .command()
-            .env("VAGUS_VAULT", &vault_alias)
-            .args(["--trace", "tutorial"])
-            .output()
-            .unwrap();
-        assert_eq!(traced.status.code(), baseline.status.code());
-        assert_eq!(traced.stdout, baseline.stdout);
-        assert_eq!(traced.stderr, baseline.stderr);
-        assert!(fs::read_dir(&trace_dir).unwrap().next().is_none());
-        assert!(alias.trace_files().is_empty());
-    }
-
-    #[test]
-    fn nonempty_scope_and_floor_are_parented_and_have_accounted_busy_time() {
-        let sandbox = Sandbox::new("scope-floor-timing");
-        let work = sandbox.root.join("work");
-        fs::create_dir_all(&work).unwrap();
-        fs::write(
-            work.join(".vagus.json"),
-            r#"{"exclude":["private"],"root":true}"#,
-        )
-        .unwrap();
-        let output = sandbox
-            .command()
-            .current_dir(&work)
-            .args([
-                "--trace",
-                "search",
-                "PRIVATE QUERY MUST NOT LEAK",
-                "--mode",
-                "bm25",
-                "--no-index",
-                "--json",
-                "--min-score",
-                "0.5",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let records = records(&sandbox);
-        let starts: HashMap<&str, &serde_json::Value> = records
-            .iter()
-            .filter(|record| record["record_type"] == "span_start")
-            .filter_map(|record| {
-                record["operation"]
-                    .as_str()
-                    .map(|operation| (operation, record))
-            })
-            .collect();
-        let search = starts["vagus.search"];
-        for operation in ["vagus.search.scope", "vagus.search.postprocess"] {
-            assert_eq!(starts[operation]["parent_span_id"], search["span_id"]);
-            let end = records
-                .iter()
-                .find(|record| {
-                    record["record_type"] == "span_end" && record["operation"] == operation
-                })
+        assert_eq!(baseline.status.code(), Some(42));
+        for profile in ["safe", "research"] {
+            let output = s
+                .command()
+                .env("PATH", &bin)
+                .args(["--trace-profile", profile, "probe", "synthetic arg"])
+                .output()
                 .unwrap();
-            let duration = end["duration_ns"].as_u64().unwrap();
-            let busy = end["busy_ns"].as_u64().unwrap();
-            let idle = end["idle_ns"].as_u64().unwrap();
-            assert!(busy > 0, "{operation} did not account active work: {end}");
-            assert_eq!(busy + idle, duration);
+            equal(&baseline, &output);
+        }
+        let error = s.search().arg("--relevance").output().unwrap();
+        assert!(!error.status.success());
+        for profile in ["safe", "research"] {
+            let output = s
+                .search()
+                .args(["--trace-profile", profile, "--relevance"])
+                .output()
+                .unwrap();
+            equal(&error, &output);
+        }
+    }
+
+    /// A real HTTP/protobuf OTLP receiver, decoding standard wire spans (no mock exporter).
+    fn receive(listener: TcpListener) -> ExportTraceServiceRequest {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (mut socket, _) = loop {
+            if let Ok(pair) = listener.accept() {
+                break pair;
+            }
+            assert!(Instant::now() < deadline, "OTLP request not received");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let (end, size) = loop {
+            let mut buf = [0; 8192];
+            let n = socket.read(&mut buf).unwrap();
+            assert!(n > 0);
+            bytes.extend_from_slice(&buf[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                assert!(headers.starts_with("post /v1/traces http/1.1"));
+                assert!(headers.contains("application/x-protobuf"));
+                let size: usize = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                break (end + 4, size);
+            }
+        };
+        while bytes.len() < end + size {
+            let mut buf = [0; 8192];
+            let n = socket.read(&mut buf).unwrap();
+            assert!(n > 0);
+            bytes.extend_from_slice(&buf[..n]);
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        ExportTraceServiceRequest::decode(&bytes[end..end + size]).unwrap()
+    }
+
+    #[test]
+    fn direct_otlp_profiles_have_real_parents_wall_times_and_no_ambient_resource() {
+        let s = Sandbox::new();
+        s.fixture();
+        let baseline = s.search().output().unwrap();
+        for profile in ["safe", "research"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let receiver = std::thread::spawn(move || receive(listener));
+            let output = s
+                .search()
+                .args(["--trace-profile", profile, "--trace-otlp"])
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+                .env(
+                    "OTEL_RESOURCE_ATTRIBUTES",
+                    "privateenvmarker=must-not-export",
+                )
+                .output()
+                .unwrap();
+            equal(&baseline, &output);
+            let request = receiver.join().unwrap();
+            let debug = format!("{request:?}");
+            for marker in [QUERY, "privatebodymarker", "privatepathmarker"] {
+                assert_eq!(debug.contains(marker), profile == "research");
+            }
+            assert!(!debug.contains("privateenvmarker"));
+            let spans: Vec<_> = request
+                .resource_spans
+                .iter()
+                .flat_map(|r| &r.scope_spans)
+                .flat_map(|s| &s.spans)
+                .collect();
+            let root = spans.iter().find(|s| s.name == "command").unwrap();
+            for child in &spans {
+                assert!(child.end_time_unix_nano >= child.start_time_unix_nano);
+                assert_eq!(child.trace_id, root.trace_id);
+                if child.name != "command" {
+                    let parent = spans
+                        .iter()
+                        .find(|p| p.span_id == child.parent_span_id)
+                        .unwrap();
+                    assert!(parent.start_time_unix_nano <= child.start_time_unix_nano);
+                    assert!(parent.end_time_unix_nano >= child.end_time_unix_nano);
+                }
+            }
+            assert!(
+                !s.0.join("state").exists(),
+                "OTLP-only must not create local files"
+            );
         }
     }
 
     #[test]
-    fn environment_and_strict_yaml_each_activate_the_shared_layer() {
-        let environment = Sandbox::new("environment");
-        let mut command = environment.command();
-        command.env("VASOVAGAL_TRACE", "true");
-        let output = search(&mut command, false);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!records(&environment).is_empty());
-
-        let yaml = Sandbox::new("yaml");
-        fs::create_dir_all(yaml.config_path().parent().unwrap()).unwrap();
-        fs::write(
-            yaml.config_path(),
-            "version: 1\ntracing:\n  enabled: true\n",
-        )
-        .unwrap();
-        let output = search(&mut yaml.command(), false);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!records(&yaml).is_empty());
-    }
-
-    #[test]
-    fn invalid_yaml_fails_closed_without_changing_the_command() {
-        let sandbox = Sandbox::new("invalid-config");
-        fs::create_dir_all(sandbox.config_path().parent().unwrap()).unwrap();
-        fs::write(
-            sandbox.config_path(),
-            "version: 1\ntracing:\n  enabled: \"true\"\n",
-        )
-        .unwrap();
-        let output = search(&mut sandbox.command(), false);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(output.stdout, b"[]\n");
-        assert!(output.stderr.is_empty());
-        assert!(sandbox.trace_files().is_empty());
+    fn unavailable_exporter_is_visible_and_shutdown_is_bounded() {
+        let s = Sandbox::new();
+        let baseline = s.command().arg("tutorial").output().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let start = Instant::now();
+        let output = s
+            .command()
+            .args(["--trace-otlp", "tutorial"])
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+            .output()
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(output.stdout, baseline.stdout);
+        assert_eq!(output.status.code(), baseline.status.code());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tracing"));
+        // Accept a request but never respond: the library flush must still return on its bound.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let start = Instant::now();
+        let output = s
+            .command()
+            .args(["--trace-otlp", "tutorial"])
+            .env(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                format!("http://{}", listener.local_addr().unwrap()),
+            )
+            .output()
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(output.stdout, baseline.stdout);
+        assert_eq!(output.status.code(), baseline.status.code());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tracing"));
     }
 }
 
 #[cfg(not(feature = "local-tracing"))]
 #[test]
-fn compiled_out_flag_env_and_yaml_are_inert() {
-    let sandbox = Sandbox::new("compiled-out");
-    fs::create_dir_all(sandbox.config_path().parent().unwrap()).unwrap();
-    fs::write(
-        sandbox.config_path(),
-        "version: 1\ntracing:\n  enabled: true\n",
-    )
-    .unwrap();
-    let mut command = sandbox.command();
-    command.env("VASOVAGAL_TRACE", "true");
-    let output = search(&mut command, true);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(output.stdout, b"[]\n");
-    assert!(output.stderr.is_empty());
-    assert!(sandbox.trace_files().is_empty());
+fn compiled_out_flags_and_environment_are_inert() {
+    let s = Sandbox::new();
+    s.fixture();
+    let baseline = s.search().output().unwrap();
+    let output = s
+        .search()
+        .args([
+            "--trace",
+            "--trace-profile",
+            "research",
+            "--trace-otlp",
+            "--trace-file",
+        ])
+        .arg(s.0.join("vault/forbidden.jsonl"))
+        .env("VAGUS_TRACE_PROFILE", "invalid")
+        .env("VASOVAGAL_TRACE", "invalid")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+        .output()
+        .unwrap();
+    equal(&baseline, &output);
+    assert!(!s.0.join("state").exists());
+    assert!(!s.0.join("vault/forbidden.jsonl").exists());
 }

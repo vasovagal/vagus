@@ -154,6 +154,10 @@ fn median(values: &mut [i64]) -> Option<f64> {
 }
 
 impl Db {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "storage.open", skip_all)
+    )]
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

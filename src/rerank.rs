@@ -102,6 +102,15 @@ pub struct Reranker {
 }
 
 impl Reranker {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "model.load",
+            skip_all,
+            fields(model = "jina-reranker", context_radius)
+        )
+    )]
     pub fn new(cache_dir: &Path, context_radius: usize) -> Result<Self> {
         let max_length = max_length_for(context_radius)?;
         let opts = RerankInitOptions::new(RerankerModel::JINARerankerV1TurboEn)
@@ -218,13 +227,19 @@ impl Reranker {
     ///
     /// The score is the raw cross-encoder logit (no sigmoid) — meaningful for *ordering* only.
     /// Callers map it to a 0–1 display value via [`sigmoid`].
+    #[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "model.inference", skip_all, fields(model = "jina-reranker", count = docs.len(), context_radius = self.context_radius, max_length = self.max_length)))]
     pub fn rerank(&mut self, query: &str, docs: &[String]) -> Result<Vec<(usize, f32)>> {
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", query, documents = ?docs, "rerank inputs");
         // fastembed unifies the query and document string types; pass matching `&str` slices.
         let refs: Vec<&str> = docs.iter().map(String::as_str).collect();
         // return_documents=false: we already hold the bodies. Widened inputs use batch size one to
         // bound quadratic-attention memory; radius zero preserves fastembed's historical default.
         let results = self.model.rerank(query, &refs, false, self.batch_size)?;
-        Ok(results.into_iter().map(|r| (r.index, r.score)).collect())
+        let order: Vec<_> = results.into_iter().map(|r| (r.index, r.score)).collect();
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", scores = ?order, "rerank scores");
+        Ok(order)
     }
 }
 

@@ -16,7 +16,6 @@ mod index;
 mod init;
 mod lex;
 mod notes;
-mod offline_trace;
 mod path_safety;
 mod plugin;
 mod provenance;
@@ -27,6 +26,8 @@ mod rewrite;
 mod scope;
 mod search;
 mod skills;
+#[cfg(feature = "local-tracing")]
+mod telemetry;
 mod ticks;
 mod util;
 mod vector;
@@ -67,10 +68,19 @@ fn unit_interval(raw: &str) -> std::result::Result<f32, String> {
     )
 )]
 struct Cli {
-    /// Write privacy-projected, local-only JSONL traces for offline analysis (ADR 0029).
+    /// Enable safe timing/count tracing to a private JSONL file (ADR 0029).
     /// This remains accepted but inert when built without the `local-tracing` feature.
     #[arg(long, global = true)]
     trace: bool,
+    /// Enable safe metadata or sensitive research content (queries, paths, model inputs).
+    #[arg(long, global = true, value_enum)]
+    trace_profile: Option<TraceProfile>,
+    /// New JSONL file in a private directory outside the vault (never overwritten).
+    #[arg(long, global = true)]
+    trace_file: Option<std::path::PathBuf>,
+    /// Export directly using OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT (HTTP/protobuf).
+    #[arg(long, global = true)]
+    trace_otlp: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -389,18 +399,26 @@ enum VectorsAction {
     },
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum TraceProfile {
+    Safe,
+    Research,
+}
+
 impl Command {
-    /// Schema-v1's deliberately small command catalogue. Less common commands collapse to `other`;
-    /// no argument, path, query, or plugin name crosses the tracing privacy boundary.
+    #[cfg(feature = "local-tracing")]
     fn trace_name(&self) -> &'static str {
         match self {
             Self::Init { .. } => "init",
-            Self::Index | Self::Reindex { .. } | Self::Compact => "index",
-            Self::Search { .. }
-            | Self::Eval { .. }
-            | Self::EvalGate { .. }
-            | Self::Rewrite { .. } => "search",
-            Self::Doctor { .. } | Self::Status => "doctor",
+            Self::Index => "index",
+            Self::Reindex { .. } => "reindex",
+            Self::Compact => "compact",
+            Self::Search { .. } => "search",
+            Self::Eval { .. } => "eval",
+            Self::EvalGate { .. } => "eval-gate",
+            Self::Rewrite { .. } => "rewrite",
+            Self::Doctor { .. } => "doctor",
+            Self::Status => "status",
             Self::Plugins | Self::External(_) => "plugin",
             _ => "other",
         }
@@ -418,118 +436,40 @@ fn main() -> Result<()> {
     match run_with_optional_tracing(cli)? {
         CommandCompletion::Completed => Ok(()),
         // Plugin status propagation happens only after the tracing wrapper has closed the root span
-        // and drained its guard. This preserves the child's exact status without losing a summary.
+        // and given the exporter its bounded best-effort shutdown.
         CommandCompletion::ExternalExit(code) => std::process::exit(code),
     }
 }
 
-#[cfg(feature = "local-tracing")]
 fn run_with_optional_tracing(cli: Cli) -> Result<CommandCompletion> {
-    use std::time::Duration;
-
-    use tracing_subscriber::Registry;
-    use tracing_subscriber::layer::SubscriberExt;
-    use vasovagal_tracing::{CliActivation, InitOptions, Service};
-
-    // Parsing intentionally precedes initialization. Everything after this point—including
-    // eval-gate's early path—is covered when activation succeeds. The shared crate resolves the
-    // strict CLI → environment → YAML precedence and defers storage until subscriber installation.
-    let prepared = vasovagal_tracing::prepare::<Registry>(InitOptions {
-        service: Service::Vagus,
-        package_version: env!("CARGO_PKG_VERSION"),
-        cli: if cli.trace {
-            CliActivation::Enable
-        } else {
-            CliActivation::Unspecified
-        },
-    });
-    let vasovagal_tracing::Prepared {
-        layer,
-        pending,
-        status: _,
-    } = prepared;
-    let (guard, _status) = match layer {
-        Some(layer) if prospective_trace_storage_is_separate_from_vault() => {
-            let installed =
-                tracing::subscriber::set_global_default(Registry::default().with(layer)).is_ok();
-            pending.finish(installed)
+    #[cfg(feature = "local-tracing")]
+    let _guard = match telemetry::init(&cli) {
+        Ok(guard) => guard,
+        Err(_) => {
+            // Never print raw configuration errors: endpoint/header/path values may be sensitive.
+            eprintln!(
+                "vagus: tracing initialization failed; tracing disabled (check profile, endpoint, and private output directory)"
+            );
+            None
         }
-        // G1 is stronger than tracing activation: if the fixed trace directory could alias the
-        // Markdown vault, decline the prepared layer before subscriber installation/storage setup.
-        Some(_) | None => pending.finish(false),
     };
-
-    let command = offline_trace::command(cli.command.trace_name());
-    let result = run_command_in_span(cli, &command);
-    // Close the root span before draining, otherwise its span_end would race shutdown.
-    drop(command);
-    guard.shutdown(Duration::from_secs(2));
-    result
-}
-
-#[cfg(feature = "local-tracing")]
-fn prospective_trace_storage_is_separate_from_vault() -> bool {
-    use std::ffi::OsStr;
-    use std::path::PathBuf;
-
-    fn absolute_nonempty(value: &OsStr) -> Option<PathBuf> {
-        if value.is_empty() {
-            return None;
-        }
-        let path = PathBuf::from(value);
-        path.is_absolute().then_some(path)
-    }
-
-    // This mirrors the pinned shared crate's fixed, side-effect-free state-path contract. The core
-    // intentionally exposes no arbitrary path and does not resolve/create storage until finish(true).
-    let state_base = match std::env::var_os("XDG_STATE_HOME") {
-        Some(value) => absolute_nonempty(&value),
-        None => std::env::var_os("HOME")
-            .as_deref()
-            .and_then(absolute_nonempty)
-            .map(|home| home.join(".local/state")),
-    };
-    let Some(trace_directory) =
-        state_base.map(|base| base.join("vasovagal").join("traces").join("vagus"))
-    else {
-        return false;
-    };
-    let Some(vault) = std::env::var_os("VAGUS_VAULT")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join("brain")))
-    else {
-        return false;
-    };
-
-    crate::path_safety::overlap(&trace_directory, &vault)
-        .map(|overlaps| !overlaps)
-        .unwrap_or(false)
-}
-
-#[cfg(not(feature = "local-tracing"))]
-fn run_with_optional_tracing(cli: Cli) -> Result<CommandCompletion> {
-    // Deliberately do not inspect tracing environment/config/state. The unconditional flag remains a
-    // compatibility no-op in lean builds.
-    let _ = cli.trace;
-    let command = offline_trace::command(cli.command.trace_name());
-    run_command_in_span(cli, &command)
-}
-
-fn run_command_in_span(cli: Cli, command_trace: &offline_trace::Span) -> Result<CommandCompletion> {
+    #[cfg(feature = "local-tracing")]
+    let command =
+        tracing::info_span!(target: "vagus::timing", "command", command = cli.command.trace_name());
     let result = {
-        let _entered = command_trace.enter();
-        run_command(cli, command_trace)
+        #[cfg(feature = "local-tracing")]
+        let _entered = command.enter();
+        let result = run_command(cli);
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::timing", success = matches!(&result, Ok(CommandCompletion::Completed)), "command outcome");
+        result
     };
-    match &result {
-        Ok(CommandCompletion::Completed) => command_trace.ok(),
-        Ok(CommandCompletion::ExternalExit(_)) | Err(_) => {
-            command_trace.error(offline_trace::ErrorCode::Other);
-        }
-    }
+    #[cfg(feature = "local-tracing")]
+    drop(command); // Close before the SDK's bounded best-effort shutdown, including plugin exits.
     result
 }
 
-fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<CommandCompletion> {
+fn run_command(cli: Cli) -> Result<CommandCompletion> {
     // Pure report comparison: no vault/config/model/index is needed or touched.
     if let Command::EvalGate {
         baseline,
@@ -541,21 +481,11 @@ fn run_command(cli: Cli, command_trace: &offline_trace::Span) -> Result<CommandC
         return Ok(CommandCompletion::Completed);
     }
 
-    let config_trace = offline_trace::config_load(command_trace);
-    let cfg = config_trace.in_scope(offline_trace::ErrorCode::Configuration, Config::load)?;
-    drop(config_trace);
-
-    // Every command that may open/create meta.db or a model cache enforces G1 first. Doctor performs
-    // the same validation itself so it can print a diagnostic instead of failing before its report.
-    let storage_trace = offline_trace::storage_validate(command_trace);
-    if matches!(&cli.command, Command::Doctor { .. }) {
-        storage_trace.skipped();
-    } else {
-        storage_trace.in_scope(offline_trace::ErrorCode::Storage, || {
-            cfg.validate_storage_separation()
-        })?;
+    let cfg = Config::load()?;
+    // Doctor validates storage itself to retain its diagnostic report.
+    if !matches!(&cli.command, Command::Doctor { .. }) {
+        cfg.validate_storage_separation()?;
     }
-    drop(storage_trace);
 
     match cli.command {
         Command::Status => cmd_status(&cfg)?,

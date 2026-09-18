@@ -80,6 +80,5 @@ silently breaking an invariant.
   becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.
 - `0028-searchable-producer-metadata.md` — valid non-owned JSON frontmatter becomes dedicated,
   kind-separated BM25/semantic chunks; lifecycle fields stay filter-only; adds G9g and chunk version 6.
-- `0029-local-offline-tracing.md` — opt-in, schema-validated local JSONL tracing shared with Corti;
-  exact-target privacy projection, fixed secure storage, fail-closed activation, and compiled-out no-op;
-  adds G28.
+- `0029-local-offline-tracing.md` — small opt-in safe/research tracing with standard JSON files and
+  explicit direct OTLP; supersedes the proposed local-only shared schema; adds G28. Eval authority unchanged.

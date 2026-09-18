@@ -105,6 +105,15 @@ pub struct Rewriter {
 
 impl Rewriter {
     /// Load the model + tokenizer (downloading both to `cache_dir` on first use).
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "model.load",
+            skip_all,
+            fields(model = "qwen3-rewriter")
+        )
+    )]
     pub fn new(cache_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir).ok();
         let repo = std::env::var("VAGUS_REWRITE_REPO").unwrap_or_else(|_| GGUF_REPO.to_string());
@@ -147,6 +156,10 @@ impl Rewriter {
 
     /// Expand `query` into typed variants; falls back to original-query variants if generation
     /// yields nothing parseable.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "rewrite.generate", skip_all)
+    )]
     pub fn expand(&mut self, query: &str) -> Result<Vec<Variant>> {
         let raw = self.generate(query)?;
         let mut variants = parse_variants(&raw, query);
@@ -162,6 +175,8 @@ impl Rewriter {
         let prompt = format!(
             "<|im_start|>user\n/no_think Expand this search query: {query}<|im_end|>\n<|im_start|>assistant\n"
         );
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", input = %prompt, "rewrite prompt");
         let prompt_ids = self
             .tokenizer
             .encode(prompt, true)
@@ -212,33 +227,19 @@ impl Rewriter {
 }
 
 /// `vagus rewrite "<query>"`: print the typed expansion lines (for inspection / composition).
+#[cfg_attr(
+    feature = "local-tracing",
+    tracing::instrument(target = "vagus::timing", name = "rewrite", skip_all)
+)]
 pub fn run_cli(cfg: &Config, query: &str) -> Result<()> {
-    let search_trace = crate::offline_trace::search("smart", false, true, false, "all");
-    search_trace.in_scope(crate::offline_trace::ErrorCode::Other, || {
-        let rewrite_trace = crate::offline_trace::search_rewrite(&search_trace, false);
-        let rewrite_status = rewrite_trace.error_on_drop(crate::offline_trace::ErrorCode::Other);
-        let load_trace = crate::offline_trace::model_load(&rewrite_trace, "other", "other", None);
-        let mut rewriter = load_trace
-            .in_scope(crate::offline_trace::ErrorCode::ModelUnavailable, || {
-                Rewriter::new(&cfg.cache_dir)
-            })?;
-        drop(load_trace);
-        let decode_trace = crate::offline_trace::model_decode(&rewrite_trace, "other", "other");
-        let variants = decode_trace
-            .in_scope(crate::offline_trace::ErrorCode::DecodeFailed, || {
-                rewriter.expand(query)
-            })?;
-        decode_trace.item_count(variants.len());
-        drop(decode_trace);
-        rewrite_trace.result_count(variants.len());
-        rewrite_status.ok();
-        drop(rewrite_trace);
-        search_trace.result_count(variants.len());
-        for variant in variants {
-            println!("{}: {}", variant.kind.tag(), variant.text);
-        }
-        Ok(())
-    })
+    let mut rw = Rewriter::new(&cfg.cache_dir)?;
+    let variants = rw.expand(query)?;
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query, variants = %serde_json::to_string(&variants).unwrap_or_default(), "rewrite output");
+    for v in variants {
+        println!("{}: {}", v.kind.tag(), v.text);
+    }
+    Ok(())
 }
 
 /// Parse the model's typed output into variants, dropping chat-template leakage and (for lex/vec)

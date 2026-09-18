@@ -43,17 +43,16 @@ Official/default builds enable two independently removable integrations:
 
 - `generate` pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by `vagus search --smart` /
   `vagus rewrite`.
-- `local-tracing` pulls in the shared privacy-projected local JSONL layer. Runtime tracing remains off
-  until `--trace`, `VASOVAGAL_TRACE=true`, or strict `vagus.yaml` enables it (ADR 0029/G28).
+- `local-tracing` pulls in standard JSON/OTLP subscribers. Runtime tracing remains off until an
+  explicit trace flag/profile enables it; research content and OTLP require explicit consent (ADR 0029/G28).
 
 ```sh
 cargo build --no-default-features
 cargo build --no-default-features --features local-tracing  # tracing-only feature lane
 ```
 
-A compiled-out build still accepts `--trace` but does not read tracing environment/YAML or create a
-trace path. Never replace the shared crate with a path/floating-branch dependency; pre-publication
-branches use an exact pushed Git `rev`, and merge uses the reviewed crates.io release.
+A compiled-out build accepts all trace flags but does not read tracing environment/configuration or
+create a trace path. Tracing uses registry dependencies only; no shared exporter checkout is needed.
 
 ## Releasing
 

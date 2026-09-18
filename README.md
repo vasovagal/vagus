@@ -141,41 +141,42 @@ scale it is effectively instant; a synthetic 10k×768 exact load+search fixture 
 *(Measured on Apple Silicon over five exact, capped-20 rerank queries in a 4,148-chunk corpus. Wider
 attention is quadratic; radius 1 is the practical first try and radius 2 needs adequate memory. The
 `--smart` rewrite is cached per query, so repeats are much faster — ~5 s cold / ~2.3 s warm on a small
-vault.)* No daemon and no cloud round-trip on any
-path.
+vault.)* No daemon or cloud round-trip in retrieval; explicitly enabled OTLP diagnostics are separate.
 
-## Local offline traces
+## Search performance traces
 
-Tracing is **off by default** and never requires a collector. Enable one command with the global flag:
+Tracing is **off by default**. Safe traces contain only explicit timings, counts, settings and
+outcomes. Research traces contain **sensitive queries, rewrites, candidates, scores, paths and model
+inputs**; do not attach them to public issues.
 
 ```sh
-vagus --trace search "<query>"
-# Equivalent persistent/process opt-ins:
-VASOVAGAL_TRACE=true vagus status
+vagus --trace search "<query>"                  # safe private JSONL, no network
+vagus --trace-profile research search "<query>" # sensitive private JSONL
+# Optional new file; its directory must be private (0700) and outside the vault:
+vagus --trace-file /private/trace-dir/run.jsonl search "<query>"
+# Direct OTLP HTTP/protobuf; no implicit collector or ambient activation:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+  vagus --trace-otlp search "<query>"           # safe, no local file
+# Add --trace-profile research to explicitly authorize content export.
 ```
 
-Vagus resolves `--trace` first, then a present `VASOVAGAL_TRACE` (exact lowercase `true` or `false`,
-no whitespace), then `${XDG_CONFIG_HOME:-$HOME/.config}/vasovagal/vagus.yaml`:
+`--trace-profile` wins, then any `--trace`/`--trace-file`/`--trace-otlp` flag selects safe, then
+`VAGUS_TRACE_PROFILE=off|safe|research`, then legacy `VASOVAGAL_TRACE=true|false`. No YAML or `RUST_LOG`
+configuration is read. The default file lives under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`; files are create-new 0600, never
+overwritten. Symlink-aware checks reject output directories overlapping the vault. There is **no
+rotation, retention, durability or delivery guarantee**; manage/delete sensitive files yourself.
 
-```yaml
-version: 1
-tracing:
-  enabled: true
-```
+Use JSON span NEW/CLOSE timestamps for wall intervals, or native OTLP spans for the waterfall. OTLP
+supports standard endpoint/header environment settings only after `--trace-otlp`; resource/host/env
+attributes and third-party logs are not captured. Request/shutdown budgets are two seconds; exporter
+errors warn on stderr without changing command status. Traces may be incomplete after errors or
+abrupt exit. Default stdout and search JSON are unchanged. No performance overhead guarantee.
 
-The strict YAML has no optional/unknown fields. Missing config means disabled; malformed config,
-invalid environment, insecure storage, or subscriber conflict silently disables tracing without
-changing the command. Files are private local JSONL under
-`${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`, with bounded rotation/retention and
-partial-tail recovery. If that fixed directory overlaps the Markdown vault—including equal,
-descendant, and symlink-alias spellings—Vagus declines tracing before subscriber installation or path
-creation. Files contain only catalogued operation timing, random session/span IDs, safe enums/booleans,
-bounded aggregate counts, and reviewed error codes—never query/variant text, note
-content/metadata/paths, prompts/plugin arguments, hashes/cache keys, raw errors, or host/environment
-identity. See [ADR 0029](design/adr/0029-local-offline-tracing.md) and the shared
-[offline-analysis guide](https://github.com/vasovagal/vasovagal-tracing/blob/7afe13e46df63a3767d518ede7b733349dc09b14/docs/offline-analysis.md).
-A build without the default `local-tracing` feature still accepts `--trace` but performs no tracing
-activation/config/state access.
+The historical `local-tracing` Cargo feature can be compiled out; **all trace flags then remain inert**
+without tracing environment/config/state access. The `generate` feature is independent.
+[ADR 0029](design/adr/0029-local-offline-tracing.md) supersedes the previous local-only shared-schema
+proposal and documents fields, unavailable model internals, and unchanged eval authority.
 
 ## Usage
 

@@ -1,142 +1,111 @@
-# ADR 0029 — Privacy-projected local offline tracing
+# ADR 0029 — Small opt-in search tracing: safe and research profiles
 
-- **Status:** Proposed (2026-08-22); implements the accepted cross-project
-  [Vasovagal tracing architecture v1](https://github.com/vasovagal/vasovagal-tracing/blob/7afe13e46df63a3767d518ede7b733349dc09b14/docs/architecture-v1.md).
+- **Status:** Accepted redesign (2026-08-23). **Supersedes the proposed privacy-projected,
+  local-only shared-exporter design in PR #33**, including its schema-v1 catalogue, YAML activation,
+  silent failures, rotation/retention and local-only transport restriction. This decision applies to
+  Vagus only; the shared crate and Corti are unchanged.
 
 ## Context
 
-Vagus has stable user-facing output and opt-in `--timings`, but no structured way to compare command,
-index, retrieval, model, and storage-stage latency across many local runs. Corti needs the same local
-analysis substrate. Conventional observability stacks add collectors, endpoints, network transports,
-arbitrary fields, or log payloads; each conflicts with Vagus's local-first/privacy contract and makes
-query/note leakage too easy.
-
-The shared format must remain useful after the process exits, tolerate abrupt final-line truncation,
-and fail closed when disabled, misconfigured, insecure, or compiled out. It must not alter ordinary
-stdout/JSON/stderr, command errors, model behavior, vault safety, or index consistency.
+The purpose is to diagnose happy-path real search performance: model loading versus inference,
+rewrite cache versus generation, vector opening versus searching, and preparation versus scoring.
+The previous adapter catalogue and aggregate re-entry accounting obscured that work and added a
+second instrumentation API. Research also needs explicit query/candidate/score/model-input context.
+This is observability, not another evaluation framework or a reliable evidence archive.
 
 ## Decision
 
-Vagus integrates the public MIT-licensed `vasovagal-tracing` crate behind a default-on Cargo feature
-named **`local-tracing`**. The feature owns optional `tracing`, `tracing-subscriber`, and shared-crate
-dependencies. `--no-default-features` omits all three and every instrumentation call becomes a
-zero-sized no-op: the binary reads no tracing environment/YAML, creates no tracing path, but still
-silently accepts the unconditional global `--trace` flag.
+Use ordinary `tracing::instrument(skip_all)` annotations and small explicit spans/events. One small
+subscriber module configures standard `tracing-subscriber` JSON files and `tracing-opentelemetry` with
+`opentelemetry-otlp`'s direct HTTP/protobuf exporter and standard SDK batching. All dependencies come
+from the registry. There is no custom recorder, queue, retry, spool, sync/durability protocol,
+artifact/replay system, middleware, corpus snapshot or new evaluation framework.
 
-The independently reviewed core PR squash-landed as
-`7afe13e46df63a3767d518ede7b733349dc09b14`, but no tag or crates.io release exists yet. This draft
-integration therefore pins that exact immutable Git `rev`. A Git/path dependency may not merge; once
-the reviewed registry release is verifiably available, release remediation must use its crates.io
-semver dependency and reviewed lockfile.
+### Activation and transport
 
-### Activation and lifecycle
+Tracing is off by default. The unconditional flags are:
 
-With `local-tracing` compiled, activation is resolved only by the shared crate, in this exact order:
+- `--trace`: safe profile, default private JSONL file.
+- `--trace-profile safe|research`: explicitly enables that profile.
+- `--trace-file PATH`: a **new** JSONL file, enabling safe unless a profile is selected.
+- `--trace-otlp`: explicitly enables direct export; requires `OTEL_EXPORTER_OTLP_ENDPOINT` or
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. Uses safe unless a profile is selected. No implicit collector.
+  Without `--trace-file`, OTLP-only runs create no local trace file.
 
-1. `--trace` enables and short-circuits every lower source;
-2. a present `VASOVAGAL_TRACE` must be exactly `true` or `false` and short-circuits YAML;
-3. `${XDG_CONFIG_HOME:-$HOME/.config}/vasovagal/vagus.yaml` must be the strict schema-v1 document;
-4. otherwise tracing is disabled.
+CLI profile takes precedence, then any enabling CLI flag selects safe, then `VAGUS_TRACE_PROFILE`
+(`off|safe|research`), then legacy exact `VASOVAGAL_TRACE=true|false`. No YAML is read. `RUST_LOG`, OTEL
+endpoint/resource settings, and third-party tracing callsites cannot activate tracing or content.
+**Research plus `--trace-otlp` authorizes content export** to the explicitly configured destination.
+Standard OTEL endpoint/header settings are consumed only for that exporter; credentials are never
+recorded. HTTP/protobuf is selected programmatically; gRPC is not provided. Export request timeout
+and best-effort shutdown are capped at two seconds, overriding ambient OTEL timeout settings.
 
-Invalid environment/config, missing home, insecure/unwritable storage, repeated initialization, or a
-subscriber conflict produces no application error and no trace. Initialization occurs immediately
-after `Cli::parse()` and before the `eval-gate` fast path, config, vault, DB, model, or command work.
-The app composes the optional exact-target layer on a bare `tracing_subscriber::Registry`; no
-subscriber is installed when disabled. Before installation, Vagus side-effect-free resolves the
-shared contract's fixed prospective trace directory and its configured vault with the existing
-missing-path/symlink-aware G1 resolver. Any equality, containment, or symlink-alias overlap declines
-the layer before state creation. (The landed core v0.1 API deliberately defers storage to
-`finish(true)` and exposes no prospective-path accessor, so this check mirrors its immutable fixed
-location rather than opening storage.) The root span closes on both ordinary errors and typed
-external-plugin exits before a two-second best-effort guard shutdown; only then does the process
-propagate the child's exact nonzero status.
+The default file is `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/<unique>.jsonl`.
+Before directory creation, G1's alias-aware missing-path resolver must prove the prospective output
+directory does not overlap the configured vault. Check again after creating directories. New
+directories are 0700, existing output directories must be private, and files are create-new 0600
+(no overwrite or symlink-following final file). Files are ordinary standard tracing JSONL: not the
+old schema-v1 format. Local writes are synchronous standard file writes, without fsync, retention,
+rotation, loss counters, recovery, or reliability claims; users manage sensitive files themselves.
+As with other G1 checks, this is not a sandbox against concurrent hostile ancestor replacement.
 
-Activated JSONL is written only to:
+Initialization/storage/export/shutdown errors are visible on stderr, reduced to non-content
+messages for configuration/export failures, but do not change the application's result/status.
+Standard JSON writer errors are reported by tracing-subscriber. A subscriber conflict disables
+tracing. Root spans close before the SDK's bounded shutdown, including exact external-plugin exits.
+There is no guarantee of delivery: crashes, full SDK queues, detached workers, and endpoint failures
+may lose traces. No default network path, signal handler or background daemon is added.
 
-```text
-${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/
-```
+### Profiles and instrumentation
 
-The shared crate owns private `0700` directories, create-new/no-follow locked `0600` files, rotation,
-retention, lossy buffering, complete-line writes, graceful summaries, validation, and partial-tail
-recovery. There is no path override, endpoint, socket, collector, daemon, upload, or signal handler.
+Both output layers accept **only** the explicit application targets:
 
-### Instrumentation and privacy
+- `vagus::timing`: timings, counts, settings, and outcomes. All function arguments are `skip_all`;
+  only explicitly selected enums/booleans/counts enter safe spans. No query, path, note metadata,
+  hash/cache key, raw error, prompt, environment/host identity or plugin arguments.
+- `vagus::research`: enabled only by the research profile. One event per meaningful stage holds
+  query/rewrite text, exact rewrite prompt, lexical/vector/fused candidates and scores, hydrated
+  paths/snippets/retained bodies, prefixed embedding query input, rerank query/documents, and rerank
+  logits. Expensive JSON serialization stays inside enabled event macros. No per-token/candidate
+  spans. No credentials or unrestricted third-party logging. SDK error diagnostics go only to stderr
+  as a fixed warning, never into either exporter. Resources contain only the fixed service name.
 
-Only exact-target (`vasovagal::trace`) schema-v1 catalogue spans are emitted:
+Instrumentation covers config/storage; index snapshot/reconciliation/commit/persistence and refresh;
+model load/inference; rewrite cache/generation; vector selection/open/rebuild/search; lexical search,
+fusion/hydration; rerank document preparation/inference; postprocessing and output. Settings reflect
+actual retrieval/rerank counts, model context limits, and effective vector backend. Every stage span
+is a contiguous wall-time scope. JSON NEW/CLOSE timestamps give wall intervals (standard fmt close
+busy/idle fields are not custom CPU accounting); OTLP spans have native start/end times and parents.
+Model batch calls can create repeated inference spans during indexing; no per-note wrapper is added.
 
-```text
-vagus.command
-├── vagus.config.load
-├── vagus.storage.validate
-├── vagus.index
-│   ├── snapshot
-│   ├── reconcile       # includes bounded SQLite reconciliation
-│   ├── embed
-│   ├── lexical_commit
-│   └── vector_persist
-└── vagus.search
-    ├── refresh
-    ├── scope
-    ├── retrieve
-    │   ├── bm25
-    │   ├── vector
-    │   └── rrf
-    ├── hydrate         # bounded SQLite hydration
-    ├── rewrite
-    ├── rerank
-    └── postprocess
-```
+Smart prewarm threads explicitly receive the dispatcher and parent span. Original `JoinHandle`
+ownership and fallback behavior are unchanged; **error/empty-result paths can detach workers**, and
+shutdown need not retain their traces. Do not change search lifetimes just to improve telemetry.
+Research captures exact application strings passed to fastembed, not private ONNX/tokenizer tensors
+or padded/truncated pairs inside fastembed. Rewriter raw token streams are not recorded. Hydrated
+bodies exist only when the original search requested them (full output or reranking); do not add DB
+reads or retain data just for traces. No model downloads are added by instrumentation.
 
-`vagus.model.load`, `vagus.model.decode`, and `vagus.model.infer` are explicit children of the
-consuming stage. Smart-search prewarm workers receive the current dispatcher and an explicit cloned
-parent, enter it only inside their active closure, and live in a join-on-scope owner that drains both
-workers on every success, `?`, fallback, or unwind before shutdown. Scope filtering re-enters its
-aggregate span, while the postprocess span remains alive and accounts filters, floors, adaptive tidy,
-and relevance projection. Index and smart variant/note work reuse aggregate spans rather than
-creating per-note/chunk/query-variant/token/SQL spans.
+`vagus eval` has an eval parent and a per-query opaque ordinal ID, with shared search spans below it.
+It does **not** expose query text in safe mode. ADR 0024/0025 reports, metrics, schemas, provenance,
+and promotion gates remain authoritative and unchanged. Traces are not evaluation evidence.
 
-The application can provide only catalogue enums, booleans, and bounded aggregate counts. It never
-passes query/variant text, note content/title/heading/snippet/frontmatter/source values, paths,
-filenames, plugin argv, hashes/cache keys, stored queries, prompts, raw errors, environment contents,
-host/user/cwd/executable/thread identifiers, or arbitrary `Debug`/`Display` values. Errors are reduced
-to reviewed low-cardinality codes; unknowns are `other`. The shared layer independently rejects and
-counts any unknown, wrongly typed, or privacy-denied field, and every emitted line validates against
-the bundled immutable JSON Schema.
+The default `local-tracing` feature name is retained for compatibility despite optional networking.
+Without it all trace flags remain accepted but inert: no tracing config/environment/state reads,
+subscriber installation or instrumented calls. `generate` remains independent.
 
-## Consequences
+## Verification and consequences
 
-- Explicit local traces support `jq`, DuckDB, Python, Polars, and SQLite batch analysis without a
-  running service or network collector.
-- Default commands pay no runtime tracing/storage cost beyond compiled callsites; compiled-out builds
-  omit even activation reads. Enabled writes use a bounded lossy queue so tracing does not block
-  retrieval/model hot paths.
-- Trace files reveal coarse command/stage timing and aggregate sizes to the local account. They are
-  therefore private `0600` state with bounded retention, not diagnostics to attach wholesale to an
-  issue.
-- Abrupt termination may lose queued/final records and omit the summary; all preceding newline-ended
-  records remain valid, and readers may allow one partial tail.
-- Schema-v1 operation/attribute additions require a shared schema-v2 decision, preventing an app from
-  quietly expanding the privacy surface.
+`tests/local_tracing.rs` uses synthetic real SQLite/Tantivy search and a real loopback OTLP receiver
+that decodes standard protobuf. It checks off/safe/research stdout/stderr/status equality, content
+partitioning, JSON files and modes, OTLP parent/time intervals, no ambient resource capture, explicit
+activation, invalid output/vault aliases, external-plugin status, exporter failure, bounded shutdown,
+and the compiled-out lane. No model downloads or live corpus exports are needed for these tests.
+Real-model timing and prewarm verification require already-cached models with isolated derived state;
+synthetic lexical tests cannot prove model latency or model-backed span coverage.
 
-### 2026-08-22 reproducible performance evidence
-
-`scripts/benchmark-local-tracing.py` created a deterministic 128-note/768-section Markdown corpus,
-indexed it from the existing offline model cache, then alternated 15 traced/untraced pairs for BM25
-`--no-index` search and unchanged incremental indexing. On Apple arm64 with the Rust 1.96 debug test
-binary, median search was 18.479 ms untraced / 25.105 ms traced (+6.625 ms), and index was 31.439 ms /
-36.586 ms (+5.148 ms). Both satisfy the accepted “5% or 10 ms, whichever is larger” gate. Across 32
-graceful sessions, the largest trace was 11,744 bytes; every session had a summary, no queue drops,
-writer/rejection/privacy counters, or synthetic query text. The machine-readable release evidence is
-[`design/evidence/local-tracing-performance.json`](../evidence/local-tracing-performance.json).
-
-## Alternatives considered
-
-- **OTLP/OpenTelemetry plus a local collector:** rejected. Even a nominally local setup introduces
-  endpoints, collector lifecycle, network-capable dependencies, and accidental export risk.
-- **Vagus-specific JSON timing logs:** rejected. It duplicates Corti's need, lacks tracing-rs
-  composition/parentage, and would drift from one validated privacy schema.
-- **Reuse human diagnostics / `--timings`:** retained for their current purpose but rejected as the
-  batch format. Their strings are user-facing, incomplete, and may contain raw errors or paths.
-- **Arbitrary output paths or arbitrary span fields:** rejected. Fixed state paths and a closed
-  catalogue make ownership/mode checks, retention, validation, and privacy review tractable.
+The obsolete custom-schema benchmark and its performance artifact are removed, not represented as
+current evidence. No overhead guarantee is claimed for synchronous JSON or research serialization.
+Tracing does not alter ranking, filtering, dedup, worker ownership, stdout/search JSON, or eval gates.
+Unlike the superseded proposal, explicit research traces may contain sensitive content and explicit
+OTLP may transmit it. Keep private traces out of public issues/artifacts and use a trusted destination.

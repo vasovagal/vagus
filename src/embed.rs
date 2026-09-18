@@ -24,6 +24,15 @@ pub struct Embedder {
 }
 
 impl Embedder {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "model.load",
+            skip_all,
+            fields(model = "embeddinggemma")
+        )
+    )]
     pub fn new(cache_dir: &Path) -> Result<Self> {
         let opts = TextInitOptions::new(EmbeddingModel::EmbeddingGemma300M)
             .with_cache_dir(cache_dir.to_path_buf())
@@ -34,6 +43,7 @@ impl Embedder {
     }
 
     /// Embed document chunk bodies with the passage prefix, L2-normalized.
+    #[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "model.inference", skip_all, fields(model = "embeddinggemma", kind = "documents", count = texts.len())))]
     pub fn embed_documents(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let prefixed: Vec<String> = texts
             .into_iter()
@@ -47,8 +57,19 @@ impl Embedder {
     }
 
     /// Embed a query with the retrieval prefix, L2-normalized.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "model.inference",
+            skip_all,
+            fields(model = "embeddinggemma", kind = "query", count = 1)
+        )
+    )]
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
         let q = format!("{GEMMA_QUERY_PREFIX}{text}");
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", input = %q, "embedding input");
         let mut out = self.model.embed(vec![q], None)?;
         let mut v = out.pop().unwrap_or_default();
         normalize(&mut v);
