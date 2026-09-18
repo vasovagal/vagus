@@ -221,7 +221,7 @@ pub fn add_note(
     let filename = format!("{}-{}.md", now.format("%Y%m%d-%H%M%S"), slugify(title));
     let path = dir.join(&filename);
 
-    // Body from stdin when piped (e.g. the create-note skill's heredoc).
+    // Body from stdin when piped (e.g. the vagus-create-note skill's heredoc).
     let piped = !std::io::stdin().is_terminal();
     let mut body = String::new();
     if piped {
@@ -256,7 +256,7 @@ pub fn add_note(
         }
     }
 
-    index::run(cfg, index::IndexMode::Incremental)?; // index after edit: new content is searchable
+    index::run(cfg, index::IndexMode::AutoRefresh)?; // index after edit: new content is searchable
 
     if print_path {
         println!("{}", path.display());
@@ -389,7 +389,7 @@ pub fn file(
 
     // reconcile: old path removed, new path indexed. Capture per-step index timings only when asked.
     let mut idx = stats.then(index::IndexTimings::default);
-    index::run_timed(cfg, index::IndexMode::Incremental, idx.as_mut())?;
+    index::run_timed(cfg, index::IndexMode::AutoRefresh, idx.as_mut())?;
 
     let dest_rel = vault_rel(cfg, &dest);
 

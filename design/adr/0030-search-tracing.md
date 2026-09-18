@@ -1,4 +1,4 @@
-# ADR 0029 — Small opt-in search tracing: safe and research profiles
+# ADR 0030 — Small opt-in search tracing: safe and research profiles
 
 - **Status:** Accepted redesign (2026-08-23). **Supersedes the proposed privacy-projected,
   local-only shared-exporter design in PR #33**, including its schema-v1 catalogue, YAML activation,
@@ -37,12 +37,18 @@ CLI profile takes precedence, then any enabling CLI flag selects safe, then `VAG
 endpoint/resource settings, and third-party tracing callsites cannot activate tracing or content.
 **Research plus `--trace-otlp` authorizes content export** to the explicitly configured destination.
 Standard OTEL endpoint/header settings are consumed only for that exporter; credentials are never
-recorded. HTTP/protobuf is selected programmatically; gRPC is not provided. Export request timeout
+recorded. The traces endpoint takes precedence and is a complete URL; the generic endpoint is a base
+with `/v1/traces` appended. The selected endpoint is passed explicitly to the exporter: invalid values
+fail initialization rather than falling back to localhost or to a lower-priority endpoint.
+HTTP/protobuf is selected programmatically; gRPC is not provided. Export request timeout
 and best-effort shutdown are capped at two seconds, overriding ambient OTEL timeout settings.
 
 The default file is `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/<unique>.jsonl`.
 Before directory creation, G1's alias-aware missing-path resolver must prove the prospective output
-directory does not overlap the configured vault. Check again after creating directories. New
+directory does not overlap the configured vault. Reject `..` components in both output and vault
+paths before any writes: the shared resolver normalizes them before following symlinks, which can
+disagree with filesystem traversal. This is a local fail-closed boundary, not a resolver rewrite.
+Check separation again after creating directories. New
 directories are 0700, existing output directories must be private, and files are create-new 0600
 (no overwrite or symlink-following final file). Files are ordinary standard tracing JSONL: not the
 old schema-v1 format. Local writes are synchronous standard file writes, without fsync, retention,
@@ -70,7 +76,8 @@ Both output layers accept **only** the explicit application targets:
   spans. No credentials or unrestricted third-party logging. SDK error diagnostics go only to stderr
   as a fixed warning, never into either exporter. Resources contain only the fixed service name.
 
-Instrumentation covers config/storage; index snapshot/reconciliation/commit/persistence and refresh;
+Instrumentation covers config/storage; index snapshot/reconciliation/checkpoint commit/merge/
+persistence and refresh (preserving ADR 0029's resumable indexing and AutoRefresh behavior);
 model load/inference; rewrite cache/generation; vector selection/open/rebuild/search; lexical search,
 fusion/hydration; rerank document preparation/inference; postprocessing and output. Settings reflect
 actual retrieval/rerank counts, model context limits, and effective vector backend. Every stage span

@@ -5,6 +5,7 @@
 //! by the same vault-relative `path` and `chunk_id` as the SQLite store so the two stay consistent
 //! off one hash-diff (G5).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -13,7 +14,7 @@ use tantivy::query::QueryParser;
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
-use tantivy::{DocAddress, Index, IndexWriter, TantivyDocument, Term, doc};
+use tantivy::{DocAddress, Index, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
 
 use crate::chunk::Chunk;
 
@@ -135,6 +136,47 @@ impl Lex {
         #[cfg(feature = "local-tracing")]
         tracing::info!(target: "vagus::research", query, candidates = ?out, "lexical results");
         Ok(out)
+    }
+
+    /// Live (non-deleted) documents across committed segments. Compared with SQLite's chunk count to
+    /// detect BM25 docs stranded by an interrupted run (ADR 0029).
+    pub fn num_docs(&self) -> Result<u64> {
+        Ok(self
+            .index
+            .searchable_segment_metas()?
+            .iter()
+            .map(|meta| u64::from(meta.num_docs()))
+            .sum())
+    }
+
+    /// Live document count per exact `path` term across committed segments. Walks the term
+    /// dictionary instead of stored fields (`path` is not stored), so the cost is one posting list per
+    /// indexed note; the indexer pays it only when [`Self::num_docs`] disagrees with SQLite.
+    pub fn doc_counts_by_path(&self) -> Result<HashMap<String, u64>> {
+        let reader = self
+            .index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        let searcher = reader.searcher();
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for segment in searcher.segment_readers() {
+            let inverted = segment.inverted_index(self.path)?;
+            let mut terms = inverted.terms().stream()?;
+            while terms.advance() {
+                let postings = inverted
+                    .read_postings_from_terminfo(terms.value(), IndexRecordOption::Basic)?;
+                let live = match segment.alive_bitset() {
+                    Some(alive) => postings.doc_freq_given_deletes(alive),
+                    None => postings.doc_freq(),
+                };
+                if live > 0 {
+                    let path = String::from_utf8_lossy(terms.key()).into_owned();
+                    *counts.entry(path).or_default() += u64::from(live);
+                }
+            }
+        }
+        Ok(counts)
     }
 
     /// Segment-level stats from the tantivy index. A high segment count = fragmentation (per-file

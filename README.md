@@ -26,9 +26,9 @@ straight from a Claude Code or pi session).
   records strict rank provenance for its fixed pipeline. Runs pin binary/pipeline/corpus identity,
   capped tails stay explicitly unscored, query text is off by default, and reports state their
   selection bias. Ordinary search output is unchanged.
-- **Local offline performance traces.** Explicit `--trace`, environment, or strict YAML opt-in writes
-  privacy-projected, schema-validated JSONL to private local state for `jq`/DuckDB/batch analysis.
-  There is no endpoint, collector, upload, arbitrary output path, or query/note/raw-error field.
+- **Opt-in performance traces.** Safe timing/count traces use private JSONL; a separate research
+  profile enables sensitive content. Direct OTLP export requires explicit opt-in. See
+  [search performance traces](#search-performance-traces) for privacy and configuration.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies; difficult boundary-spanning
   queries can opt into tokenizer-safe adjacent context with `--rerank-context 1|2`. Or use `--smart` for a
@@ -40,14 +40,16 @@ straight from a Claude Code or pi session).
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the search index is
   a throwaway cache (local usage counters/provenance are the explicit exception).
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  the create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
+  the vagus-create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
   provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields; that producer
   metadata is searchable by BM25 and meaning, so queries such as `parakeet` find model provenance.
-- **Assisted, never automatic filing.** The process-inbox skill proposes a PARA home per note; you
+- **Assisted, never automatic filing.** The vagus-process-inbox skill proposes a PARA home per note; you
   approve.
-- **Claude Code and pi skills built in.** Create-note, search, and process-inbox skills ship
+- **Claude Code and pi skills built in.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` ship
   inside the binary — `vagus skills install --agent <claude|pi>` writes them to the selected
-  agent's global skills directory.
+  agent's global skills directory. Generic “make a note” / “save this” requests default to Vagus;
+  “my notes” questions retrieve rather than create. Explicit repo files, release notes, or another
+  notes app override the default. See [skill routing and upgrades](./skills/README.md).
 - **Self-contained.** One ~40 MB static binary (ONNX Runtime linked in — `otool -L` shows
   only system dylibs). No Python, no Node, no background process.
 
@@ -118,7 +120,7 @@ vagus skills install --agent pi      # pi: ~/.pi/agent/skills
 vagus skills list --agent pi         # show pi install status
 ```
 
-The bundled search and process-inbox skills translate user time windows directly into `--since`
+The bundled `vagus-search` and `vagus-process-inbox` skills translate user time windows directly into `--since`
 filters (for example, “last three months” → `3m`) instead of making the agent post-filter results.
 The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
 leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an
@@ -160,11 +162,24 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
 # Add --trace-profile research to explicitly authorize content export.
 ```
 
+For an OpenObserve HTTP/protobuf receiver, use its **complete traces endpoint**, not the generic
+base endpoint (replace the host and authorization placeholders locally):
+
+```sh
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT='http://<openobserve-host>/openobserve/api/default/v1/traces' \
+OTEL_EXPORTER_OTLP_TRACES_HEADERS='Authorization=Basic <BASE64_CREDENTIALS>' \
+  vagus --trace-otlp search "<query>"
+```
+
+An unauthenticated empty POST to this route returned 401; **authenticated delivery is untested**.
+No credentials or private content were sent. Use a trusted destination; the example uses plain HTTP.
+
 `--trace-profile` wins, then any `--trace`/`--trace-file`/`--trace-otlp` flag selects safe, then
 `VAGUS_TRACE_PROFILE=off|safe|research`, then legacy `VASOVAGAL_TRACE=true|false`. No YAML or `RUST_LOG`
 configuration is read. The default file lives under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`; files are create-new 0600, never
-overwritten. Symlink-aware checks reject output directories overlapping the vault. There is **no
+overwritten. Symlink-aware checks reject output directories overlapping the vault; output and vault
+paths containing `..` are rejected before writes. There is **no
 rotation, retention, durability or delivery guarantee**; manage/delete sensitive files yourself.
 
 Use JSON span NEW/CLOSE timestamps for wall intervals, or native OTLP spans for the waterfall. OTLP
@@ -175,7 +190,7 @@ abrupt exit. Default stdout and search JSON are unchanged. No performance overhe
 
 The historical `local-tracing` Cargo feature can be compiled out; **all trace flags then remain inert**
 without tracing environment/config/state access. The `generate` feature is independent.
-[ADR 0029](design/adr/0029-local-offline-tracing.md) supersedes the previous local-only shared-schema
+[ADR 0030](design/adr/0030-search-tracing.md) supersedes the previous local-only shared-schema
 proposal and documents fields, unavailable model internals, and unchanged eval authority.
 
 ## Usage

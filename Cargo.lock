@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "vagus"
-version = "0.13.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -4944,6 +4944,7 @@ dependencies = [
  "dirs",
  "fastembed",
  "hf-hub",
+ "libc",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",

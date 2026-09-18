@@ -28,9 +28,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
    Vagus-owned fields. Index/search never edits notes; indexing may derive searchable, kind-separated
    chunks from valid non-owned producer JSON while lifecycle frontmatter stays out of chunk text
    (ADR 0028).
-4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `tantivy_version` in the
-   `meta` table. On any mismatch, refuse incremental indexing and require `vagus reindex`. Never mix
-   vectors from different models/dims — it silently corrupts ranking. Current identity:
+4. **Pin the embedding identity.** Store `embed_model` + `embed_dims` + `embed_recipe` +
+   `tantivy_version` in the `meta` table. `embed_recipe` is `embed::DOC_RECIPE`'s identity — model,
+   fastembed variant, dims, document prefix, max length, normalization — the one value the embedder
+   reads (the query prefix is not in it; query vectors are never stored). On any mismatch, refuse
+   incremental indexing, resume and reuse nothing, and require `vagus reindex`. Never mix
+   vectors from different models, dims, or recipes — it silently corrupts ranking. Current identity:
    `google/embeddinggemma-300m` / **768** (768-dim, 2048-ctx). Bump `CHUNK_VERSION` alongside any
    identity change so the one-time reindex is automatic.
 5. **Keep all three stores consistent off one hash-diff.** On a changed/deleted file: delete its tantivy
@@ -38,7 +41,12 @@ canonical invariant list and is **binding** — the summary below must stay in s
    usearch vectors (`remove(key_for(id))` — ADR 0019). Same `chunk_id`/`vec_key` keys drive all three.
    The f32 BLOBs are authoritative; the `.usearch` sidecar is a rebuildable derived cache (missing/stale
    ⇒ rebuilt from the BLOBs, no re-embed). NULL chunk embeddings force a full per-file retry despite
-   matching mtime/hash, and forced-refresh vector mutations must be saved.
+   matching mtime/hash, and forced-refresh vector mutations must be saved. Tantivy commits at
+   checkpoints (ADR 0029): a `files` row stays `pending` until the commit covering it and is redone
+   like a NULL-embedding row, keeping its embeddings only if a fresh chunking matches its stored rows
+   exactly; a tantivy-doc ≠ chunk count triggers a census that restores BM25 from
+   stored chunks; only explicit `index`/`reindex` resume an interrupted rebuild (search/add-note/file
+   warn instead); Ctrl-C commits a checkpoint and exits with a resume hint.
 6. **Set the fastembed cache dir explicitly.** fastembed defaults to `./.fastembed_cache` in the CWD —
    always override to `~/Library/Caches/vagus/models` (`with_cache_dir(...)` or
    `FASTEMBED_CACHE_DIR`). Plain `vagus doctor` is filesystem-presence-only and must never instantiate
@@ -57,7 +65,8 @@ canonical invariant list and is **binding** — the summary below must stay in s
    confidence; a positive floor drops unknown hits post-truncation with no backfill and never changes
    ranking/default output (ADR 0026/G9e). Apply the embedder's prompt template (EmbeddingGemma:
    query `task: search result | query:`, document `title: none | text:` — documents *are* prefixed
-   now) and **don't double-prefix**.
+   now; the document prefix is pinned by G4's `embed_recipe`, the query prefix is not) and **don't
+   double-prefix**.
 8. **Retrieval fusion is hand-rolled** (tantivy BM25 + RRF; see `design/adr/0003-search-stack.md`). The
    cosine component uses exact brute force automatically below 10,000 embedded chunks and the embedded,
    statically linked **usearch HNSW** index above that; `--exact` forces the oracle in every mode—see
@@ -79,13 +88,16 @@ canonical invariant list and is **binding** — the summary below must stay in s
 12. **Three tiers, "no versioned runtime" identity.** vagus is a self-contained Rust *universe* (no
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
-    = shell + local models, offline; (2) the bundled search skill (`/search` in Claude Code,
-    `/skill:search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
+    = shell + local models, offline; (2) the bundled search skill (`/vagus-search` in Claude Code,
+    `/skill:vagus-search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
     only, max 6 presented, one fallback only if none survive. Its fixed unfiltered primary atomically
     logs provenance and counters for cited notes without query content; explicit user time windows use
     native `--since`, preserve it on retry, and record primary citations counter-only because filtered
     provenance is forbidden. Advanced search is **in core**,
-    **not** a plugin — plugins (G18) are for networked capture only.
+    **not** a plugin — plugins (G18) are for networked capture only. No filesystem search after the
+    single retry; a candidate Read is grading only. Generic personal-note intent defaults to Vagus:
+    capture writes, retrieval questions do not. Explicit destinations override the default;
+    `vagus-process-inbox` remains manual-only with per-move confirmation.
 13. **Chunk budget ↔ embedder context window** (ADR 0013/G20). Sub-split sections over ~900 tokens
     (`chars/3.5`, ~128 overlap); **fenced code stays atomic** (never split). Searchable producer JSON
     follows the same budget in a separate chunk kind, including whitespace-free hard splits, and
@@ -124,13 +136,14 @@ canonical invariant list and is **binding** — the summary below must stay in s
     and rank states into one atomic run/events/counter transaction. Runs pin executable, pipeline,
     corpus, cap, context, scope, and result identity; reports group by pipeline+corpus and are never
     eval evidence. Query storage is separate opt-in; bodies/snippets are never stored.
-20. **Tracing is explicit, safe by default, research by consent** (ADR 0029/G28). Off by default;
+20. **Tracing is explicit, safe by default, research by consent** (ADR 0030/G28). Off by default;
     ordinary `tracing` spans use `skip_all` and explicit timings/counts/settings/outcomes only.
     A separate research target/profile explicitly enables queries, rewrites, candidates/scores/paths
     and model-input content. Explicit `--trace-otlp` plus research authorizes content export using
     standard OTLP; ambient OTEL settings never activate tracing. No credentials, host/environment
     dumps or unrestricted third-party logs. Standard private JSONL files must pass G1's alias-aware,
-    missing-path vault separation check before writes. One small subscriber module, no bespoke
+    missing-path vault separation check before writes; output/vault paths with `..` are rejected.
+    Invalid OTLP endpoints cannot fall back to implicit collectors. One small subscriber module, no bespoke
     recorder/queue/retry/spool/replay or new eval framework. Export failures are visible, best-effort
     library shutdown is bounded, and delivery is not guaranteed. `local-tracing` can be compiled out;
     trace flags then remain inert without tracing config/state access. Functional stdout/search JSON
@@ -148,9 +161,9 @@ brew tap and choose their own home/vault paths; follow the README when helping t
 ~/brain -> ~/Library/Mobile Documents/com~apple~CloudDocs/Brain   # the vault (markdown only, in iCloud)
 ~/.local/share/vagus/       # index: tantivy/ + meta.db + config.toml   (OUTSIDE iCloud)
 ~/Library/Caches/vagus/models/   # cached ONNX models: embedder + optional reranker  (OUTSIDE iCloud)
-~/.local/state/vasovagal/traces/vagus/  # opt-in private JSONL traces (ADR 0029; OTLP also explicit)
-~/.claude/skills/{create-note,search,process-inbox}/   # Claude Code skill installs
-~/.pi/agent/skills/{create-note,search,process-inbox}/  # pi skill installs (both shell out to `vagus`)
+~/.local/state/vasovagal/traces/vagus/  # opt-in private JSONL traces (ADR 0030; OTLP also explicit)
+~/.claude/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/   # Claude Code skill installs
+~/.pi/agent/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/  # pi skill installs (both shell out to `vagus`)
 ```
 
 ## Build / test / run
@@ -183,6 +196,10 @@ VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
 Push a `vX.Y.Z` tag; see [`RELEASING.md`](./RELEASING.md). The CI/release pipeline follows the laws in
 `xrl/agents` `LAWS.md`: split-by-event (`ci.yml` on PR/main, `release.yml` on tags — no test re-run),
 native-per-arch matrix (no emulation), centralized pinned-SHA caching, re-run-safe release.
+
+A successful tag workflow also validates all three public release assets and updates
+`vasovagal.github.io` through the Vagus-specific `LANDING_PAGE_DEPLOY_KEY`, producing an idempotent
+`vagus bumped to X.Y.Z` site commit. The deploy key can write only the landing-page repository.
 
 **Every release propagates to the tap, same cycle.** A release is not done until
 `vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: wait for `release.yml` to publish

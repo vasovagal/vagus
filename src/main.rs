@@ -14,6 +14,7 @@ mod export;
 mod frontmatter;
 mod index;
 mod init;
+mod interrupt;
 mod lex;
 mod notes;
 mod path_safety;
@@ -68,7 +69,7 @@ fn unit_interval(raw: &str) -> std::result::Result<f32, String> {
     )
 )]
 struct Cli {
-    /// Enable safe timing/count tracing to a private JSONL file (ADR 0029).
+    /// Enable safe timing/count tracing to a private JSONL file (ADR 0030).
     /// This remains accepted but inert when built without the `local-tracing` feature.
     #[arg(long, global = true)]
     trace: bool,
@@ -267,7 +268,7 @@ enum Command {
         /// Instead of moving, suggest destinations.
         #[arg(long)]
         suggest: bool,
-        /// With --suggest, emit JSON (for the /process-inbox skill). With --stats, emit the
+        /// With --suggest, emit JSON (for the /vagus-process-inbox skill). With --stats, emit the
         /// per-step timing breakdown as one stable JSON object instead of the table.
         #[arg(long)]
         json: bool,
@@ -294,7 +295,7 @@ enum Command {
     },
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
-    /// Manage the bundled Claude Code / pi skills (create-note / search / process-inbox).
+    /// Manage the bundled Claude Code / pi skills (vagus-create-note / vagus-search / vagus-process-inbox).
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
@@ -306,7 +307,7 @@ enum Command {
     },
     /// List discovered `vagus-<name>` plugins on your PATH.
     Plugins,
-    /// Record a usage tick for one or more notes (used by the /search skill after presenting results).
+    /// Record a usage tick for one or more notes (used by the /vagus-search skill after presenting results).
     Tick {
         /// Vault-relative note paths (as printed in search hits); absolute paths inside the vault are
         /// accepted. Optional when --events carries the presented paths and rank provenance.
@@ -432,6 +433,18 @@ enum CommandCompletion {
 }
 
 fn main() -> Result<()> {
+    let result = run_cli();
+    // A Ctrl-C'd index run already committed its progress; say how to resume and exit like SIGINT.
+    if let Err(error) = &result
+        && let Some(stopped) = error.downcast_ref::<index::Interrupted>()
+    {
+        eprintln!("vagus: {stopped}");
+        std::process::exit(130);
+    }
+    result
+}
+
+fn run_cli() -> Result<()> {
     let cli = Cli::parse();
     match run_with_optional_tracing(cli)? {
         CommandCompletion::Completed => Ok(()),
@@ -722,6 +735,15 @@ fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
         .unwrap_or_else(|| "(unset)".into());
     let id_ok = model == config::EMBED_MODEL && dims == config::EMBED_DIMS.to_string();
     line("embed identity", id_ok, &format!("{model} / {dims}"));
+    let recipe = embed::DOC_RECIPE.identity();
+    match index::recipe_change(&db)? {
+        None => line("embed recipe", true, &recipe),
+        Some(stored) => line(
+            "embed recipe",
+            false,
+            &format!("index built by {stored}; this binary embeds {recipe} — run `vagus reindex`"),
+        ),
+    }
 
     let seg = lex::Lex::open(&cfg.tantivy_dir()).and_then(|lex| lex.segment_stats());
     let seg_detail = match &seg {
@@ -798,6 +820,49 @@ fn cmd_doctor(cfg: &Config, fetch_models: bool) -> Result<()> {
         "index counts",
         embedded == chunks,
         &format!("{files} files, {chunks} chunks, {embedded} embedded"),
+    );
+    // G5/ADR 0029: every chunk needs its BM25 doc. A killed pre-checkpoint run left whole notes
+    // embedded but missing from tantivy while every other line read [ok].
+    let running = index::run_in_progress(cfg);
+    let in_flight = if running {
+        " (an index run is in progress)"
+    } else {
+        ""
+    };
+    if let Ok(stats) = &seg {
+        let docs = i64::from(stats.docs);
+        let detail = if docs == chunks {
+            format!("{docs} docs for {chunks} chunks")
+        } else {
+            format!(
+                "{docs} docs for {chunks} chunks — {} out of step; run `vagus index` to repair{in_flight}",
+                (chunks - docs).abs()
+            )
+        };
+        line("full-text docs", docs == chunks, &detail);
+    }
+    let leftovers = index::leftovers(&db)?;
+    let mut unfinished = Vec::new();
+    if leftovers.rebuild_unfinished {
+        unfinished.push("unfinished rebuild".to_string());
+    }
+    if leftovers.pending_files > 0 {
+        unfinished.push(format!("{} uncommitted file(s)", leftovers.pending_files));
+    }
+    if leftovers.vectors_stale {
+        unfinished.push("vector sidecar awaiting repack".to_string());
+    }
+    let checkpoint_detail = if unfinished.is_empty() {
+        "no interrupted run".to_string()
+    } else if running {
+        format!("{}{in_flight}", unfinished.join(", "))
+    } else {
+        format!("{} — run `vagus index` to resume", unfinished.join(", "))
+    };
+    line(
+        "index checkpoint",
+        unfinished.is_empty(),
+        &checkpoint_detail,
     );
     line(
         "ticks",
@@ -1175,7 +1240,7 @@ FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox
   vagus file 00-Inbox/<note>.md --suggest             where might it go? (--thought-process = why)
   vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
-  (agent skill: /process-inbox in Claude Code; /skill:process-inbox in pi)
+  (agent skill: /vagus-process-inbox in Claude Code; /skill:vagus-process-inbox in pi)
 
 PARA — file by how ACTIONABLE it is (first match wins):
   10-Projects   a goal with an end + deadline       ("Launch v2")

@@ -215,7 +215,7 @@ pub fn fame(cfg: &Config, limit: usize, all: bool, json: bool) -> Result<()> {
                 "no ticks on indexed notes — {orphans} orphaned (moved/deleted outside vagus); try --all"
             );
         } else {
-            println!("no ticks yet — the /search skill records usage as it presents notes");
+            println!("no ticks yet — the /vagus-search skill records usage as it presents notes");
         }
         return Ok(());
     }
@@ -301,7 +301,9 @@ pub fn ticks_report(cfg: &Config, limit: usize, all: bool, json: bool) -> Result
         return Ok(());
     }
     if rows.is_empty() {
-        println!("no ticks yet — the /search skill records usage and explicit rank provenance");
+        println!(
+            "no ticks yet — the /vagus-search skill records usage and explicit rank provenance"
+        );
         return Ok(());
     }
     println!(

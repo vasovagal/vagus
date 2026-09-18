@@ -1259,8 +1259,11 @@ pub fn run(
         #[cfg(feature = "local-tracing")]
         let _index_refresh =
             tracing::info_span!(target: "vagus::timing", "index.refresh").entered();
-        match index::run(cfg, index::IndexMode::Incremental) {
-            Ok(_) => true,
+        // AutoRefresh: an interrupted rebuild is left for an explicit `vagus index` (ADR 0029).
+        match index::run(cfg, index::IndexMode::AutoRefresh) {
+            Ok(stats) => !stats.deferred,
+            // Ctrl-C during the refresh stops the whole search, not just the refresh.
+            Err(error) if error.is::<index::Interrupted>() => return Err(error),
             Err(error) => {
                 eprintln!("vagus: index refresh skipped ({error})");
                 false

@@ -42,23 +42,40 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 
 ## Index correctness
 
-- **G4 — Pin embedding identity.** `meta` table stores `embed_model`, `embed_dims`, `tantivy_version`.
-  Any mismatch ⇒ refuse incremental indexing, require `reindex`. Never mix embedding spaces. (Currently
+- **G4 — Pin embedding identity.** `meta` table stores `embed_model`, `embed_dims`, `embed_recipe`,
+  `tantivy_version`. `embed_recipe` is `embed::DOC_RECIPE`'s identity: every input that shapes a stored
+  document vector (model id and fastembed variant, dims, document prefix, max length, L2
+  normalization), read by the embedder from that one value, so editing any of them is a mismatch. The
+  query prefix is not in it: query vectors are never stored. Any mismatch ⇒ refuse incremental
+  indexing (the automatic refresh in `search`/`add-note`/`file`/plugins hits the same refusal), never
+  resume an interrupted rebuild or reuse stored vectors across it, `doctor` flags it; require `reindex`.
+  An index pinned before `embed_recipe` existed is compared as the frozen `PRE_PINNING_RECIPE` and
+  backfilled when it matches. Never mix embedding spaces. (Currently
   `google/embeddinggemma-300m` / **768** — [ADR 0006](./adr/0006-embeddings-local-no-daemon.md). Bumping
   `CHUNK_VERSION` alongside an identity change makes the one-time reindex automatic.)
 - **G5 — All stores move together.** On a changed/deleted file, delete its tantivy docs
   (`delete_term(path)` → `commit()`), its SQLite vector rows (no FK/triggers), **and** its usearch
   vectors (`remove(key_for(id))`, [ADR 0019](./adr/0019-usearch-ann-backend.md)). One mtime+sha256
   hash-diff drives all three; same `chunk_id`/`vec_key` keys; `doctor` cross-checks counts (incl.
-  usearch key count == embedded chunks). The f32 BLOBs are authoritative; the `.usearch` sidecar is a
-  rebuildable derived cache (G2) — a missing/mismatched sidecar rebuilds from the BLOBs, no re-embed.
-  A file with NULL chunk embeddings bypasses mtime/hash shortcuts and retries the full replacement;
-  forced-refresh mutations must count when deciding to save usearch. The G25 user-data tables are
+  usearch key count == embedded chunks and tantivy live docs == chunks). The f32 BLOBs are
+  authoritative; the `.usearch` sidecar is a rebuildable derived cache (G2) — a missing/mismatched or
+  `vec_dirty` sidecar rebuilds from the BLOBs, no re-embed. A file with NULL chunk embeddings, or a
+  `files.pending` row whose checkpoint never committed, bypasses mtime/hash shortcuts and retries the
+  replacement; a pending row keeps its stored embeddings only when a fresh chunking matches its rows
+  exactly (id, ord, kind, heading, body) and none is NULL, and otherwise re-embeds; forced-refresh mutations must count when deciding to save usearch. When tantivy's
+  live doc count disagrees with the chunk count, a per-path census restores current notes' BM25 docs
+  from their stored chunks (no re-embed) and deletes docs for paths SQLite no longer holds
+  ([ADR 0029](./adr/0029-checkpointed-resumable-indexing.md)). The G25 user-data tables are
   intentionally **outside** this three-store hash-diff; `doctor`
   cross-checks orphaned counter and event paths informationally.
 - **G6 — tantivy update pattern.** There is no `update_document`. Per changed file: `delete_term` on
-  the exact `path` term, re-`add_document` the new chunks, then a single `commit()`. Full rebuild =
-  many adds + one commit.
+  the exact `path` term, then re-`add_document` the new chunks. Commits happen at checkpoints (every 64
+  indexed files or 30 s, and at the end of the run), and a file's SQLite row is never marked current
+  (`pending = 0`) before the commit that covers it, so a killed run loses at most the uncommitted
+  batch's BM25 docs. One advisory `index.lock` admits a single index run per data dir. An interrupted rebuild is
+  resumed only by explicit `vagus index`/`vagus reindex`, never by the implicit refresh in
+  `search`/`add-note`/`file`; Ctrl-C commits a checkpoint before exiting
+  ([ADR 0029](./adr/0029-checkpointed-resumable-indexing.md)).
 - **G7 — Normalize vectors at insert** so cosine = dot product.
 - **G20 — Chunk budget is tied to the embedder's context window.** Sections over budget are sub-split
   on paragraph boundaries (greedily packed, overlap re-prepended); fenced code blocks stay **atomic**
@@ -95,7 +112,8 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
 - **G9 — embedder prefixes.** Apply the model's prompt template, query- vs document-side, and **don't
   double-prefix** (respect what the lib already applies). EmbeddingGemma (fastembed does *not*
   auto-template it): query `task: search result | query: {text}`, document `title: none | text: {text}`
-  — note documents *are* prefixed now (bge left them raw). L2-normalize after (G7).
+  — note documents *are* prefixed now (bge left them raw). L2-normalize after (G7). The document
+  prefix is part of G4's `embed_recipe`, so changing it forces `reindex`; the query prefix is not.
   ([ADR 0006](./adr/0006-embeddings-local-no-daemon.md))
 - **G9a — CWD-scoped exclusion.** Search elides hits whose vault path matches an "inherited"
   `.vagus/config.json` exclude word found by walking up from the CWD (code dirs only, never the
@@ -153,7 +171,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   ([ADR 0028](./adr/0028-searchable-producer-metadata.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
-  (2) the bundled search skill (`/search` in Claude Code, `/skill:search` in pi) = **Opus** over the
+  (2) the bundled search skill (`/vagus-search` in Claude Code, `/skill:vagus-search` in pi) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
   fixed **unfiltered** primary path emits G9f provenance and atomically records only cited notes
@@ -161,7 +179,11 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   omit the G9f wrapper because metadata-filtered provenance is forbidden, and record primary cited
   paths counter-only; retries remain unticked. The *channel* picks the tier — no escalation prompts or
   routine tier-2 fan-out. The skill keeps rerank-context radius 0; optional wider model input never
-  expands the ten matched bodies shown to the agent.
+  expands the ten matched bodies shown to the agent. No third retrieval via filesystem tools after
+  the retry; a Read of an already retrieved candidate is grading, not a new search. Generic personal
+  note requests default to Vagus by intent (capture vs retrieval); explicit destinations override
+  this default, and questions never authorize note creation. `vagus-process-inbox` stays manual-only
+  with per-move confirmation.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md))
 - **G27 — Evaluation evidence is reproducible and cannot reward under-returning.** `vagus eval` uses
   fixed-denominator P@k, explicitly truncated MRR@k, and `null` undefined cohorts. Schema 2 pins
@@ -235,14 +257,16 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   authorizes content export. Ambient OTEL settings and third-party logs never enable capture. No
   credentials, host/environment dumps, unrestricted logs or raw application errors. Standard JSONL
   files are private/create-new and their directory must pass G1's alias-aware missing-path vault
-  overlap checks before writes. Standard subscribers/exporters only: no custom recorder, queue,
+  overlap checks before writes; output/vault paths with `..` components are rejected at this boundary.
+  Selected OTLP endpoints are explicit and invalid values never fall back to an implicit collector.
+  Standard subscribers/exporters only: no custom recorder, queue,
   retries, spool, sync, replay or new eval framework. Failures are visible on stderr, library shutdown
   is bounded/best-effort, and delivery is not guaranteed. Default functional output/search JSON and
   exact external-plugin status stay unchanged. Without `local-tracing`, trace flags remain inert
   without tracing configuration/environment/state access. This explicitly supersedes the original
   local-only/shared-schema proposal; it is the narrow observability exception to G14/G18, not networked
   retrieval or capture. ADR 0024/0025 evaluation authority is unchanged.
-  ([ADR 0029](./adr/0029-local-offline-tracing.md))
+  ([ADR 0030](./adr/0030-search-tracing.md))
 
 ## Concurrency & agents
 

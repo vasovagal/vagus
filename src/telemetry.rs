@@ -86,16 +86,26 @@ pub(crate) fn init(cli: &crate::Cli) -> Result<Option<Guard>> {
 
     let provider = if cli.trace_otlp {
         // Explicit opt-in still requires an explicit endpoint; never default to localhost or a cloud.
-        if !std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-            .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
-            .is_ok_and(|endpoint| !endpoint.is_empty())
-        {
-            bail!(
-                "--trace-otlp requires OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-            );
+        let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
+            Ok(endpoint) => endpoint,
+            Err(std::env::VarError::NotPresent) => {
+                let base = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")?;
+                // Generic endpoints are bases; signal-specific endpoints are complete URLs.
+                format!(
+                    "{}{}v1/traces",
+                    base,
+                    if base.ends_with('/') { "" } else { "/" }
+                )
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+            bail!("OTLP endpoint must be an explicit HTTP(S) URL");
         }
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
+            // Passing it explicitly makes malformed URIs fail rather than falling back to localhost.
+            .with_endpoint(endpoint)
             .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
             .with_timeout(SHUTDOWN)
             .build()
@@ -147,6 +157,14 @@ fn private_file(path: &Path) -> Result<File> {
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join("brain")))
         .ok_or_else(|| anyhow::anyhow!("cannot resolve vault for tracing safety check"))?;
+    // The shared resolver normalizes `..` before following symlinks. Reject it at this write
+    // boundary so the checked path and the filesystem's traversal cannot disagree.
+    if [path, vault.as_path()].iter().any(|path| {
+        path.components()
+            .any(|component| component == std::path::Component::ParentDir)
+    }) {
+        bail!("tracing output and vault paths must not contain parent-directory components");
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

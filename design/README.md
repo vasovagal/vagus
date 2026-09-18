@@ -35,7 +35,8 @@ silently breaking an invariant.
   alias-aware path checks; `init --icloud` uses fail-closed, no-note-migration setup.
 - `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
 - `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default; plain doctor
-  never downloads, while explicit `--fetch-models` validates both ONNX models.
+  never downloads, while explicit `--fetch-models` validates both ONNX models; G4 pins the full
+  document-embedding recipe (prefix, length, normalization), not just model + dims.
 - `0007-lean-on-frankensearch.md` — depend/vendor the retrieval engine (pending smoke test).
 - `0008-naming.md` — `vagus` / `vasovagal`.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
@@ -43,7 +44,8 @@ silently breaking an invariant.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
 - `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
   channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 contract and pushes explicit
-  time windows into native `--since` retrieval.
+  time windows into native `--since` retrieval. Namespaced skills default generic personal-note
+  intent to Vagus, with explicit destination overrides and conservative legacy-name migration.
 - `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
 - `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
 - `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit
@@ -80,5 +82,8 @@ silently breaking an invariant.
   becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.
 - `0028-searchable-producer-metadata.md` — valid non-owned JSON frontmatter becomes dedicated,
   kind-separated BM25/semantic chunks; lifecycle fields stay filter-only; adds G9g and chunk version 6.
-- `0029-local-offline-tracing.md` — small opt-in safe/research tracing with standard JSON files and
+- `0029-checkpointed-resumable-indexing.md` — tantivy commits every 64 files/30 s and blesses
+  `files.pending` rows only after the commit; `vec_dirty` repacks usearch; only explicit `index`/`reindex`
+  resume an interrupted rebuild; graceful Ctrl-C; BM25 census self-heal + doctor check; amends G5/G6.
+- `0030-search-tracing.md` — small opt-in safe/research tracing with standard JSON files and
   explicit direct OTLP; supersedes the proposed local-only shared schema; adds G28. Eval authority unchanged.

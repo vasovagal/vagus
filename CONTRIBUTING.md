@@ -44,7 +44,7 @@ Official/default builds enable two independently removable integrations:
 - `generate` pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by `vagus search --smart` /
   `vagus rewrite`.
 - `local-tracing` pulls in standard JSON/OTLP subscribers. Runtime tracing remains off until an
-  explicit trace flag/profile enables it; research content and OTLP require explicit consent (ADR 0029/G28).
+  explicit trace flag/profile enables it; research content and OTLP require explicit consent (ADR 0030/G28).
 
 ```sh
 cargo build --no-default-features

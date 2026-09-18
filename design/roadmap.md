@@ -40,7 +40,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Opt-in semantic relevance (`--relevance` / explicit floor) | core `vagus` | named finite original-query cosine heuristic; post-truncation/no backfill | shipped (ADR 0026) |
 | Reproducible retrieval evaluation + fusion gate | core `vagus` | `vagus eval` schema 2 + named relevance diagnostic + fixed paired `eval-gate` | shipped (ADRs 0024–0026) |
 | Atomic cited-note presentation provenance | core + tier-2 skill | strict run/event schema, binary+pipeline+corpus identity, capped-tail truth | shipped (ADR 0021 amendment) |
-| Opt-in safe/research tracing | ordinary spans + standard JSON/OTLP exporters | explicit content/export consent; no eval changes | accepted (ADR 0029) |
+| Opt-in safe/research tracing | ordinary spans + standard JSON/OTLP exporters | explicit content/export consent; no eval changes | accepted (ADR 0030) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
 | Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
@@ -63,14 +63,14 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
 - **M2 — tier-1 local generation** *(shipped)*: in-core candle rewriter behind the default-on
   `generate` feature; `vagus rewrite` + `vagus search --smart`; typed `lex:/vec:/hyde:` routing +
   multi-query fuse + rerank; lazily downloads qmd's 1.7B GGUF (~1.28GB). ([ADR 0016](./adr/0016-local-generative-rewriter.md))
-- **M3 — tier-2 bounded skill** *(shipped; tightened 2026-08-12)*: `skills/search/SKILL.md` runs
+- **M3 — tier-2 bounded skill** *(shipped; tightened 2026-08-12)*: `skills/vagus-search/SKILL.md` runs
   the fixed `vagus search --json --full --rerank --exact --limit 10 --tick-provenance` path at
   rerank-context radius 0, judges full bodies 0–3, presents only nonredundant grade≥2 evidence (max 6,
   never pads), and permits one query-shape-selected fallback only when none survive. The unfiltered
   primary carries self-verifying pipeline/corpus identity and atomically ticks cited paths with query
   content off. Explicit user windows use native `--since`, ordinary JSON, and counter-only primary
   ticks; filtered retries remain unticked. Judging stays in the skill (G17); RRF is never re-derived
-  (G8). The same Agent Skill installs for Claude Code and pi; process-inbox learns the same window grammar.
+  (G8). The same Agent Skill installs for Claude Code and pi; vagus-process-inbox learns the same window grammar.
 
 ## Deferred / not building
 

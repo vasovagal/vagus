@@ -4,7 +4,7 @@ All notable, user-noticeable changes to `vagus` are recorded here. Internal refa
 changes are intentionally omitted (CLAUDE.md → Conventions).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.13.0`;
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The most recent tagged release is `v0.14.1`;
 entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
@@ -16,7 +16,81 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   candidate/score/path and model-input events; `--trace-otlp` explicitly exports via standard OTLP
   HTTP/protobuf settings. Default output/status are unchanged; failures warn on stderr and shutdown
   is bounded/best-effort. Replaces the proposed shared-schema/YAML/local-only integration with
-  ordinary tracing spans and subscribers; no retention or delivery guarantee. (ADR 0029/G28)
+  ordinary tracing spans and subscribers; no retention or delivery guarantee. (ADR 0030/G28)
+
+### Changed
+
+- **Namespaced note skills with broader intent triggers.** `vagus-create-note`, `vagus-search`, and
+  manual-only `vagus-process-inbox` replace the generic skill names. “Make a note” / “save this”
+  default to Vagus capture; “my notes” retrieval does not authorize creation. Explicit repo files,
+  release notes, and other notes apps override the default; filing still requires per-move approval.
+  Reinstall after upgrading to receive the changes. The installer backs up and retires recognized
+  unmodified legacy skills, but preserves unknown/custom copies and symlinks with a manual
+  reconciliation warning. CLI command names are unchanged.
+
+### Fixed
+
+- **Bounded search skill fallback.** Removed contradictory instructions to search again via
+  `find`/`grep`/`Read` after the one allowed retry. Primary presented notes retain their existing
+  provenance/counter bookkeeping; the bounded retry remains unticked and preserves any exact
+  `--since` window.
+
+## [0.14.1] — 2026-09-12
+
+### Fixed
+
+- **Bundled skills: pi argument wording, a create-note duplicate-on-retry warning, and
+  canonical-source headers.** pi appends `/skill:create-note` arguments as plain text after the
+  expanded skill block, not as `User:` text; the skill and `skills/README.md` now say so. The
+  create-note skill also warns that `add-note` writes the note before indexing it, so a killed or
+  timed-out call can leave the note in `00-Inbox/` without printing its path. Check the inbox before
+  retrying, because a retry creates a duplicate. Every bundled skill now opens with the same
+  canonical-source comment naming `skills/<name>/SKILL.md` in this repo, so drift found in an
+  installed copy gets fixed here. It replaces the search skill's old comment, which named only the
+  Claude Code copy and said a hand edit was silently overwritten; `vagus skills install` actually
+  moves it to `SKILL.md.bak`. Re-run `vagus skills install` to pick up the changes.
+
+## [0.14.0] — 2026-09-12
+
+### Fixed
+
+- **An interrupted `vagus index`/`reindex` no longer strands notes outside full-text search.** SQLite
+  was written file by file while tantivy committed once at the very end, so a killed run could leave
+  notes fully embedded but missing from BM25 for good: every later run skipped them by mtime, and
+  `vagus doctor` still printed `[ok]`. Index runs now commit every 64 files or 30 seconds and mark a
+  note current only after the commit that covers it. The next run restores the uncommitted batch,
+  keeping its stored embeddings unless a note changed or its embedding never finished. An index
+  already in that state repairs itself on the next `vagus index` or search refresh, from stored
+  chunks, without re-embedding. (ADR 0029)
+- **Changing how vagus embeds documents now forces a rebuild instead of silently mixing vectors.** The
+  index pinned the embedding model and dimensions but not the document prompt prefix, token limit, or
+  normalization. A release that changed one would have kept every unchanged note's old vectors next to
+  new notes' vectors, ranking the old notes worse while `vagus doctor` said `[ok]`. The index now pins
+  the whole document recipe: `vagus index` refuses with a `vagus reindex` hint, the automatic refresh
+  in `vagus search` skips, an interrupted rebuild won't resume or reuse vectors across the change, and
+  `vagus doctor` flags it. Existing indexes record the recipe on their next run without re-embedding.
+  (G4, ADR 0006)
+
+### Added
+
+- **Resumable, graceful long index runs.** Ctrl-C during an index run finishes the current note,
+  commits, and exits with a resume hint (press again to exit immediately). An interrupted `vagus reindex`
+  picks up from its last checkpoint on the next `vagus index` or `vagus reindex` instead of starting
+  over. `vagus search`, `add-note`, and `file` warn and leave an unfinished rebuild alone rather than
+  quietly embedding the rest of the vault. Long runs print progress on stderr, and `vagus doctor` now
+  reports BM25 docs vs chunks and any interrupted run. (ADR 0029)
+
+## [0.13.1] — 2026-08-25
+
+### Fixed
+
+- **`/search` skill: tick survives a manual fallback.** If retrieval comes up empty and the agent
+  falls back to `find`/`grep`/a direct `Read` under `~/brain` to locate the cited note some other
+  way, the skill now still records a counter-only `vagus tick` for it. Previously the tick step was
+  only reachable from inside the retrieve→grade→present loop, so notes answered from off-script
+  lookups never got ticked — undercounting `vagus fame` with no error surfaced. Re-run
+  `vagus skills install` to pick up the change. Also adds a note pointing at the skill's canonical
+  source (this repo) so a stale installed copy gets fixed upstream instead of hand-patched in place.
 
 ### Changed
 
@@ -275,7 +349,10 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   (ADR 0017), and `vagus file --stats` per-step timing. See git history for detail; entries before this
   release predate the changelog.
 
-[Unreleased]: https://github.com/vasovagal/vagus/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/vasovagal/vagus/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/vasovagal/vagus/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/vasovagal/vagus/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/vasovagal/vagus/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/vasovagal/vagus/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/vasovagal/vagus/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/vasovagal/vagus/compare/v0.10.0...v0.11.0

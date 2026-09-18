@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "vagus"
-version = "0.13.0"
+version = "0.14.1"
 edition = "2024"
 rust-version = "1.96"
 description = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
@@ -28,7 +28,7 @@ exclude = [
 
 [features]
 # `generate` ships the tier-1 local generative rewriter (candle + a Qwen3 GGUF). `local-tracing`
-# compiles opt-in JSON/OTLP tracing (ADR 0029). Both ship in official
+# compiles opt-in JSON/OTLP tracing (ADR 0030). Both ship in official
 # builds; `--no-default-features` omits their dependencies and all tracing activation/instrumentation.
 default = ["generate", "local-tracing"]
 generate = ["dep:candle-core", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
@@ -41,6 +41,8 @@ chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive"] }
 dirs = "6.0.0"
 fastembed = "5.14.0"
+# SIGINT handling for graceful, resumable index runs (ADR 0029). Already in the lockfile via tantivy etc.
+libc = "0.2.186"
 pulldown-cmark = "0.13.4"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

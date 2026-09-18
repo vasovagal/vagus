@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS files(
   path       TEXT PRIMARY KEY,   -- vault-relative, e.g. "00-Inbox/idea.md"
   mtime      REAL NOT NULL,      -- seconds since epoch
   sha256     TEXT NOT NULL,
-  indexed_at INTEGER NOT NULL    -- unix secs
+  indexed_at INTEGER NOT NULL,   -- unix secs
+  pending    INTEGER NOT NULL DEFAULT 0  -- 1 until a checkpoint commit makes its tantivy docs durable. ADR 0029
 );
 
 CREATE TABLE IF NOT EXISTS chunks(
@@ -153,6 +154,27 @@ fn median(values: &mut [i64]) -> Option<f64> {
     })
 }
 
+/// Decode an f32 little-endian embedding BLOB (a trailing partial chunk is ignored).
+fn f32_blob(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
+}
+
+/// Map `id, ord, kind, heading_path, body` (the first five columns) back to a [`Chunk`].
+fn chunk_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
+    Ok(Chunk {
+        id: r.get(0)?,
+        ord: r.get::<_, i64>(1)? as usize,
+        kind: crate::chunk::ChunkKind::from_i64(r.get(2)?),
+        heading_path: r.get(3)?,
+        body: r.get(4)?,
+    })
+}
+
 impl Db {
     #[cfg_attr(
         feature = "local-tracing",
@@ -196,6 +218,15 @@ impl Db {
             )?;
         }
         Self::backfill_vec_keys(conn)?;
+        // `files.pending` (ADR 0029): pre-existing rows were written by single-commit runs and default
+        // to current; the BM25 census repairs any of them that a killed run stranded.
+        let file_columns: HashSet<String> = conn
+            .prepare("PRAGMA table_info(files)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !file_columns.contains("pending") {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN pending INTEGER NOT NULL DEFAULT 0;")?;
+        }
         Ok(())
     }
 
@@ -247,6 +278,12 @@ impl Db {
             "INSERT INTO meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=?2",
             params![k, v],
         )?;
+        Ok(())
+    }
+
+    pub fn meta_delete(&self, k: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM meta WHERE k=?1", params![k])?;
         Ok(())
     }
 
@@ -305,6 +342,42 @@ impl Db {
              ON CONFLICT(path) DO UPDATE SET mtime=?2, sha256=?3, indexed_at=?4",
             params![path, mtime, sha256, indexed_at],
         )?;
+        Ok(())
+    }
+
+    /// Upsert a file row that is not yet durable in every store: its chunks and embeddings may land
+    /// in SQLite, but tantivy has not committed its docs. Until [`Self::finalize_pending_files`] runs,
+    /// the next index run redoes it instead of trusting the mtime/hash (ADR 0029).
+    pub fn upsert_file_pending(
+        &self,
+        path: &str,
+        mtime: f64,
+        sha256: &str,
+        indexed_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO files(path,mtime,sha256,indexed_at,pending) VALUES(?1,?2,?3,?4,1)
+             ON CONFLICT(path) DO UPDATE SET mtime=?2, sha256=?3, indexed_at=?4, pending=1",
+            params![path, mtime, sha256, indexed_at],
+        )?;
+        Ok(())
+    }
+
+    /// Bless the rows a checkpoint just committed. Call only after the tantivy commit that made their
+    /// docs durable, and only with this batch's paths: rows another, killed run left pending stay
+    /// pending until this run actually redoes them.
+    pub fn finalize_pending_files(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE files SET pending=0 WHERE path=?1")?;
+            for path in paths {
+                stmt.execute(params![path])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -387,14 +460,69 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Files whose prior replacement was interrupted with one or more chunk embeddings still NULL.
-    /// Loaded once per index run so the mtime hot path remains one hash lookup per file, not N SQL
-    /// queries.
-    pub fn files_with_unembedded_chunks(&self) -> Result<HashSet<String>> {
+    /// Files an index run must redo even though their mtime/hash look current: rows still `pending`
+    /// from a batch whose checkpoint commit never happened (ADR 0029), and files whose prior
+    /// replacement was interrupted with chunk embeddings still NULL (ADR 0022). Loaded once per index
+    /// run so the mtime hot path remains one hash lookup per file, not N SQL queries.
+    pub fn files_needing_repair(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path FROM files WHERE pending=1
+             UNION SELECT path FROM chunks WHERE embedding IS NULL",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A file's stored chunks in note order: exactly the text its tantivy docs were built from, so
+    /// BM25 can be restored without re-reading or re-embedding the note (ADR 0029).
+    pub fn chunks_for(&self, path: &str) -> Result<Vec<Chunk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ord, kind, heading_path, body FROM chunks WHERE path=?1 ORDER BY ord",
+        )?;
+        let rows = stmt.query_map(params![path], chunk_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A file's stored chunks with their embeddings (`None` while NULL), in note order. The reuse
+    /// check compares these against a fresh chunking before trusting the vectors (ADR 0029).
+    #[allow(clippy::type_complexity)]
+    pub fn chunk_rows_with_embeddings(&self, path: &str) -> Result<Vec<(Chunk, Option<Vec<f32>>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ord, kind, heading_path, body, embedding FROM chunks WHERE path=?1 ORDER BY ord",
+        )?;
+        let rows = stmt.query_map(params![path], |r| {
+            Ok((
+                chunk_from_row(r)?,
+                r.get::<_, Option<Vec<u8>>>(5)?
+                    .map(|bytes| f32_blob(&bytes)),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Rewrite the note-level filter columns (ADR 0017) on every chunk of `path`, for a redo that keeps
+    /// the stored chunks while the note's `created`/`source` frontmatter or mtime fallback may have moved.
+    pub fn set_note_filters(
+        &self,
+        path: &str,
+        created_at: Option<i64>,
+        source: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chunks SET created_at=?1, source=?2 WHERE path=?3",
+            params![created_at, source, path],
+        )?;
+        Ok(())
+    }
+
+    /// path -> stored chunk count, for the BM25 census against tantivy's per-path doc counts.
+    pub fn chunk_counts_by_path(&self) -> Result<HashMap<String, u64>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT path FROM chunks WHERE embedding IS NULL")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            .prepare("SELECT path, count(*) FROM chunks GROUP BY path")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -449,13 +577,7 @@ impl Db {
         let mut out = Vec::new();
         for row in rows {
             let (id, bytes) = row?;
-            let v: Vec<f32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect();
-            out.push((id, v));
+            out.push((id, f32_blob(&bytes)));
         }
         Ok(out)
     }

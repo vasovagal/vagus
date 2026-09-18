@@ -14,7 +14,7 @@ coding harness (Claude Code and pi).
   `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
   or recursively deletes an occupied vault.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
-  Also the create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
+  Also the vagus-create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
   the processing list by the same note-creation rule as search without requiring prior indexing.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
@@ -32,9 +32,9 @@ coding harness (Claude Code and pi).
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;
   forced usearch mutations persist, and incomplete embedding rows trigger implicit per-file repair.
   Every applicable `--since` uses one validated grammar, including hours, days, months, and years.
-- **F5 — Assisted filing.** The process-inbox skill has the agent propose a PARA destination + title +
+- **F5 — Assisted filing.** The vagus-process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
-- **F6 — Coding-agent skills.** Create-note, search, and process-inbox Agent Skills shell out to the
+- **F6 — Coding-agent skills.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` shell out to the
   `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
   10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), never pads, and
   atomically records only cited-note counters/provenance from its fixed unfiltered primary path.
@@ -85,7 +85,7 @@ coding harness (Claude Code and pi).
   research explicitly enables sensitive content. Standard private JSONL and explicit direct OTLP
   replace the proposed shared local-only schema; no ambient capture, credentials, or vault writes.
   Failures warn without changing functional output/status; shutdown is bounded/best-effort.
-  Compiled-out flags are inert. ([ADR 0029](./adr/0029-local-offline-tracing.md))
+  Compiled-out flags are inert. ([ADR 0030](./adr/0030-search-tracing.md))
 
 ## Scope (v1)
 

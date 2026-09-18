@@ -2,7 +2,10 @@
 
 - **Status:** Accepted (2026-07-29); **amended 2026-07-31** to persist forced usearch mutations and
   make incomplete embedding rows an implicit incremental repair set; **amended 2026-08-12** to use
-  the shared CLI duration grammar.
+  the shared CLI duration grammar; **amended 2026-09-12** by
+  [ADR 0029](./0029-checkpointed-resumable-indexing.md) — `files.pending` rows from an uncommitted
+  checkpoint batch join the implicit repair set, and notes missing from BM25 are restored from stored
+  chunks.
 
 ## Context
 

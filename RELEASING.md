@@ -2,9 +2,10 @@
 
 Releases are cut by pushing a `vX.Y.Z` tag. The `release` workflow then does *only* tag-specific work
 (Law 3): build native per-arch binaries and publish a GitHub release. It does **not** re-run the test
-matrix — the tag trusts the green `main` it was cut from. The Homebrew formula lives in the external
-shared tap (`vasovagal/homebrew-tap`) and is updated **manually** after the release — CI never writes
-the tap.
+matrix — the tag trusts the green `main` it was cut from. After every native asset uploads, the final job
+updates `vasovagal.github.io` through a Vagus-specific deploy key and commits `vagus bumped to X.Y.Z`.
+The Homebrew formula lives in the external shared tap (`vasovagal/homebrew-tap`) and is still updated
+**manually** after the release — CI never writes the tap.
 
 ## Cut a release
 
@@ -15,8 +16,11 @@ the tap.
    ```
 3. `release.yml` builds `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, and
    `x86_64-unknown-linux-gnu` on native runners (Law 1) and uploads `vagus-X.Y.Z-<target>.tar.gz` to the
-   GitHub release using the built-in `GITHUB_TOKEN`. It does **not** touch the Homebrew formula.
-4. After the release, manually update the tap (see below) — CI never writes the tap.
+   GitHub release using the built-in `GITHUB_TOKEN`.
+4. After all three assets are present, the workflow validates the public release and updates the landing
+   page with the repository-scoped `LANDING_PAGE_DEPLOY_KEY`. Workflow reruns are idempotent, and the site
+   rejects an older tag rather than downgrading its displayed version.
+5. After the release, manually update the tap (see below) — CI never writes the tap.
 
 Re-run-safe (Law 19): re-running re-uploads with `--clobber`.
 

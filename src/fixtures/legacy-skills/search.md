@@ -8,6 +8,11 @@ disable-model-invocation: false
 user-invocable: true
 ---
 
+<!-- Canonical source: github.com/vasovagal/vagus, skills/search/SKILL.md, embedded in the
+     vagus binary. `vagus skills install` writes ~/.claude/skills/search/ and
+     ~/.pi/agent/skills/search/; the next install replaces a hand-edited copy and moves
+     the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
+
 # Search the vault (tier-2 agent judge)
 
 The binary retrieves and cross-encodes; **you** make the final relevance decision from full chunk
@@ -101,6 +106,12 @@ Do not include the query. Escape an embedded single quote as `'\''`; never inclu
 For a primary `--since` or explicit `--chunks` search, use one counter-only
 `vagus tick '<path1>' '<path2>'`. The step-4 retry remains unticked. Never relay/retry tick output or
 let failure block the answer.
+
+A tick reflects what you presented, not which tool found it. If step 1/4 retrieval comes up empty and
+you fall back to `find`/`grep`/a direct `Read` under `~/brain` to locate the note some other way, and
+you still cite it as the answer, tick it anyway with the same counter-only
+`vagus tick '<path>'` before ending your turn — do not silently drop this step just because the
+search loop didn't produce it.
 
 ## Scope
 

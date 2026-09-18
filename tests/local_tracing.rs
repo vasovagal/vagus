@@ -284,6 +284,45 @@ mod enabled {
     }
 
     #[test]
+    fn traced_search_preserves_upstream_deferred_auto_refresh() {
+        let s = Sandbox::new();
+        s.fixture();
+        let db = rusqlite::Connection::open(s.0.join("data/meta.db")).unwrap();
+        db.execute("INSERT INTO meta(k,v) VALUES ('rebuild_pending','1')", [])
+            .unwrap();
+        let args = [
+            "search", QUERY, "--mode", "bm25", "--all", "--json", "--full",
+        ];
+        let baseline = s.command().args(args).output().unwrap();
+        assert!(baseline.status.success());
+        assert!(String::from_utf8_lossy(&baseline.stderr).contains("vagus index"));
+        let file = s.trace("deferred");
+        let traced = s
+            .command()
+            .arg("--trace-file")
+            .arg(&file)
+            .args(args)
+            .output()
+            .unwrap();
+        equal(&baseline, &traced);
+        let values = records(&file);
+        assert!(
+            values
+                .iter()
+                .any(|r| r["fields"]["message"] == "refresh outcome"
+                    && r["fields"]["index_refreshed"] == false)
+        );
+        assert!(!values.iter().any(|r| r["span"]["name"] == "model.load"));
+        assert_eq!(
+            db.query_row("SELECT v FROM meta WHERE k='rebuild_pending'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
     fn invalid_file_and_vault_alias_fail_visibly_without_changing_result() {
         let s = Sandbox::new();
         s.fixture();
@@ -317,6 +356,51 @@ mod enabled {
         let output = s.search().arg("--trace-file").arg(&file).output().unwrap();
         assert!(String::from_utf8_lossy(&output.stderr).contains("tracing initialization failed"));
         assert_eq!(before, fs::read(file).unwrap());
+    }
+
+    #[test]
+    fn parent_components_in_trace_or_vault_paths_reject_before_directory_creation() {
+        let s = Sandbox::new();
+        fs::create_dir_all(s.0.join("vault/subdir")).unwrap();
+        fs::create_dir_all(s.0.join("outside")).unwrap();
+        symlink(s.0.join("vault/subdir"), s.0.join("outside/alias")).unwrap();
+        for (vault, file, forbidden) in [
+            (
+                s.0.join("vault"),
+                s.0.join("outside/alias/../trace-missing/run.jsonl"),
+                s.0.join("vault/trace-missing"),
+            ),
+            (
+                s.0.join("outside/alias/.."),
+                s.0.join("vault/vault-missing/run.jsonl"),
+                s.0.join("vault/vault-missing"),
+            ),
+        ] {
+            let baseline = s
+                .command()
+                .env("VAGUS_VAULT", &vault)
+                .arg("tutorial")
+                .output()
+                .unwrap();
+            let traced = s
+                .command()
+                .env("VAGUS_VAULT", &vault)
+                .args(["--trace-profile", "research", "--trace-file"])
+                .arg(&file)
+                .arg("tutorial")
+                .output()
+                .unwrap();
+            assert_eq!(traced.status.code(), baseline.status.code());
+            assert_eq!(traced.stdout, baseline.stdout);
+            assert!(
+                String::from_utf8_lossy(&traced.stderr).contains("tracing initialization failed")
+            );
+            assert!(
+                !forbidden.exists(),
+                "must not create directories before rejecting traversal"
+            );
+        }
+        assert!(!s.0.join("outside/trace-missing").exists());
     }
 
     #[test]
@@ -392,7 +476,7 @@ mod enabled {
     }
 
     /// A real HTTP/protobuf OTLP receiver, decoding standard wire spans (no mock exporter).
-    fn receive(listener: TcpListener) -> ExportTraceServiceRequest {
+    fn receive(listener: TcpListener, expected_path: &str) -> ExportTraceServiceRequest {
         listener.set_nonblocking(true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let (mut socket, _) = loop {
@@ -413,7 +497,7 @@ mod enabled {
             bytes.extend_from_slice(&buf[..n]);
             if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
                 let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
-                assert!(headers.starts_with("post /v1/traces http/1.1"));
+                assert!(headers.starts_with(&format!("post {expected_path} http/1.1")));
                 assert!(headers.contains("application/x-protobuf"));
                 let size: usize = headers
                     .lines()
@@ -444,7 +528,7 @@ mod enabled {
         for profile in ["safe", "research"] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let endpoint = format!("http://{}", listener.local_addr().unwrap());
-            let receiver = std::thread::spawn(move || receive(listener));
+            let receiver = std::thread::spawn(move || receive(listener, "/v1/traces"));
             let output = s
                 .search()
                 .args(["--trace-profile", profile, "--trace-otlp"])
@@ -485,6 +569,72 @@ mod enabled {
                 !s.0.join("state").exists(),
                 "OTLP-only must not create local files"
             );
+        }
+    }
+
+    #[test]
+    fn otlp_endpoint_precedence_and_base_paths_are_explicit() {
+        let s = Sandbox::new();
+        let baseline = s.command().arg("tutorial").output().unwrap();
+        for (generic_suffix, traces_suffix, expected_path) in [
+            (Some("/base"), None, "/base/v1/traces"),
+            (Some("/base/"), None, "/base/v1/traces"),
+            (None, Some("/complete"), "/complete"),
+            (Some("/wrong"), Some("/complete"), "/complete"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let receiver = std::thread::spawn(move || receive(listener, expected_path));
+            let mut cmd = s.command();
+            cmd.args(["--trace-otlp", "tutorial"]);
+            if let Some(suffix) = generic_suffix {
+                cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", format!("{endpoint}{suffix}"));
+            }
+            if let Some(suffix) = traces_suffix {
+                cmd.env(
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                    format!("{endpoint}{suffix}"),
+                );
+            }
+            equal(&baseline, &cmd.output().unwrap());
+            assert!(!receiver.join().unwrap().resource_spans.is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_selected_otlp_endpoint_never_falls_back() {
+        let s = Sandbox::new();
+        let baseline = s.command().arg("tutorial").output().unwrap();
+        // A valid lower-priority destination must not receive research events when the selected
+        // traces endpoint is malformed. Generic malformed values must fail initialization too.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        for selected in [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        ] {
+            for invalid in ["not a url", "", "relative/path", "http://bad host"] {
+                let output = s
+                    .command()
+                    .env(
+                        "OTEL_EXPORTER_OTLP_ENDPOINT",
+                        format!("http://{}", listener.local_addr().unwrap()),
+                    )
+                    .env(selected, invalid)
+                    .args(["--trace-profile", "research", "--trace-otlp", "tutorial"])
+                    .output()
+                    .unwrap();
+                assert_eq!(output.status.code(), baseline.status.code());
+                assert_eq!(output.stdout, baseline.stdout);
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("tracing initialization failed")
+                );
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
         }
     }
 

@@ -63,7 +63,7 @@ filterable by `--since`.
   back-fill the new columns. No manual `reindex` step for users.
 - **`--json` shape stable (G13).** `created`/`source` are added as OPTIONAL Hit
   fields (`skip_serializing_if = Option::is_none`), so the default Hit JSON is
-  byte-identical when the flags are unused; the `/search` skill keeps parsing it.
+  byte-identical when the flags are unused; the `/vagus-search` skill keeps parsing it.
 
 ## Consequences
 
