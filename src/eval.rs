@@ -479,6 +479,7 @@ fn index_snapshot(db: &Db, files: &HashMap<String, (f64, String)>) -> Result<Ind
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "eval", skip_all, fields(k, mode = ?mode, rerank, rerank_context, exact_requested = exact)))]
 fn evaluate(
     cfg: &Config,
     label_content: &str,
@@ -555,7 +556,12 @@ fn evaluate(
     };
 
     let mut reports = Vec::with_capacity(labels.len());
-    for label in &labels {
+    for (query_id, label) in labels.iter().enumerate() {
+        #[cfg(not(feature = "local-tracing"))]
+        let _ = query_id;
+        #[cfg(feature = "local-tracing")]
+        let _eval_query =
+            tracing::info_span!(target: "vagus::timing", "eval.query", query_id).entered();
         let (hits, _elided, _query_meta) = search::query(
             cfg,
             &label.query,

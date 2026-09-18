@@ -241,6 +241,10 @@ struct VaultFile {
 /// Build the complete path+mtime list before mutating any derived store (ADR 0022). Besides giving
 /// `--since` one stable selection snapshot, this prevents a late walk/stat failure from being
 /// mistaken for deletions after an index run has already begun writing.
+#[cfg_attr(
+    feature = "local-tracing",
+    tracing::instrument(target = "vagus::timing", name = "index.snapshot", skip_all)
+)]
 fn snapshot_vault(vault: &Path) -> Result<Vec<VaultFile>> {
     walk_vault(vault)?
         .into_iter()
@@ -282,6 +286,7 @@ pub fn run(cfg: &Config, mode: IndexMode) -> Result<IndexStats> {
 ///
 /// Ctrl-C during the run finishes the current file, commits a checkpoint, and returns
 /// [`Interrupted`]; a second Ctrl-C exits immediately.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "index", skip_all, fields(full_requested = mode.is_full(), windowed = matches!(mode, IndexMode::Since { .. }))))]
 pub fn run_timed(
     cfg: &Config,
     mode: IndexMode,
@@ -408,6 +413,8 @@ fn run_with(
         eprintln!("vagus: embedding/chunk format changed — reindexing the whole vault (one-time)…");
     }
     let full_reindex = mode.is_full();
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", full_reindex, auto_reindex, scanned = vault_files.len(), "index mode");
     if full_reindex {
         // Mark before wiping, so a kill at any later point leaves an index that auto-refresh won't
         // resume and whose sidecar is known stale.
@@ -521,6 +528,9 @@ fn run_with(
     let mut bm25_healed = 0usize;
     let mut vec_marked = false;
 
+    #[cfg(feature = "local-tracing")]
+    let _index_reconcile =
+        tracing::info_span!(target: "vagus::timing", "index.reconcile").entered();
     for (position, file) in vault_files.into_iter().enumerate() {
         if interrupted() {
             // Graceful stop: make the work so far durable, but skip deletions (`seen` is incomplete),
@@ -714,9 +724,15 @@ fn run_with(
 
     checkpoint(&db, &mut writer, &mut batch, timings.as_deref_mut())?;
     let t0 = Instant::now();
+    #[cfg(feature = "local-tracing")]
+    drop(_index_reconcile);
+    #[cfg(feature = "local-tracing")]
+    let _lexical_merge = tracing::info_span!(target: "vagus::timing", "lexical.merge").entered();
     // Let tantivy's merge policy finish any scheduled merges so segments stay bounded instead of
     // accumulating across checkpoint commits (the writer would otherwise drop before they run).
     writer.wait_merging_threads()?;
+    #[cfg(feature = "local-tracing")]
+    drop(_lexical_merge);
     if let Some(t) = timings.as_mut() {
         t.commit_ms += elapsed_ms(t0);
     }
@@ -759,12 +775,15 @@ fn run_with(
     if let Some(t) = timings.as_mut() {
         t.vector_ms += elapsed_ms(t0);
     }
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", scanned = stats.scanned, new = stats.new, changed = stats.changed, refreshed = stats.refreshed, removed = stats.removed, "index complete");
     Ok(stats)
 }
 
 /// Make the work so far durable: commit tantivy, then bless the `pending` rows of the files this batch
 /// indexed. The order is the invariant — a row never looks current before its BM25 docs are on disk
 /// (ADR 0029). Rows a killed run left pending are not in `batch` until this run redoes them.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "lexical.commit", skip_all, fields(files = batch.len())))]
 fn checkpoint(
     db: &Db,
     writer: &mut IndexWriter,

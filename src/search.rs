@@ -174,7 +174,7 @@ fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Mode {
     /// BM25 + semantic, fused with RRF.
     Hybrid,
@@ -452,6 +452,7 @@ fn passes_min_relevance(hit: &Hit, floor: f32) -> bool {
 /// Resolve a ranked `(vec_key, cosine)` list from a [`crate::vector::VectorIndex`] back to
 /// `(chunk_id, cosine)`, preserving rank order and dropping any key with no surviving chunk row
 /// (ADR 0019). usearch returns u64 keys; the reverse map lives in the indexed `chunks.vec_key` column.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "vector.search", skip_all, fields(backend = vindex.backend_name(), limit)))]
 fn vec_topk(
     vindex: &dyn crate::vector::VectorIndex,
     db: &Db,
@@ -461,15 +462,19 @@ fn vec_topk(
     let hits = vindex.search(qv, limit)?;
     let keys: Vec<u64> = hits.iter().map(|(k, _)| *k).collect();
     let map = db.chunk_ids_for_keys(&keys)?;
-    Ok(hits
+    let ranked: Vec<_> = hits
         .into_iter()
         .filter_map(|(k, cos)| map.get(&k).map(|id| (id.clone(), cos)))
-        .collect())
+        .collect();
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = ?ranked, "vector results");
+    Ok(ranked)
 }
 
 /// Semantic top-k: embed the query, then rank via the vector index — usearch HNSW, or the exact
 /// brute-force backend when `exact`, on a small corpus, or before the sidecar exists (ADR 0019).
 /// Returns (chunk_id, cosine) in rank order.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "semantic.retrieve", skip_all, fields(limit, exact_requested = exact)))]
 fn vec_search(
     cfg: &Config,
     db: &Db,
@@ -484,6 +489,7 @@ fn vec_search(
 }
 
 /// Reciprocal Rank Fusion over several ranked id-lists (1-based rank). Returns (id, fused_score).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "fusion", skip_all, fields(policy = FUSION_POLICY, lists = lists.len(), limit)))]
 fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     let mut score: HashMap<String, f32> = HashMap::new();
     for list in lists {
@@ -497,11 +503,14 @@ fn rrf(lists: &[Vec<String>], limit: usize) -> Vec<(String, f32)> {
     // into note selection and full-body context. Scores/formula remain exactly G8 RRF k=60.
     fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     fused.truncate(limit);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = ?fused, "fusion results");
     fused
 }
 
 /// Resolve ranked `Scored` into displayable hits (joining SQLite for path/heading/body). `keep_body`
 /// retains the full chunk body on the hit (for `--full` output and for cross-encoder reranking).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "hydrate", skip_all, fields(count = ranked.len(), keep_body)))]
 fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for s in ranked {
@@ -533,6 +542,8 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
             });
         }
     }
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", candidates = %serde_json::to_string(&hits).unwrap_or_default(), "hydrated candidates");
     Ok(hits)
 }
 
@@ -540,6 +551,7 @@ fn hydrate(db: &Db, ranked: Vec<Scored>, keep_body: bool) -> Result<Vec<Hit>> {
 /// byte-for-byte body clone with no extra DB lookup. An opt-in radius reconstructs only each hit's
 /// adjacent in-note chunks, then delegates exact tokenizer-budget fitting to the loaded reranker
 /// (ADR 0015). Returned Hit bodies/snippets remain the matched center chunk.
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "rerank.prepare", skip_all, fields(count = hits.len(), context_radius = reranker.context_radius())))]
 fn rerank_documents(
     db: &Db,
     reranker: &Reranker,
@@ -587,6 +599,7 @@ fn rerank_documents(
 /// `chunks` skips note-level dedup, returning raw chunk hits (ADRs 0015/0020). A retained finite
 /// original-query cosine also populates internal `Hit.relevance`; `run` controls opt-in rendering.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "query", skip_all, fields(mode = ?mode, limit, rerank, rerank_context, exact_requested = exact, chunks, filtered = since.is_some() || source.is_some(), scoped = !scope.is_empty(), full)))]
 pub fn query(
     cfg: &Config,
     q: &str,
@@ -603,6 +616,8 @@ pub fn query(
     chunks: bool,
     score_floor: bool,
 ) -> Result<(Vec<Hit>, usize, QueryMeta)> {
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, "query input");
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let db = Db::open(&cfg.db_path())?;
@@ -716,6 +731,8 @@ pub fn query(
     // fusion and any rerank reordering), exactly like `apply_scope` — it preserves their order and
     // leaves `rrf()` pure (G7/G8). Runs BEFORE truncation so a filtered query still fills `limit`
     // from the deeper pool pulled above.
+    #[cfg(feature = "local-tracing")]
+    let _postprocess = tracing::info_span!(target: "vagus::timing", "postprocess").entered();
     let mut hits = apply_filters(hits, since, source);
 
     // Note-level dedup (ADR 0020): one best-chunk hit per note, so the truncation below makes
@@ -737,6 +754,8 @@ pub fn query(
         t.print(if rerank { "rerank" } else { "plain" });
     }
     let (hits, elided) = apply_scope(hits, scope);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), elided, source_limit, fusion_limit = pool, candidate_pool, rerank_cap = actual_rerank_cap, "query results");
     Ok((
         hits,
         elided,
@@ -847,6 +866,7 @@ fn apply_rerank_prefix(hits: Vec<Hit>, cap: usize, order: Vec<(usize, f32)>) -> 
 /// Offline, no coding agent — the local sibling of the Opus search skill.
 #[cfg(feature = "generate")]
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "smart.query", skip_all, fields(limit, rerank_context, exact_requested = exact, chunks, filtered = since.is_some() || source.is_some(), scoped = !scope.is_empty(), full)))]
 fn smart_query(
     cfg: &Config,
     q: &str,
@@ -863,6 +883,8 @@ fn smart_query(
 ) -> Result<(Vec<Hit>, usize, QueryMeta)> {
     use crate::rewrite::{Kind, Rewriter, Variant};
 
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, "query input");
     let t_total = Instant::now();
     let mut t = SmartTimings::default();
     let pool = (limit * 4).max(RERANK_POOL_MIN);
@@ -877,21 +899,52 @@ fn smart_query(
     // graceful fallback still holds.
     let mut emb_warm: Option<JoinHandle<Result<Embedder>>> = Some({
         let cache = cfg.cache_dir.clone();
-        std::thread::spawn(move || Embedder::new(&cache))
+        #[cfg(feature = "local-tracing")]
+        let (dispatcher, parent) = (
+            tracing::dispatcher::get_default(Clone::clone),
+            tracing::Span::current(),
+        );
+        std::thread::spawn(move || {
+            #[cfg(feature = "local-tracing")]
+            let _dispatcher = tracing::dispatcher::set_default(&dispatcher);
+            #[cfg(feature = "local-tracing")]
+            let _parent = parent.enter();
+            Embedder::new(&cache)
+        })
     });
     let rr_warm: JoinHandle<Result<Reranker>> = {
         let cache = cfg.cache_dir.clone();
-        std::thread::spawn(move || Reranker::new(&cache, rerank_context))
+        #[cfg(feature = "local-tracing")]
+        let (dispatcher, parent) = (
+            tracing::dispatcher::get_default(Clone::clone),
+            tracing::Span::current(),
+        );
+        std::thread::spawn(move || {
+            #[cfg(feature = "local-tracing")]
+            let _dispatcher = tracing::dispatcher::set_default(&dispatcher);
+            #[cfg(feature = "local-tracing")]
+            let _parent = parent.enter();
+            Reranker::new(&cache, rerank_context)
+        })
     };
 
     // 1) Expand the query into typed variants. The rewriter is deterministic (fixed seed), so consult
     //    the cache first (Fix C); a hit skips the LLM entirely — load + decode — which is the big win
     //    for iterative re-querying. On a miss, run the local LLM (the long pole; the prewarm threads
     //    load meanwhile), then store the result. The Rewriter is dropped after expanding, freeing RAM.
+    #[cfg(feature = "local-tracing")]
+    let _rewrite = tracing::info_span!(target: "vagus::timing", "rewrite").entered();
     let cache_key = crate::rewrite::expansion_cache_key(q);
+    #[cfg(feature = "local-tracing")]
+    let _rewrite_cache = tracing::info_span!(target: "vagus::timing", "rewrite.cache").entered();
+
     let cached: Option<Vec<Variant>> = db
         .expansion_cache_get(&cache_key)?
         .and_then(|json| serde_json::from_str(&json).ok());
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", hit = cached.is_some(), "rewrite cache");
+    #[cfg(feature = "local-tracing")]
+    drop(_rewrite_cache);
     let variants = match cached {
         // Cache hit: rewrite_load_ms / rewrite_decode_ms stay 0.0 — no model was touched.
         Some(v) => v,
@@ -909,6 +962,11 @@ fn smart_query(
             v
         }
     };
+
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query = q, variants = %serde_json::to_string(&variants).unwrap_or_default(), "rewrite output");
+    #[cfg(feature = "local-tracing")]
+    drop(_rewrite);
 
     // 2) One ranked id-list per plan: the original as BM25 + vector, each lex variant via BM25, each
     //    vec/hyde variant via vector. Load the embedder + open the vector index once (lazily).
@@ -1008,6 +1066,8 @@ fn smart_query(
 
     // Post-rank `--since`/`--source` filter (ADR 0017) — the same separate stage as the plain path,
     // before truncation so the deeper smart pool can still fill `limit`. RRF/rerank order untouched.
+    #[cfg(feature = "local-tracing")]
+    let _postprocess = tracing::info_span!(target: "vagus::timing", "postprocess").entered();
     let mut hits = apply_filters(hits, since, source);
     // Note-level dedup (ADR 0020), same stage order as the plain path (pool is already 4x here).
     if !chunks {
@@ -1024,6 +1084,8 @@ fn smart_query(
         t.print("smart");
     }
     let (hits, elided) = apply_scope(hits, scope);
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), elided, source_limit = pool, fusion_limit = pool, candidate_pool, rerank_cap = actual_rerank_cap, "query results");
     Ok((
         hits,
         elided,
@@ -1038,6 +1100,7 @@ fn smart_query(
 
 /// Drop hits whose path matches the active scope, returning the kept hits and the number elided.
 /// "Remove + notice" semantics: filters the already-ranked top results in place (no backfill).
+#[cfg_attr(feature = "local-tracing", tracing::instrument(target = "vagus::timing", name = "scope", skip_all, fields(enabled = !scope.is_empty(), count = hits.len())))]
 fn apply_scope(hits: Vec<Hit>, scope: &Scope) -> (Vec<Hit>, usize) {
     if scope.is_empty() {
         return (hits, 0);
@@ -1090,12 +1153,16 @@ fn run_query(
         ) {
             Ok(r) => return Ok(r),
             Err(e) => {
+                #[cfg(feature = "local-tracing")]
+                tracing::info!(target: "vagus::timing", outcome = "fallback", "smart unavailable; using rerank");
                 eprintln!("vagus: local rewriter unavailable ({e}); falling back to --rerank")
             }
         }
     }
     #[cfg(not(feature = "generate"))]
     if smart {
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::timing", outcome = "fallback", "generate feature absent; using rerank");
         eprintln!(
             "vagus: built without the local rewriter (`generate` feature); --smart falls back to --rerank"
         );
@@ -1119,6 +1186,15 @@ fn run_query(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(
+    feature = "local-tracing",
+    tracing::instrument(
+        target = "vagus::timing",
+        name = "search",
+        skip_all,
+        fields(smart, no_index, json, exhaustive)
+    )
+)]
 pub fn run(
     cfg: &Config,
     q: &str,
@@ -1180,6 +1256,9 @@ pub fn run(
     let index_refreshed = if no_index {
         false
     } else {
+        #[cfg(feature = "local-tracing")]
+        let _index_refresh =
+            tracing::info_span!(target: "vagus::timing", "index.refresh").entered();
         // AutoRefresh: an interrupted rebuild is left for an explicit `vagus index` (ADR 0029).
         match index::run(cfg, index::IndexMode::AutoRefresh) {
             Ok(stats) => !stats.deferred,
@@ -1191,6 +1270,8 @@ pub fn run(
             }
         }
     };
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", index_refreshed, "refresh outcome");
     // Fingerprint the executable before retrieval as well as the index. A concurrent binary
     // replacement must not make the completed run claim code bytes this process did not execute.
     let provenance_binary = tick_provenance
@@ -1227,6 +1308,9 @@ pub fn run(
         chunks,
         score_floor,
     )?;
+    #[cfg(feature = "local-tracing")]
+    let _postprocess_output =
+        tracing::info_span!(target: "vagus::timing", "postprocess.output").entered();
     // Explicit quality floor: when supplied, the caller owns tail selection and the adaptive gate
     // below stays out of the way.
     if let Some(floor) = min_score {
@@ -1276,6 +1360,14 @@ pub fn run(
             hit.relevance_policy = None;
         }
     }
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::timing", count = hits.len(), tidy_omitted, "output results");
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", results = %serde_json::to_string(&hits).unwrap_or_default(), "final results");
+    #[cfg(feature = "local-tracing")]
+    drop(_postprocess_output);
+    #[cfg(feature = "local-tracing")]
+    let _output = tracing::info_span!(target: "vagus::timing", "output").entered();
     if tick_provenance {
         let provenance_after = provenance_index_snapshot(cfg)?;
         if provenance_before.as_ref() != Some(&provenance_after) {

@@ -9,6 +9,15 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in search performance tracing.** `--trace` writes private standard JSONL timings, counts,
+  settings and outcomes. `--trace-profile research` explicitly enables sensitive query, rewrite,
+  candidate/score/path and model-input events; `--trace-otlp` explicitly exports via standard OTLP
+  HTTP/protobuf settings. Default output/status are unchanged; failures warn on stderr and shutdown
+  is bounded/best-effort. Replaces the proposed shared-schema/YAML/local-only integration with
+  ordinary tracing spans and subscribers; no retention or delivery guarantee. (ADR 0030/G28)
+
 ### Changed
 
 - **Namespaced note skills with broader intent triggers.** `vagus-create-note`, `vagus-search`, and

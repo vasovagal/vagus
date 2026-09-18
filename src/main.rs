@@ -27,6 +27,8 @@ mod rewrite;
 mod scope;
 mod search;
 mod skills;
+#[cfg(feature = "local-tracing")]
+mod telemetry;
 mod ticks;
 mod util;
 mod vector;
@@ -67,6 +69,19 @@ fn unit_interval(raw: &str) -> std::result::Result<f32, String> {
     )
 )]
 struct Cli {
+    /// Enable safe timing/count tracing to a private JSONL file (ADR 0030).
+    /// This remains accepted but inert when built without the `local-tracing` feature.
+    #[arg(long, global = true)]
+    trace: bool,
+    /// Enable safe metadata or sensitive research content (queries, paths, model inputs).
+    #[arg(long, global = true, value_enum)]
+    trace_profile: Option<TraceProfile>,
+    /// New JSONL file in a private directory outside the vault (never overwritten).
+    #[arg(long, global = true)]
+    trace_file: Option<std::path::PathBuf>,
+    /// Export directly using OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT (HTTP/protobuf).
+    #[arg(long, global = true)]
+    trace_otlp: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -385,6 +400,38 @@ enum VectorsAction {
     },
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum TraceProfile {
+    Safe,
+    Research,
+}
+
+impl Command {
+    #[cfg(feature = "local-tracing")]
+    fn trace_name(&self) -> &'static str {
+        match self {
+            Self::Init { .. } => "init",
+            Self::Index => "index",
+            Self::Reindex { .. } => "reindex",
+            Self::Compact => "compact",
+            Self::Search { .. } => "search",
+            Self::Eval { .. } => "eval",
+            Self::EvalGate { .. } => "eval-gate",
+            Self::Rewrite { .. } => "rewrite",
+            Self::Doctor { .. } => "doctor",
+            Self::Status => "status",
+            Self::Plugins | Self::External(_) => "plugin",
+            _ => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandCompletion {
+    Completed,
+    ExternalExit(i32),
+}
+
 fn main() -> Result<()> {
     let result = run_cli();
     // A Ctrl-C'd index run already committed its progress; say how to resume and exit like SIGINT.
@@ -399,6 +446,43 @@ fn main() -> Result<()> {
 
 fn run_cli() -> Result<()> {
     let cli = Cli::parse();
+    match run_with_optional_tracing(cli)? {
+        CommandCompletion::Completed => Ok(()),
+        // Plugin status propagation happens only after the tracing wrapper has closed the root span
+        // and given the exporter its bounded best-effort shutdown.
+        CommandCompletion::ExternalExit(code) => std::process::exit(code),
+    }
+}
+
+fn run_with_optional_tracing(cli: Cli) -> Result<CommandCompletion> {
+    #[cfg(feature = "local-tracing")]
+    let _guard = match telemetry::init(&cli) {
+        Ok(guard) => guard,
+        Err(_) => {
+            // Never print raw configuration errors: endpoint/header/path values may be sensitive.
+            eprintln!(
+                "vagus: tracing initialization failed; tracing disabled (check profile, endpoint, and private output directory)"
+            );
+            None
+        }
+    };
+    #[cfg(feature = "local-tracing")]
+    let command =
+        tracing::info_span!(target: "vagus::timing", "command", command = cli.command.trace_name());
+    let result = {
+        #[cfg(feature = "local-tracing")]
+        let _entered = command.enter();
+        let result = run_command(cli);
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::timing", success = matches!(&result, Ok(CommandCompletion::Completed)), "command outcome");
+        result
+    };
+    #[cfg(feature = "local-tracing")]
+    drop(command); // Close before the SDK's bounded best-effort shutdown, including plugin exits.
+    result
+}
+
+fn run_command(cli: Cli) -> Result<CommandCompletion> {
     // Pure report comparison: no vault/config/model/index is needed or touched.
     if let Command::EvalGate {
         baseline,
@@ -406,11 +490,12 @@ fn run_cli() -> Result<()> {
         json,
     } = &cli.command
     {
-        return eval::run_gate(baseline, candidate, *json);
+        eval::run_gate(baseline, candidate, *json)?;
+        return Ok(CommandCompletion::Completed);
     }
+
     let cfg = Config::load()?;
-    // Every command that may open/create meta.db or a model cache enforces G1 first. Doctor performs
-    // the same validation itself so it can print a diagnostic instead of failing before its report.
+    // Doctor validates storage itself to retain its diagnostic report.
     if !matches!(&cli.command, Command::Doctor { .. }) {
         cfg.validate_storage_separation()?;
     }
@@ -575,9 +660,14 @@ fn run_cli() -> Result<()> {
         )?,
         Command::Fame { limit, all, json } => ticks::fame(&cfg, limit, all, json)?,
         Command::Ticks { limit, all, json } => ticks::ticks_report(&cfg, limit, all, json)?,
-        Command::External(argv) => plugin::dispatch(&cfg, &argv)?,
+        Command::External(argv) => match plugin::dispatch(&cfg, &argv)? {
+            plugin::DispatchOutcome::Completed => {}
+            plugin::DispatchOutcome::Exit(code) => {
+                return Ok(CommandCompletion::ExternalExit(code));
+            }
+        },
     }
-    Ok(())
+    Ok(CommandCompletion::Completed)
 }
 
 const EMBED_CACHE_REPO: &str = "models--onnx-community--embeddinggemma-300m-ONNX";
@@ -1223,6 +1313,18 @@ mod doctor_tests {
 #[cfg(test)]
 mod eval_cli_tests {
     use super::*;
+
+    #[test]
+    fn global_trace_flag_is_unconditional_and_position_independent() {
+        for args in [
+            vec!["vagus", "--trace", "tutorial"],
+            vec!["vagus", "tutorial", "--trace"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.trace);
+            assert!(matches!(cli.command, Command::Tutorial));
+        }
+    }
 
     #[test]
     fn eval_k_is_bounded_during_cli_parsing() {

@@ -238,16 +238,35 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `vagus` but only **feature-gated + lazily-downloaded + opt-in** (`--smart`/`--rewrite`), never in the
   default path ([ADR 0016](./adr/0016-local-generative-rewriter.md)); **tier-2** uses the host agent
   primarily for bounded full-body judgment and permits one query reformulation only after zero useful
-  hits (Claude Code or pi). **No cloud calls and no daemon in any tier** (G14).
+  hits (Claude Code or pi). **No retrieval cloud calls or daemon in any tier** (G14); explicit
+  diagnostic OTLP is the narrow G28 exception.
   ([ADR 0012](./adr/0012-three-tier-retrieval.md),
   [ADR 0015](./adr/0015-cross-encoder-rerank.md))
-- **G18 — Networked features ship as plugins, not in core.** Anything that makes cloud/network calls
+- **G18 — Networked features ship as plugins, not in core.** Except for G28's explicit diagnostic
+  OTLP exporter, anything that makes cloud/network calls
   or pulls third-party dependencies (Slack, GitHub, etc.) is an external `vagus-<name>` plugin
   dispatched off `$PATH`, speaking the NDJSON contract — never compiled into the `vagus` binary. This
   is what *keeps* G14 true as integrations grow. ([ADR 0010](./adr/0010-plugin-subcommands.md),
   [ADR 0011](./adr/0011-plugin-protocol.md), `docs/plugin-contract.md`) Plugins are for **networked
   capture**, *not* search-time transforms: the reranker/rewriter live in core (G17), because the NDJSON
   contract is one-way note→index and they are neither networked nor a foreign runtime.
+- **G28 — Tracing is explicit, safe by default, research by consent.** Off by default; ordinary
+  tracing annotations skip arguments and select only explicit timings/counts/settings/outcomes for
+  the safe target. Separate research events explicitly enable query/rewrite/candidate/score/path and
+  model-input content. Only explicit `--trace-otlp` enables network export; research plus that flag
+  authorizes content export. Ambient OTEL settings and third-party logs never enable capture. No
+  credentials, host/environment dumps, unrestricted logs or raw application errors. Standard JSONL
+  files are private/create-new and their directory must pass G1's alias-aware missing-path vault
+  overlap checks before writes; output/vault paths with `..` components are rejected at this boundary.
+  Selected OTLP endpoints are explicit and invalid values never fall back to an implicit collector.
+  Standard subscribers/exporters only: no custom recorder, queue,
+  retries, spool, sync, replay or new eval framework. Failures are visible on stderr, library shutdown
+  is bounded/best-effort, and delivery is not guaranteed. Default functional output/search JSON and
+  exact external-plugin status stay unchanged. Without `local-tracing`, trace flags remain inert
+  without tracing configuration/environment/state access. This explicitly supersedes the original
+  local-only/shared-schema proposal; it is the narrow observability exception to G14/G18, not networked
+  retrieval or capture. ADR 0024/0025 evaluation authority is unchanged.
+  ([ADR 0030](./adr/0030-search-tracing.md))
 
 ## Concurrency & agents
 

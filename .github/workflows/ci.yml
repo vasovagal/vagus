@@ -22,10 +22,38 @@ jobs:
           cache-key: ci
       - name: fmt
         run: cargo fmt --all -- --check
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: test
+      - name: clippy (all features)
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: test (default features)
         run: cargo test --locked
-      # The lean build (no candle / local rewriter) must still compile — the `generate`-off path.
-      - name: check (lean, no default features)
-        run: cargo check --no-default-features
+      - name: test (all features)
+        run: cargo test --all-features --locked
+      - name: test (local-tracing only)
+        run: cargo test --no-default-features --features local-tracing --locked
+      # Preserve the pre-tracing integration set while proving that its unconditional --trace flag is
+      # inert when local tracing is compiled out.
+      - name: test (generate only)
+        run: cargo test --no-default-features --features generate --locked
+      # Compiled-out tracing/generation must accept their compatibility CLI while reading/creating no
+      # tracing state and preserving the existing lean binary.
+      - name: test (no default features)
+        run: cargo test --no-default-features --locked
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/rust-setup
+        with:
+          toolchain: 1.96.0
+          cache-key: ci-msrv-1.96
+      - name: test (default features, Rust 1.96)
+        run: cargo +1.96.0 test --locked
+      - name: check (all features, Rust 1.96)
+        run: cargo +1.96.0 check --all-features --locked
+      - name: test (local-tracing only, Rust 1.96)
+        run: cargo +1.96.0 test --no-default-features --features local-tracing --locked
+      - name: test (generate only, Rust 1.96)
+        run: cargo +1.96.0 test --no-default-features --features generate --locked
+      - name: test (no default features, Rust 1.96)
+        run: cargo +1.96.0 test --no-default-features --locked

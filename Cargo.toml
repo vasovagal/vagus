@@ -6,6 +6,7 @@ resolver = "2"
 name = "vagus"
 version = "0.14.1"
 edition = "2024"
+rust-version = "1.96"
 description = "Local-first PARA second brain: hybrid full-text + semantic search over a Markdown vault"
 license = "MIT"
 repository = "https://github.com/vasovagal/vagus"
@@ -26,11 +27,12 @@ exclude = [
 ]
 
 [features]
-# `generate` ships the tier-1 local generative rewriter (candle + a Qwen3 GGUF). Default-on so
-# `cargo install` / release binaries include it; build `--no-default-features` for a lean,
-# candle-free binary (ADR 0016). The rewriter degrades gracefully when absent.
-default = ["generate"]
+# `generate` ships the tier-1 local generative rewriter (candle + a Qwen3 GGUF). `local-tracing`
+# compiles opt-in JSON/OTLP tracing (ADR 0030). Both ship in official
+# builds; `--no-default-features` omits their dependencies and all tracing activation/instrumentation.
+default = ["generate", "local-tracing"]
 generate = ["dep:candle-core", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
+local-tracing = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
 [dependencies]
 vagus-plugin-protocol = { path = "crates/vagus-plugin-protocol", version = "0.1.0" }
@@ -54,6 +56,12 @@ tantivy = "0.26.1"
 # Cargo.lock also pins the transitive `numkong`. Re-verify the artifact with `otool -L`/`ldd` (G13).
 usearch = "=2.25.3"
 terminal_size = "0.4"
+tracing = { version = "0.1.44", optional = true, default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", optional = true, default-features = false, features = ["registry", "std", "fmt", "json"] }
+tracing-opentelemetry = { version = "0.33", optional = true, default-features = false }
+opentelemetry = { version = "0.32", optional = true, default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", optional = true, default-features = false, features = ["trace", "internal-logs"] }
+opentelemetry-otlp = { version = "0.32", optional = true, default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls", "internal-logs"] }
 walkdir = "2.5.0"
 # tier-1 local generative rewriter (ADR 0016), behind the `generate` feature. CPU by default (no
 # ort/onnxruntime conflict; self-contained binary preserved — G13); macOS additionally enables the
@@ -65,6 +73,11 @@ candle-transformers = { version = "0.10.2", optional = true }
 # pulls reqwest/native-tls via its own hf-hub feature; we don't need the async stack on top).
 hf-hub = { version = "0.5", optional = true, default-features = false, features = ["ureq"] }
 tokenizers = { version = "0.22", optional = true }
+
+[dev-dependencies]
+# Decode the real local OTLP receiver fixture; no collector or test server dependency.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
+prost = "0.14"
 
 # macOS: enable candle's Metal backend so the quantized rewriter decodes on the Apple GPU instead of
 # the CPU `gemm` (a large speedup for the autoregressive decode — ADR 0016). Cargo feature-unions this

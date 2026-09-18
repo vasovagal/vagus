@@ -42,6 +42,10 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "config.load", skip_all)
+    )]
     pub fn load() -> Result<Self> {
         let home = dirs::home_dir().context("cannot resolve home directory")?;
 
@@ -89,6 +93,10 @@ impl Config {
 
     /// Refuse every lexical, missing-path, and symlink-alias spelling that would put derived state in
     /// the Markdown vault (G1). This is called before commands can open/create meta.db or a model.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "storage.validate", skip_all)
+    )]
     pub fn validate_storage_separation(&self) -> Result<()> {
         for (label, path) in [
             ("data directory", &self.data_dir),

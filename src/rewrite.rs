@@ -105,6 +105,15 @@ pub struct Rewriter {
 
 impl Rewriter {
     /// Load the model + tokenizer (downloading both to `cache_dir` on first use).
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "model.load",
+            skip_all,
+            fields(model = "qwen3-rewriter")
+        )
+    )]
     pub fn new(cache_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir).ok();
         let repo = std::env::var("VAGUS_REWRITE_REPO").unwrap_or_else(|_| GGUF_REPO.to_string());
@@ -147,6 +156,10 @@ impl Rewriter {
 
     /// Expand `query` into typed variants; falls back to original-query variants if generation
     /// yields nothing parseable.
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "rewrite.generate", skip_all)
+    )]
     pub fn expand(&mut self, query: &str) -> Result<Vec<Variant>> {
         let raw = self.generate(query)?;
         let mut variants = parse_variants(&raw, query);
@@ -162,6 +175,8 @@ impl Rewriter {
         let prompt = format!(
             "<|im_start|>user\n/no_think Expand this search query: {query}<|im_end|>\n<|im_start|>assistant\n"
         );
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", input = %prompt, "rewrite prompt");
         let prompt_ids = self
             .tokenizer
             .encode(prompt, true)
@@ -212,9 +227,16 @@ impl Rewriter {
 }
 
 /// `vagus rewrite "<query>"`: print the typed expansion lines (for inspection / composition).
+#[cfg_attr(
+    feature = "local-tracing",
+    tracing::instrument(target = "vagus::timing", name = "rewrite", skip_all)
+)]
 pub fn run_cli(cfg: &Config, query: &str) -> Result<()> {
     let mut rw = Rewriter::new(&cfg.cache_dir)?;
-    for v in rw.expand(query)? {
+    let variants = rw.expand(query)?;
+    #[cfg(feature = "local-tracing")]
+    tracing::info!(target: "vagus::research", query, variants = %serde_json::to_string(&variants).unwrap_or_default(), "rewrite output");
+    for v in variants {
         println!("{}: {}", v.kind.tag(), v.text);
     }
     Ok(())

@@ -81,6 +81,11 @@ coding harness (Claude Code and pi).
   Binary size ≠ model footprint (models are a lazily-downloaded cache). The author maintains the code.
   ([ADR 0014](./adr/0014-self-contained-universe.md))
 - **N6 — Small surface.** ~500–800 LOC of our own glue over mature crates; no novel algorithms.
+- **N7 — Optional observability.** Explicit safe tracing records timings/counts/settings/outcomes;
+  research explicitly enables sensitive content. Standard private JSONL and explicit direct OTLP
+  replace the proposed shared local-only schema; no ambient capture, credentials, or vault writes.
+  Failures warn without changing functional output/status; shutdown is bounded/best-effort.
+  Compiled-out flags are inert. ([ADR 0030](./adr/0030-search-tracing.md))
 
 ## Scope (v1)
 

@@ -26,6 +26,9 @@ straight from a Claude Code or pi session).
   records strict rank provenance for its fixed pipeline. Runs pin binary/pipeline/corpus identity,
   capped tails stay explicitly unscored, query text is off by default, and reports state their
   selection bias. Ordinary search output is unchanged.
+- **Opt-in performance traces.** Safe timing/count traces use private JSONL; a separate research
+  profile enables sensitive content. Direct OTLP export requires explicit opt-in. See
+  [search performance traces](#search-performance-traces) for privacy and configuration.
 - **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
   (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies; difficult boundary-spanning
   queries can opt into tokenizer-safe adjacent context with `--rerank-context 1|2`. Or use `--smart` for a
@@ -65,6 +68,8 @@ manually — `VERSION=X.Y.Z scripts/render-formula.sh > .../homebrew-tap/Formula
 to `vasovagal/homebrew-tap`. CI never writes the tap.)
 
 ### From source
+
+Requires Rust 1.96 or newer.
 
 ```sh
 cargo install --git https://github.com/vasovagal/vagus
@@ -138,8 +143,55 @@ scale it is effectively instant; a synthetic 10k×768 exact load+search fixture 
 *(Measured on Apple Silicon over five exact, capped-20 rerank queries in a 4,148-chunk corpus. Wider
 attention is quadratic; radius 1 is the practical first try and radius 2 needs adequate memory. The
 `--smart` rewrite is cached per query, so repeats are much faster — ~5 s cold / ~2.3 s warm on a small
-vault.)* No daemon and no cloud round-trip on any
-path.
+vault.)* No daemon or cloud round-trip in retrieval; explicitly enabled OTLP diagnostics are separate.
+
+## Search performance traces
+
+Tracing is **off by default**. Safe traces contain only explicit timings, counts, settings and
+outcomes. Research traces contain **sensitive queries, rewrites, candidates, scores, paths and model
+inputs**; do not attach them to public issues.
+
+```sh
+vagus --trace search "<query>"                  # safe private JSONL, no network
+vagus --trace-profile research search "<query>" # sensitive private JSONL
+# Optional new file; its directory must be private (0700) and outside the vault:
+vagus --trace-file /private/trace-dir/run.jsonl search "<query>"
+# Direct OTLP HTTP/protobuf; no implicit collector or ambient activation:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+  vagus --trace-otlp search "<query>"           # safe, no local file
+# Add --trace-profile research to explicitly authorize content export.
+```
+
+For an OpenObserve HTTP/protobuf receiver, use its **complete traces endpoint**, not the generic
+base endpoint (replace the host and authorization placeholders locally):
+
+```sh
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT='http://<openobserve-host>/openobserve/api/default/v1/traces' \
+OTEL_EXPORTER_OTLP_TRACES_HEADERS='Authorization=Basic <BASE64_CREDENTIALS>' \
+  vagus --trace-otlp search "<query>"
+```
+
+An unauthenticated empty POST to this route returned 401; **authenticated delivery is untested**.
+No credentials or private content were sent. Use a trusted destination; the example uses plain HTTP.
+
+`--trace-profile` wins, then any `--trace`/`--trace-file`/`--trace-otlp` flag selects safe, then
+`VAGUS_TRACE_PROFILE=off|safe|research`, then legacy `VASOVAGAL_TRACE=true|false`. No YAML or `RUST_LOG`
+configuration is read. The default file lives under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vasovagal/traces/vagus/`; files are create-new 0600, never
+overwritten. Symlink-aware checks reject output directories overlapping the vault; output and vault
+paths containing `..` are rejected before writes. There is **no
+rotation, retention, durability or delivery guarantee**; manage/delete sensitive files yourself.
+
+Use JSON span NEW/CLOSE timestamps for wall intervals, or native OTLP spans for the waterfall. OTLP
+supports standard endpoint/header environment settings only after `--trace-otlp`; resource/host/env
+attributes and third-party logs are not captured. Request/shutdown budgets are two seconds; exporter
+errors warn on stderr without changing command status. Traces may be incomplete after errors or
+abrupt exit. Default stdout and search JSON are unchanged. No performance overhead guarantee.
+
+The historical `local-tracing` Cargo feature can be compiled out; **all trace flags then remain inert**
+without tracing environment/config/state access. The `generate` feature is independent.
+[ADR 0030](design/adr/0030-search-tracing.md) supersedes the previous local-only shared-schema
+proposal and documents fields, unavailable model internals, and unchanged eval authority.
 
 ## Usage
 
@@ -151,6 +203,7 @@ vagus reindex               # full rebuild from the vault
 vagus reindex --since 5d    # force-refresh recent filesystem mtimes; preserve older embeddings
 vagus compact               # defragment the tantivy index (force-merge segments) — no re-embed
 vagus search "<query>"      # hybrid search; adaptive low-signal tail cutoff by default
+vagus --trace search "<query>"  # opt-in private local JSONL performance trace
 vagus search "<query>" --since 3m  # keep notes created in the last three months
 vagus search "<query>" --exhaustive  # fill up to --limit (legacy/max-recall result set)
 vagus search "<query>" --exact       # force ground-truth cosine (also composes with --smart)

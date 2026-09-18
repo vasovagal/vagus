@@ -9,10 +9,15 @@ binding invariant list.
 
 ## Build / test / run
 
+Vagus requires Rust 1.96 or newer (edition 2024).
+
 ```sh
 cargo build              # first build fetches a prebuilt ONNX Runtime (network, one-time)
 cargo test
-cargo clippy --all-targets
+cargo test --all-features
+cargo test --no-default-features
+cargo check --no-default-features --features local-tracing
+cargo clippy --all-targets --all-features
 cargo fmt                # run before every push (CI runs cargo fmt --check)
 ./target/debug/vagus --version   # run dev builds from target/; do not shadow the brew binary
 vagus doctor             # network-free installed-binary health/cache check
@@ -34,12 +39,20 @@ VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
 
 ### Feature flags
 
-The `generate` feature pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by
-`vagus search --smart` / `vagus rewrite`. For a leaner build without it:
+Official/default builds enable two independently removable integrations:
+
+- `generate` pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by `vagus search --smart` /
+  `vagus rewrite`.
+- `local-tracing` pulls in standard JSON/OTLP subscribers. Runtime tracing remains off until an
+  explicit trace flag/profile enables it; research content and OTLP require explicit consent (ADR 0030/G28).
 
 ```sh
-cargo build --no-default-features    # add back features as needed
+cargo build --no-default-features
+cargo build --no-default-features --features local-tracing  # tracing-only feature lane
 ```
+
+A compiled-out build accepts all trace flags but does not read tracing environment/configuration or
+create a trace path. Tracing uses registry dependencies only; no shared exporter checkout is needed.
 
 ## Releasing
 

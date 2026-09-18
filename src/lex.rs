@@ -46,6 +46,10 @@ fn schema() -> (Schema, Field, Field, Field, Field) {
 }
 
 impl Lex {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "lexical.open", skip_all)
+    )]
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let (schema, path, chunk_id, heading, body) = schema();
@@ -85,6 +89,15 @@ impl Lex {
     }
 
     /// BM25 search over body + heading. Returns (chunk_id, bm25_score) in rank order (best first).
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(
+            target = "vagus::timing",
+            name = "lexical.search",
+            skip_all,
+            fields(limit)
+        )
+    )]
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
@@ -120,6 +133,8 @@ impl Lex {
                 out.push((id.to_string(), score));
             }
         }
+        #[cfg(feature = "local-tracing")]
+        tracing::info!(target: "vagus::research", query, candidates = ?out, "lexical results");
         Ok(out)
     }
 

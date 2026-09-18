@@ -176,6 +176,10 @@ fn chunk_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
 }
 
 impl Db {
+    #[cfg_attr(
+        feature = "local-tracing",
+        tracing::instrument(target = "vagus::timing", name = "storage.open", skip_all)
+    )]
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

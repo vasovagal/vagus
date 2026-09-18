@@ -85,3 +85,5 @@ silently breaking an invariant.
 - `0029-checkpointed-resumable-indexing.md` — tantivy commits every 64 files/30 s and blesses
   `files.pending` rows only after the commit; `vec_dirty` repacks usearch; only explicit `index`/`reindex`
   resume an interrupted rebuild; graceful Ctrl-C; BM25 census self-heal + doctor check; amends G5/G6.
+- `0030-search-tracing.md` — small opt-in safe/research tracing with standard JSON files and
+  explicit direct OTLP; supersedes the proposed local-only shared schema; adds G28. Eval authority unchanged.
