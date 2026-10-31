@@ -11,6 +11,9 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
 
 ### Changed
 
+- Clarified installation, privacy, retrieval and maintainer documentation; added the NASA-derived
+  `succinct-docs` writing and review skill for repository documentation.
+
 - **Namespaced note skills with broader intent triggers.** `vagus-create-note`, `vagus-search`, and
   manual-only `vagus-process-inbox` replace the generic skill names. “Make a note” / “save this”
   default to Vagus capture; “my notes” retrieval does not authorize creation. Explicit repo files,

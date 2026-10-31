@@ -1,58 +1,62 @@
 # vagus plugin contract
 
-`vagus` supports **plugins** the way `git`, `kubectl`, `cargo`, and `gh` do: a subcommand that isn't
-built in is dispatched to an external `vagus-<name>` executable found on `$PATH`. `vagus slack pull …`
-runs `vagus-slack pull …`. This keeps **core offline** (guardrail G14/G18) — all network/third-party
-code lives in plugins — and lets plugins ship and version independently.
-
-This document is the **normative contract**. It is language-agnostic: a plugin can be a shell script,
-a Python program, or a Rust binary. Rust authors get an optional SDK (`vagus-plugin`) and a shared
-wire-schema crate (`vagus-plugin-protocol`) that implement everything below; nothing requires them.
+Implement a `vagus-<name>` executable to add a networked capture command without adding network
+code to Vagus core. This normative, language-independent contract covers dispatch, process channels,
+environment, events, and plugin obligations. Rust authors may use the optional `vagus-plugin` SDK
+and `vagus-plugin-protocol` wire-schema crate.
 
 ## Discovery & dispatch
 
-- A plugin is any executable on `$PATH` named `vagus-<name>` (e.g. `vagus-slack`).
-- `vagus <name> <args…>` spawns `vagus-<name>` with **the subcommand name stripped**:
-  `vagus slack pull --since 7d` → `vagus-slack` receives `["pull", "--since", "7d"]`.
-- **Builtins win.** If `<name>` is a builtin subcommand, the builtin runs; a same-named plugin is
-  shadowed. `vagus plugins` lists discovered plugins and flags shadowed ones.
-- `__`-prefixed subcommands are **reserved** for the protocol (currently `__describe`).
-- First match on `$PATH` wins when a name appears in multiple dirs.
+- Put an executable named `vagus-<name>` on `$PATH`; the first matching path wins.
+- `vagus <name> <args…>` starts it with the subcommand name stripped:
+  `vagus slack pull --since 7d` passes `["pull", "--since", "7d"]` to `vagus-slack`.
+- Built-in commands win over same-named plugins. `vagus plugins` lists plugins and marks shadowed names.
+- Reserve `__`-prefixed subcommands for the protocol; `__describe` is currently defined.
 
 ## Process model
 
-Core spawns the plugin as a **child** (it does not `exec`/replace itself) with:
+Core starts a child process, inheriting stdin and stderr and piping stdout:
 
-- **stdin** — inherited (prompts/interactivity reach the terminal).
-- **stderr** — inherited. This is the **human channel**: logs, progress, errors.
-- **stdout** — piped. This is the **machine channel**: the NDJSON event stream (below).
-- environment — the variables below are set.
+| Channel | Use |
+|---|---|
+| stdin | Terminal input and prompts. |
+| stderr | Human-readable logs, progress, and errors. |
+| stdout | One NDJSON event per line. Core echoes unrecognized lines to its own stdout. |
 
-Core reads stdout line by line. A line that parses as a known event is acted on; **any other line is
-echoed verbatim to core's stdout**, so a trivial plugin that just prints text still works.
+A nonzero child exit code is propagated. A terminal `result` with `ok: false` also fails the command.
+After a successful run, at least one `note` event triggers **one whole-vault incremental refresh**,
+unless `result.no_index` is true. The paths are change notifications, not a selective indexing list.
+An interrupted rebuild makes that automatic refresh warn and defer until explicit `vagus index`
+or `vagus reindex` resumes it.
 
-On a clean exit (code 0), core runs **one incremental index pass** over every `note` path the plugin
-emitted (unless the terminal `result` set `no_index`). A non-zero exit code is propagated by core.
+<a id="environment-set-by-core-for-every-plugin-run"></a>
 
-## Environment (set by core for every plugin run)
+## Environment (set by core for dispatched commands)
 
-| Variable                | Meaning                                                                 |
-|-------------------------|-------------------------------------------------------------------------|
-| `VAGUS`                 | Absolute path to the `vagus` binary (for callbacks like `$VAGUS index`).|
-| `VAGUS_VAULT`           | Absolute path to the resolved vault root (the `~/brain` target).        |
-| `VAGUS_DATA_DIR`        | vagus data dir (informational).                                         |
-| `VAGUS_CONFIG_DIR`      | vagus config dir (informational).                                       |
-| `VAGUS_VERSION`         | Core's version string.                                                  |
-| `VAGUS_PLUGIN_PROTOCOL` | `ndjson` when core is parsing events. Unset ⇒ standalone/direct run.    |
-| `VAGUS_PLUGIN_CONTRACT` | Decimal contract version core supports (currently `1`).                 |
+Discovery calls to `__describe` inherit the caller environment; core does not set these variables
+for discovery.
 
-**Standalone runs.** When a plugin is executed directly (not via `vagus`), `VAGUS_PLUGIN_PROTOCOL`
-is unset. The plugin should then print human output and **self-index** by calling `$VAGUS index`
-itself. The `vagus-plugin` SDK handles both modes transparently.
+| Variable | Meaning |
+|---|---|
+| `VAGUS` | Absolute path to the running Vagus binary, for callbacks. |
+| `VAGUS_VAULT` | Absolute path to the resolved vault root; see the implementation caveat below. |
+| `VAGUS_DATA_DIR` | Core data directory; informational, not plugin storage. |
+| `VAGUS_CONFIG_DIR` | Core config directory; informational, not plugin storage. |
+| `VAGUS_VERSION` | Core version string. |
+| `VAGUS_PLUGIN_PROTOCOL` | `ndjson` when core parses events; unset for standalone use. |
+| `VAGUS_PLUGIN_CONTRACT` | Decimal contract version, currently `1`. |
+
+**Implementation caveat:** the contract requires an absolute, resolved `VAGUS_VAULT`, but current
+core forwards the configured path unchanged (`~/brain` by default). Relative overrides and symlinks
+are not canonicalized; plugins must not assume that core resolved them.
+
+When run directly, print human output and index changed notes by calling `$VAGUS index`, or
+`vagus index` from `$PATH` if `VAGUS` is unset. The SDK switches output modes and resolves that
+binary path; **the plugin must invoke indexing itself**.
 
 ## The NDJSON event stream (stdout)
 
-One JSON object per line, externally tagged on `type`. Unknown future fields must be ignored.
+Emit one JSON object per line, tagged by `type`. Ignore unknown fields in known event types.
 
 ```jsonc
 {"type":"log","level":"info|warn|error","msg":"..."}
@@ -61,24 +65,25 @@ One JSON object per line, externally tagged on `type`. Unknown future fields mus
 {"type":"result","ok":true,"summary":{...},"data":{...},"no_index":false}
 ```
 
-- **`note.path` is relative to `VAGUS_VAULT`.** Core indexes these after the run.
-- **Streaming vs batch:** emit `progress`/`note` as work happens then a final `result` (streaming), or
-  emit only the final `result` (batch). Same schema either way.
-- Exactly one terminal `result` should be emitted.
+- `note.path` is relative to `VAGUS_VAULT`; omitted `action` defaults to `write`.
+- Emit `progress` and `note` as work happens, then exactly one terminal `result`.
+  A batch command may emit only `result`, but without a `note` event core does not refresh the index.
+- `summary` and `data` are optional plugin-defined JSON; `no_index` defaults to false.
+- Unknown event types and malformed event lines are echoed, not acted on.
 
 ## Plugin obligations (the rules)
 
-1. **Markdown only, in the vault.** Write only `.md` files, only under `$VAGUS_VAULT`, never with a
-   `..` escape (encodes G1/G16). State, caches, and cursors go in the plugin's own XDG dirs
-   (`~/.local/share/vagus-<name>/`, `~/.config/vagus-<name>/`) — **never** in the vault.
-2. **Don't index yourself in protocol mode.** Emit `note` events; core indexes once at the end.
-3. **Own your config.** Core never parses plugin config.
-4. **Respect the channels.** stdout = events only; humans read stderr.
-5. **Implement `__describe`.** `vagus-<name> __describe` prints a one-line summary to stdout and exits
-   0. Used by `vagus plugins`.
+1. Write only `.md` files under `$VAGUS_VAULT`, with no `..` escape. Keep state, caches, and cursors
+   in the plugin's own XDG directories (`~/.local/share/vagus-<name>/`, `~/.config/vagus-<name>/`),
+   never in the vault or core's directories.
+2. In protocol mode, emit `note` events instead of invoking indexing yourself.
+3. Own your configuration; core does not parse it.
+4. Keep stdout for events and stderr for people.
+5. Implement `vagus-<name> __describe`: print a one-line summary to stdout and exit 0 promptly.
+   `vagus plugins` uses it for discovery.
 
 ## Versioning
 
-`VAGUS_PLUGIN_CONTRACT` lets a plugin check compatibility. The schema evolves **additively** (new
-optional fields, new event variants that older cores ignore); the integer bumps only on a breaking
-change. See ADR 0011.
+Check `VAGUS_PLUGIN_CONTRACT` for compatibility. Add optional fields and event variants without
+changing the version; older cores echo unknown variants without acting on them. Increment the
+contract only for breaking changes. See [ADR 0011](../design/adr/0011-plugin-protocol.md).

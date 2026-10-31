@@ -2,53 +2,29 @@
 
 [![ci](https://github.com/vasovagal/vagus/actions/workflows/ci.yml/badge.svg)](https://github.com/vasovagal/vagus/actions/workflows/ci.yml)
 
-**Your second brain, as a single fast binary.** vagus gives you **hybrid full-text +
-semantic search** over a folder of plain-Markdown notes — local-first, offline after first
-run, no daemon, no cloud. Capture with one line in your editor; recall with one command (or
-straight from a Claude Code or pi session).
+Search a folder of Markdown notes with keyword and semantic retrieval, or capture and file notes
+from the CLI, Claude Code, or pi. Start with [installation](#install), [set up a vault](#setup), then
+[use the CLI](#usage).
+
+Vagus runs retrieval and its optional models locally, without a daemon. Models download on first
+use. Agent skills give matching chunk bodies to the host agent, which may read a full note;
+that agent's model and network settings apply.
 
 ## Features
 
-- **Hybrid search that just works.** [tantivy](https://github.com/quickwit-oss/tantivy)
-  BM25 keyword matching and local ONNX embeddings (Google **EmbeddingGemma-300M**, 768-dim)
-  fused with **Reciprocal Rank Fusion** — exact cosine below 10,000 chunks, usearch HNSW above it,
-  and an all-mode `--exact` oracle. You get exact-term *and* meaning-based hits with no tuning.
-- **Context-tidy by default.** For plain hybrid note search, `--limit` is a ceiling: when the finished
-  RRF list has a guarded, statistically distinct score knee, vagus omits only the low-signal suffix—
-  but never across a top-three BM25/cosine source hit. `--exhaustive` restores legacy fill.
-- **Honest opt-in relevance.** `--relevance` reports finite original-query cosine clamped to `[0,1]`
-  as a named semantic heuristic — never confidence or probability. `--min-relevance` can apply an
-  explicit post-rank floor without reordering or backfill; default output and ranking stay unchanged.
-- **Measure retrieval, don't guess.** `vagus eval` emits schema-2 metrics and full corpus/index/
-  backend/fusion/cohort provenance; `vagus eval-gate` applies a fixed held-out paired contract before
-  any same-pool alternate fusion can even land as opt-in. RRF k=60 remains the only default.
-- **Private, honest usage diagnostics.** The search skill atomically increments cited-note fame and
-  records strict rank provenance for its fixed pipeline. Runs pin binary/pipeline/corpus identity,
-  capped tails stay explicitly unscored, query text is off by default, and reports state their
-  selection bias. Ordinary search output is unchanged.
-- **Opt-in quality tiers.** Add `--rerank` for an in-core cross-encoder
-  (jina-reranker-v1-turbo-en) that re-scores against full chunk bodies; difficult boundary-spanning
-  queries can opt into tokenizer-safe adjacent context with `--rerank-context 1|2`. Or use `--smart` for a
-  local query-expansion/HyDE rewriter (candle + Qwen, Metal-accelerated, cached). The bundled
-  search skill gives the host agent 10 exact+reranked full-body candidates, then presents only useful
-  (grade ≥2), nonredundant evidence — at most 6 notes, never quota padding. Every tier runs **offline**.
-- **Plain Markdown in iCloud.** [PARA](https://fortelabs.com/blog/para/) layout
-  (`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`), Obsidian-compatible,
-  optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the search index is
-  a throwaway cache (local usage counters/provenance are the explicit exception).
-- **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  the vagus-create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
-  provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields; that producer
-  metadata is searchable by BM25 and meaning, so queries such as `parakeet` find model provenance.
-- **Assisted, never automatic filing.** The vagus-process-inbox skill proposes a PARA home per note; you
-  approve.
-- **Claude Code and pi skills built in.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` ship
-  inside the binary — `vagus skills install --agent <claude|pi>` writes them to the selected
-  agent's global skills directory. Generic “make a note” / “save this” requests default to Vagus;
-  “my notes” questions retrieve rather than create. Explicit repo files, release notes, or another
-  notes app override the default. See [skill routing and upgrades](./skills/README.md).
-- **Self-contained.** One ~40 MB static binary (ONNX Runtime linked in — `otool -L` shows
-  only system dylibs). No Python, no Node, no background process.
+- **Hybrid search:** [tantivy](https://github.com/quickwit-oss/tantivy) BM25 keyword search and
+  768-dimensional EmbeddingGemma-300M vectors, combined with Reciprocal Rank Fusion (RRF).
+  [Control result depth, exact search, and reranking](#choose-search-results).
+- **Markdown vault:** optional frontmatter and `[[wikilinks]]`, compatible with Obsidian and the
+  [PARA](https://fortelabs.com/blog/para/) folders listed in [Setup](#setup). Indexing and search
+  never edit notes.
+- **Capture and approved filing:** write a Markdown file, use `vagus add-note`, or invoke the
+  [bundled skills](#claude-code-and-pi-skills). The filing skill asks before each move.
+- **Explicit diagnostics:** inspect [semantic relevance](#set-a-relevance-floor),
+  [cited-note usage](#record-presented-notes), or [retrieval evaluation](#evaluate-retrieval).
+  None is a confidence score.
+- **One executable:** local inference is linked into the binary; Vagus needs no Python or Node
+  runtime. See [model downloads](#from-source) and [measured costs](#speed).
 
 ## Install
 
@@ -60,23 +36,30 @@ brew trust --tap vasovagal/tap    # Homebrew 6+: trust this third-party tap
 brew install vagus
 ```
 
-(The formula lives in the shared tap `vasovagal/homebrew-tap`. After a release, the tap is updated
-manually — `VERSION=X.Y.Z scripts/render-formula.sh > .../homebrew-tap/Formula/vagus.rb` and commit it
-to `vasovagal/homebrew-tap`. CI never writes the tap.)
+Use `brew update && brew upgrade vagus` for upgrades. Maintainers update the shared tap manually
+as part of [releasing](RELEASING.md); CI does not write it.
 
 ### From source
 
+For development, build a clone and run it from `target/`. Do not `cargo install --path .`: a copy in
+`~/.cargo/bin` can shadow the Homebrew installation. Keep development index data separate from the
+installed binary's data when their chunk or embedding identities differ.
+
 ```sh
-cargo install --git https://github.com/vasovagal/vagus
-# …or, inside a clone:
-cargo install --path .
+git clone https://github.com/vasovagal/vagus
+cd vagus
+cargo build --locked
+VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus --help
 ```
 
-**First-run footprint.** The build links a static ONNX Runtime (no dylib to ship). On first
-search vagus downloads the embedding model (**EmbeddingGemma-300M, ~1.23 GB**) to
-`~/Library/Caches/vagus/models`, outside iCloud. The optional tiers fetch their models lazily
-the first time you use them — `--rerank` ~150 MB, `--smart` ~1.2 GB — so a plain install only
-pays for the embedder.
+Set `VAGUS_DATA_DIR=/tmp/vagus-dev` on development indexing and search commands too. Models can be
+shared. See [build requirements and feature flags](CONTRIBUTING.md#build--test--run).
+
+**Model downloads.** First use of embeddings downloads EmbeddingGemma-300M (about 1.2 GB).
+`--rerank` fetches its approximately 150 MB model on first use; `--smart` also fetches a local
+rewriter of about 1.3 GB. The macOS cache is `~/Library/Caches/vagus/models`; Linux uses its platform
+cache directory, normally `~/.cache/vagus/models`. Both stay outside the vault. `VAGUS_CACHE_DIR`
+overrides the path, then `FASTEMBED_CACHE_DIR` if the first variable is unset.
 
 ## Setup
 
@@ -87,21 +70,27 @@ vagus doctor             # network-free health/cache-presence check
 vagus doctor --fetch-models  # explicit download + inference validation of both ONNX models
 ```
 
+The vault uses `00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archive`.
 `--icloud` uses `~/Library/Mobile Documents/com~apple~CloudDocs/Brain` as the real vault and
 symlinks the configured vault path (normally `~/brain`) to it. Only Markdown enters iCloud; each Mac
 keeps its own SQLite/Tantivy/usearch index and model cache locally. Point Obsidian at either spelling
-of the same folder—vagus never edits a note unless you explicitly create or file it.
+of the same folder. Frontmatter is optional: `vim ~/brain/00-Inbox/idea.md` is sufficient.
 
 Setup is idempotent and fail-closed. A missing vault or an exact empty PARA skeleton can be linked;
 existing iCloud notes are preserved. If the local vault contains any note, symlink, special entry, or
-unrecognized directory, init changes **neither** path and asks for a manual migration. When the iCloud
-`Brain` target does not yet exist, the safe whole-directory move is:
+unrecognized directory, init changes **neither** path and asks for a manual migration. The whole-directory
+example below requires a real, non-symlink source directory and an absent iCloud `Brain` target. Inspect
+the source first; handle symlinks or special entries manually. `vault` uses `VAGUS_VAULT` when set,
+otherwise the default `~/brain`:
 
 ```sh
+vault="${VAGUS_VAULT:-$HOME/brain}"
 target="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Brain"
-[ ! -e "$target" ] && [ ! -L "$target" ]  # both must pass; otherwise merge manually
-mv -- "$HOME/brain" "$target"
-vagus init --icloud
+if [ -d "$vault" ] && [ ! -L "$vault" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+  mv -- "$vault" "$target" && vagus init --icloud
+else
+  echo "Use a real source directory and an absent Brain target; reconcile other cases manually." >&2
+fi
 ```
 
 For a bulk import, copy Markdown into the PARA folders (or `00-Inbox/`) and run one `vagus index`;
@@ -115,33 +104,47 @@ vagus skills install --agent pi      # pi: ~/.pi/agent/skills
 vagus skills list --agent pi         # show pi install status
 ```
 
-The bundled `vagus-search` and `vagus-process-inbox` skills translate user time windows directly into `--since`
-filters (for example, “last three months” → `3m`) instead of making the agent post-filter results.
-The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
-leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an
-upgrade, install again for each agent you use; in an existing pi session, run `/reload`.
+The skill names here describe current source. Release **v0.14.1** still bundles `create-note`,
+`search`, and `process-inbox`; inspect `vagus skills list` for your installed binary. The namespaced
+skills and automatic old-name migration are not in that release.
+
+Use `vagus-create-note` to capture, `vagus-search` to retrieve, and explicitly invoke
+`vagus-process-inbox` to propose filing moves. Generic note requests default to Vagus; explicit
+repo files, release notes, or another notes app override that routing. A retrieval question does
+not authorize capture. Search and inbox skills pass requested time windows to `--since`.
+
+After upgrading Vagus, install again for each agent. See [installation and backup behavior](skills/README.md#install)
+and [old-name migration](skills/README.md#upgrading-the-old-names). The installer honors
+`CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`, leaves identical files alone, backs up hand edits to
+`SKILL.md.bak`, and skips symlinks unless `--force` is used. In an existing pi session, run `/reload`.
+Skills are embedded in the binary; no repository clone is needed.
 
 ## Speed
 
-Hybrid retrieval is hand-rolled (BM25 + exact cosine below 10,000 embedded chunks, usearch HNSW
-above it, then RRF). `--exact` forces the ground-truth scan at any size and in every mode. At personal
-scale it is effectively instant; a synthetic 10k×768 exact load+search fixture measures ~26.6 ms:
+Use `--timings` with search to inspect your own costs. Recorded Apple Silicon measurements give
+scale estimates, not latency guarantees:
 
-| Query | Latency |
-|-------|---------|
-| `vagus search` (default hybrid) | **~1 s** warm; a few seconds on the first query of a session (loads the embedder) |
-| `--rerank` (cross-encoder, context 0) | **+~0.7 s** for the capped 20-doc stage |
-| `--rerank --rerank-context 1` | **~2.8 s** rerank stage; up to ~3.2 GiB process RSS |
-| `--rerank --rerank-context 2` | **~5.7 s** rerank stage; up to ~5.6 GiB process RSS |
-| `--smart` (local rewrite + rerank) | a few seconds cached, ~10 s cold; scales with vault size |
+| Operation | Recorded cost |
+|---|---|
+| One-shot hybrid search | About 1 s on a 4,023-chunk corpus; model loading dominates |
+| Exact vector load + search | 26.6 ms for a synthetic 10,000 × 768 fixture; excludes the embedder |
+| Capped 20-candidate rerank, context 0 | About 0.7 s for the rerank stage |
+| Rerank, context 1 | 2.8 s median; up to 3.2 GiB process RSS |
+| Rerank, context 2 | 5.7 s median; up to 5.6 GiB process RSS |
 
-*(Measured on Apple Silicon over five exact, capped-20 rerank queries in a 4,148-chunk corpus. Wider
-attention is quadratic; radius 1 is the practical first try and radius 2 needs adequate memory. The
-`--smart` rewrite is cached per query, so repeats are much faster — ~5 s cold / ~2.3 s warm on a small
-vault.)* No daemon and no cloud round-trip on any
-path.
+The [vector measurements](design/adr/0019-usearch-ann-backend.md#2026-07-30-corpus-and-cutoff-evidence)
+and [rerank measurements](design/adr/0015-cross-encoder-rerank.md#2026-07-30-small-to-big-evidence)
+use different fixtures. The rerank comparison covers five exact, capped-20 queries on 4,148 chunks.
+Wider context costs more memory and can help or hurt a query; start at radius 1 if needed.
+`--smart` adds local query rewriting and caches expansions by query. Its cold and warm costs depend
+on the vault, hardware, and cached models.
 
 ## Usage
+
+Start with `vagus tutorial` for capture → search → file. The command list is followed by
+[result selection](#choose-search-results), [time filters](#filter-by-time-and-metadata),
+[diagnostics](#set-a-relevance-floor), and [index repair](#repair-the-index). Replace angle-bracket
+operands with your values; the list is a command reference, not a script to run from top to bottom.
 
 ```sh
 vagus init --icloud         # one-time fail-closed iCloud/PARA setup (`vagus init`: local only)
@@ -162,12 +165,12 @@ vagus eval labels.jsonl --exact --relevance --json  # inspect current-corpus rel
 vagus eval labels.jsonl --exact --json  # score fixed note-level pre-tidy rankings against qrels
 vagus eval labels.jsonl --exact --rerank --rerank-context 1 --json  # evaluate that input policy
 vagus eval-gate baseline.json candidate.json --json  # fixed ADR 0025 fusion acceptance gate
-vagus add-note "<title>"    # create an inbox note, open $EDITOR (--edit/-e), then index
+vagus add-note "<title>"    # create, open $VISUAL/$EDITOR when interactive, then index (--edit/-e)
 vagus add-note "Generated" --frontmatter-json '{"producer":{"model":"parakeet"}}'  # safe metadata
 vagus search "parakeet"    # producer metadata is indexed lexically + semantically
 vagus inbox                 # list 00-Inbox items
 vagus inbox --since 10h     # list inbox notes created in the last ten hours
-vagus file <path> --to ...  # move into a PARA folder (--suggest [--thought-process] to get ideas)
+vagus file "<path>" --to "<folder>"  # move into PARA (--suggest [--thought-process] for ideas)
 vagus doctor                # network-free health/cache-presence check
 vagus doctor --fetch-models # explicitly download + validate embedder and reranker
 vagus status                # index plus local tick/event counts
@@ -178,77 +181,104 @@ vagus vectors export --out DIR  # coherent local vector/metadata snapshot for of
 vagus skills install        # install agent skills (--agent claude|pi; default: claude)
 ```
 
-The applicable time-window commands (`reindex`, `search`, and `inbox`) share one validated `--since`
-grammar: `h` (hours), `d` (days), `m` (30-day months), and `y` (365-day years), plus `s` (seconds),
-`min` (minutes), `w` (weeks), and bare days. For example: `10h`, `5d`, `3m`, and `1y`. `search` and
-`inbox` filter the note's `created` frontmatter with a filesystem-mtime fallback; `reindex` selects
-filesystem mtimes for forced repair. Invalid operands fail during CLI parsing before a command opens
-the index.
+### Choose search results
 
-Search results are **one per note** by default, each shown as its best-matching chunk. `--limit 10`
-means **at most** 10 distinct notes: plain hybrid search may return fewer when a guarded robust RRF
-knee separates a high-signal prefix from a low-signal tail. The stage only drops a suffix; it never
-changes ranking or scores, and it fails open before any top-three BM25/cosine source champion. Pass
-`--exhaustive` to fill the legacy result set up to the limit, or
-`--chunks` to rank individual chunks instead.
+Default hybrid search combines BM25 and cosine ranks with unweighted RRF (`k=60`). Exact cosine is
+automatic below 10,000 embedded chunks; usearch HNSW is used at that threshold and above when its
+sidecar is available. `--exact` forces the full scan in every mode.
 
-Validated producer JSON appears as dedicated `Frontmatter > <namespace>` search chunks. Vagus-owned
-lifecycle fields (`created`, `status`, `source`, `para`, `modified`, `title`) remain excluded from
-BM25/embeddings; `--since` and `--source` retain their exact filter behavior. The first index after
-this feature performs a one-time full re-embed for chunk version 6.
+Results contain one best-matching chunk per note. `--limit 10` means at most 10 distinct notes;
+`--chunks` returns individual chunks instead. Plain hybrid note search may omit a low-signal suffix
+when a guarded RRF score knee separates it from the leading results. This never changes ranks or
+scores, and never cuts before a top-three BM25/cosine source hit. `--exhaustive` disables that cutoff.
 
-`--rerank-context N` accepts 0–2 and requires `--rerank` or `--smart`. Radius 0 is the exact historical
-center-only path. Radius 1/2 gives the cross-encoder up to N adjacent chunks per side, admitting whole
-neighbors only when the model's actual pair tokenizer can retain the query, special tokens, and
-matched center. This changes only rerank ordering: returned `body`/`snippet`, retrieval, RRF, capped
-prefix, and unscored RRF tail are unchanged. Use it selectively; wider attention is expensive and can
-help or hurt an individual query.
+`--rerank` scores a capped candidate prefix with the local `jina-reranker-v1-turbo-en` cross-encoder.
+`--rerank-context N` accepts 0–2 and requires `--rerank` or `--smart`:
 
-`--relevance` exposes the hit's finite original-query EmbeddingGemma cosine clamped to `[0,1]`;
-JSON also names the exact `relevance_policy`. It is an opt-in semantic heuristic tied to the current
-model/chunk identity, **not** calibrated confidence. RRF and reranking still determine order. A
-BM25-only survivor is marked unknown rather than assigned a
-fake value. `--min-relevance 0..=1` implies reporting and filters only after truncation, with no
-backfill: a positive floor drops unknowns, while zero retains them. Any relevance floor disables the
-adaptive RRF tidy stage. BM25-only and `--smart` reject these flags because they do not retain an
-original-query cosine. Use `vagus eval --relevance` over your own fixed positive and negative probes
-before adopting a floor. `0.30` was a development starting point and one untouched plain-search
-negative scored `0.300044`; it is not a universal boundary, even for this vault.
+- **0 (default):** the center-only, 512-token path.
+- **1 or 2:** up to N adjacent content chunks per side, admitting whole neighbors only when the
+  model's pair tokenizer can retain the query, special tokens, and matched center.
 
-`--tick-provenance` is an explicit instrumentation contract for the bundled skill, not a ranking
-mode. It requires standard note-level hybrid `--json --full --rerank --exact` with no smart mode,
-metadata filter, chunks, or score/relevance floor. Instead of the normal Hit array it emits
-`{run,hits}`: the run pins executable, corpus, model, fusion/source depths, exact backend,
-reranker/cap/context, scope, and result-policy identities; each hit has a path-bound event ID and
-states source/fusion/final ranks plus either a real capped-prefix rerank rank or an explicit unscored-tail state. It does not change scores or order.
-The skill copies the run and only cited `{path,provenance}` entries to `vagus tick --events`, so run,
-events, and counters commit or roll back together. `vagus ticks` groups observations by pipeline and
-corpus and labels them selection-biased — they are not recall/eval evidence. Query text is not stored
-unless `vagus tick --events ... --query ... --store-query` is explicitly requested; bodies and
-snippets are never stored.
+Context changes only rerank ordering. Returned `body`/`snippet`, retrieval, RRF, the capped prefix,
+and the unscored RRF tail stay unchanged. `--smart` adds local query expansion/HyDE before reranking;
+its Qwen rewriter uses candle and enables Metal on macOS when available. A build without the
+`generate` feature falls back to reranking.
 
-`vagus eval` never refreshes the index: run `vagus index` first, then hold the index and JSONL labels
-fixed across A/B runs. Its P@k denominator is always k, MRR is explicitly MRR@k, undefined cohorts are
-`null`, and schema-2 reports pin rankings plus label/corpus/index/backend/fusion/cohort identities;
-reranked reports include the context radius and tokenizer maximum in `rerank_policy`.
-Evaluation is note-level exhaustive pre-tidy so a candidate cannot win by under-returning. The
-non-configurable `eval-gate` requires a held-out graded/diverse sample, paired nDCG confidence, and
-recall/MRR/P/cohort nonregressions; passing permits only explicit experimentation, not a new default.
-See [`eval/README.md`](eval/README.md) for labels and the complete gate contract.
+The [search skill](skills/vagus-search/SKILL.md) gives its host agent up to 10 exact, reranked full-body
+candidates at context 0. The agent presents at most six nonredundant notes graded useful or direct
+(2–3), with one retry only if none qualify. Agent judgment is distinct from local CLI retrieval.
 
-For a vault shared across Macs through iCloud, `vagus reindex --since 10d` snapshots the whole vault
-and force-reindexes notes whose **filesystem mtime** is within the window, even if local cached
-metadata says they are unchanged, including persisted usearch repairs. Older indexed notes and all
-local usage/provenance rows are preserved; new/deleted files are still reconciled globally. Ordinary
-`vagus index` also retries a file if an interrupted run left any chunk embedding missing. Use plain
-`vagus reindex` when the suspect period is unknown or the
-embedding/chunk identity changed. (`search --since` and `inbox --since` are different: they filter
-notes by creation time.)
+### Filter by time and metadata
 
-The index/database live **outside** iCloud (`~/.local/share/vagus/`) — only your notes live in
-iCloud. The search index is fully rebuildable from the Markdown (`vagus reindex`), but the database
-also holds your usage counters and selected-result provenance (`vagus fame`, `vagus ticks`), which
-are not rebuildable — don't delete `meta.db` as a "reset".
+`reindex`, `search`, and `inbox` share the validated `--since` grammar: `h` hours, `d` days,
+`m` 30-day months, `y` 365-day years, `s` seconds, `min` minutes, `w` weeks, or bare days.
+Invalid operands fail during CLI parsing before the index opens.
+
+- `search` and `inbox` use `created` frontmatter, falling back to filesystem mtime when absent or
+  unparseable. Search filtering leaves RRF ranking unchanged.
+- `reindex` selects filesystem mtimes for [forced repair](#repair-the-index).
+
+`add-note --frontmatter-json` accepts validated producer metadata without overwriting Vagus-owned
+fields. Producer JSON becomes dedicated `Frontmatter > <namespace>` chunks, searchable by BM25
+and embeddings. Lifecycle fields (`created`, `status`, `source`, `para`, `modified`, `title`) stay
+out of chunk text; `--since` and `--source` keep their filter behavior. Upgrading an older index to
+chunk version 6 triggers a one-time full re-embed.
+
+### Set a relevance floor
+
+`--relevance` reports finite original-query EmbeddingGemma cosine clamped to `[0,1]`; JSON names
+its `relevance_policy`. This is a model- and chunk-specific heuristic, not calibrated confidence.
+RRF and reranking still set order. A BM25-only survivor has unknown relevance.
+
+`--min-relevance 0..=1` implies reporting and filters after truncation without backfill. A positive
+floor drops unknowns; zero retains them. Any relevance floor disables adaptive RRF cutoff.
+BM25-only and `--smart` reject both flags because they do not retain original-query cosine.
+Evaluate fixed positive and negative probes with `vagus eval --relevance` before choosing a floor.
+The example `0.30` is not a universal boundary; the [recorded evaluation](design/adr/0026-bounded-semantic-relevance.md#measured-evidence)
+includes a negative that scored above it.
+
+### Record presented notes
+
+`--tick-provenance` instruments the bundled skill; it does not change scores or ordering. It requires
+note-level hybrid `--json --full --rerank --exact`, a limit of 1–1,000, and no smart mode, metadata
+filter, chunks, `--relevance`, or score/relevance floor. It replaces the ordinary Hit array with `{run,hits}`.
+The run pins executable, corpus, model, fusion/source depths, exact backend, reranker/cap/context,
+scope, and result policy. Each hit has a path-bound event ID, source/fusion/final ranks, and either
+a capped-prefix rerank rank or an explicit unscored-tail state.
+
+The skill passes the run and only cited `{path,provenance}` pairs to `vagus tick --events`.
+Run, events, and counters commit or roll back together. A time-filtered primary search uses
+counter-only ticks; fallback searches are not ticked.
+
+`vagus fame` lists the most-ticked notes. `vagus ticks` groups observations by pipeline and corpus;
+these selection-biased reports are not recall or evaluation evidence. Query storage requires
+explicit `vagus tick --events ... --query ... --store-query`; bodies and snippets are never stored
+in these records. This restriction does not prevent the host agent from receiving search results.
+
+### Evaluate retrieval
+
+Run `vagus index`, then hold the index and JSONL labels fixed across A/B runs: `vagus eval` never
+refreshes the index. It evaluates exhaustive note-level rankings before adaptive cutoff. P@k always
+uses k as the denominator; MRR is MRR@k, and undefined cohorts are `null`. Schema-2 reports pin
+rankings and label/corpus/index/backend/fusion/cohort identities; reranked reports include context
+radius and tokenizer maximum in `rerank_policy`.
+
+The fixed `eval-gate` requires a held-out graded/diverse sample, paired nDCG confidence, and
+recall/MRR/P/cohort nonregressions. Passing permits opt-in experiments, not a new default.
+See [labels and gate requirements](eval/README.md).
+
+### Repair the index
+
+Use `vagus reindex --since 10d` to repair a known recent period, including after iCloud sync between
+Macs. It snapshots the whole vault, force-refreshes notes in the filesystem-mtime window even when
+cached metadata matches, and persists usearch repairs. Older indexed notes and all local usage
+records survive; new and deleted files are still reconciled across the whole vault.
+`vagus index` also retries files with missing chunk embeddings after an interrupted run.
+Use plain `vagus reindex` when the suspect period is unknown or the embedding/chunk identity changed.
+
+Keep the index/database outside iCloud, by default in `~/.local/share/vagus/`. Markdown can rebuild
+the search index, but **do not delete `meta.db` as a reset**: it also holds usage counters and
+selected-result provenance that cannot be rebuilt from notes. Reindexing preserves those records.
 
 ## More
 

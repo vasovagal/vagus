@@ -1,87 +1,55 @@
 # design/ — the vagus design record
 
-This folder is the durable record of **what we built, what we considered, and why**. It exists so
-future sessions (human or Claude) inherit the reasoning instead of re-litigating settled decisions or
-silently breaking an invariant.
+Use this design record to find the requirements, binding invariants, and decisions behind Vagus.
+Read the relevant contract before changing architecture; use the index below to find its owner.
 
 ## How to use it
 
-- **Read before any architectural change.** Start with [`guardrails.md`](./guardrails.md) (binding) and
-  the relevant ADR.
-- **When you change a decision, update the matching ADR** (don't delete history — add a new ADR that
-  supersedes the old one, or amend with a dated note). The root `CLAUDE.md` summarizes the invariants;
-  keep it in sync with `guardrails.md`.
-- **New significant decision?** Add `adr/NNNN-title.md` using the same format.
+- Read the binding [`guardrails.md`](./guardrails.md) and the relevant ADR before an architectural change.
+- Change a decision with a superseding ADR or a dated amendment; retain the original reasoning.
+  Update this index, `guardrails.md`, and the root `CLAUDE.md` summary in the same change.
+- Add new significant decisions as `adr/NNNN-title.md`, following the existing format.
 
 ## Contents
 
 | File | What |
 |---|---|
-| [`roadmap.md`](./roadmap.md) | **Where we're going**: the three-tier direction, capability×home×status, milestones. |
-| [`requirements.md`](./requirements.md) | Functional + non-functional requirements, scope, **non-goals**. |
-| [`guardrails.md`](./guardrails.md) | The canonical hard-invariant list (binding). |
+| [`roadmap.md`](./roadmap.md) | Current capabilities, their owners, milestones, and deferred work. |
+| [`requirements.md`](./requirements.md) | Functional and operational requirements, scope, and non-goals. |
+| [`guardrails.md`](./guardrails.md) | Binding implementation invariants. |
 | [`tradeoffs.md`](./tradeoffs.md) | Comparison tables: build-vs-adopt, embedding backends, the ONNX single-binary reality, vector-store options. |
 | [`prior-art.md`](./prior-art.md) | Tools surveyed, with borrow/reject notes and links. |
-| [`methodology-para.md`](./methodology-para.md) | PARA / CODE domain-model reference — the *why* behind the vault shape. |
-| [`adr/`](./adr/) | Architecture Decision Records (one per fork): context · options · decision · consequences. |
+| [`methodology-para.md`](./methodology-para.md) | Why the vault follows PARA and CODE. |
+| [`adr/`](./adr/) | Architecture Decision Records: context, options, decision, and consequences. |
 
 ## ADR index
 
-- `0001-build-vs-adopt.md` — build the second-brain layer fresh; lean on `frankensearch` for retrieval.
-- `0002-language-rust.md` — Rust over Python.
-- `0003-search-stack.md` — tantivy + fastembed/ort + RRF(k=60), with stable modality-neutral ties.
-  *(vector component superseded by 0019.)*
-- `0004-icloud-markdown-only.md` — iCloud holds Markdown only; index/DB/cache stay outside via
-  alias-aware path checks; `init --icloud` uses fail-closed, no-note-migration setup.
-- `0005-assisted-filing.md` — assisted, on-demand PARA filing (never automatic).
-- `0006-embeddings-local-no-daemon.md` — local fastembed; no Ollama/cloud by default; plain doctor
-  never downloads, while explicit `--fetch-models` validates both ONNX models; G4 pins the full
-  document-embedding recipe (prefix, length, normalization), not just model + dims.
-- `0007-lean-on-frankensearch.md` — depend/vendor the retrieval engine (pending smoke test).
-- `0008-naming.md` — `vagus` / `vasovagal`.
-- `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
-- `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
-- `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
-- `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
-  channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 contract and pushes explicit
-  time windows into native `--since` retrieval. Namespaced skills default generic personal-note
-  intent to Vagus, with explicit destination overrides and conservative legacy-name migration.
-- `0013-chunk-budget.md` — chunk size tied to the embedder context window; fenced code atomic.
-- `0014-self-contained-universe.md` — identity reframe: "no versioned runtime," not "single binary."
-- `0015-cross-encoder-rerank.md` — in-core `jina-reranker-v1-turbo-en` (`--rerank`); explicit
-  doctor fetch/validation and bounded tokenizer-safe `--rerank-context`; amends 0003 + G17.
-- `0016-local-generative-rewriter.md` — tier-1 local rewriter (candle + qmd GGUF); `--smart`
-  forwards bounded rerank context and releases its embedder before widened inference; amends G17.
-- `0017-indexed-frontmatter-filters.md` — shared `search`/`inbox --since` note-age semantics and
-  `search --source` via SQLite-denormalized
-  `created_at`/`source` (no tantivy schema change); adds G9b.
-- `0018-multi-agent-guardrails.md` — worktree-per-agent (convention), no direct commits to `main`,
-  worktree janitor, soft breadcrumb nudge; adds G21–G24.
-- `0019-usearch-ann-backend.md` — automatic exact cosine below 10k chunks, embedded static usearch
-  HNSW above it, an all-mode `--exact` oracle, and persisted forced-refresh mutations; supersedes
-  0003's vector component; updates G5/G11/G13.
-- `0020-note-level-results.md` — `--limit` counts distinct notes (best chunk + `siblings` count) via
-  post-rank dedup; folded source ranks preserve the G9d champion guard; `--chunks` opts out; adds G9c.
-- `0021-usage-ticks.md` — local usage counters plus atomic, schema-versioned cited-note rank
-  provenance (`vagus tick`/`fame`/`ticks`): survives reindex, re-keys on file moves, pins pipeline +
-  corpus with path-bound event IDs, names capped tails honestly, keeps default search JSON unchanged,
-  and requires filtered skill searches to use ordinary JSON/counter-only ticks; adds G25/G9f.
-- `0022-mtime-windowed-reindex.md` — `reindex --since <duration>` snapshots the whole vault,
-  force-refreshes and persists the recent filesystem-mtime window without wiping older notes, and
-  treats interrupted NULL embeddings as implicit repairs; adds G26.
-- `0023-adaptive-context-tidy-results.md` — plain hybrid note search treats `--limit` as a ceiling,
-  dropping only a distinct low-signal RRF suffix without crossing a top-three source champion;
-  `--exhaustive` restores legacy fill; adds G9d and amends 0012/0020.
-- `0024-retrieval-eval-harness.md` — schema-versioned `vagus eval` over private qrels, with fixed
-  metrics and corpus/index/backend/fusion/cohort provenance; adds G27.
-- `0025-evidence-gated-fusion.md` — RRF k=60 remains the only default; same-pool explicit fusion
-  experiments require a fixed held-out paired `eval-gate`, and default promotion needs another ADR.
-- `0026-bounded-semantic-relevance.md` — opt-in finite original-query cosine clamped to `[0,1]` as a
-  named heuristic; post-truncation floor with honest unknowns; adds G9e and aligns search/rerank/eval.
-- `0027-producer-frontmatter-metadata.md` — safe optional producer metadata on `add-note`: validated JSON
-  becomes namespaced YAML flow frontmatter, with a version-skew-safe child environment channel; clarifies G3.
-- `0028-searchable-producer-metadata.md` — valid non-owned JSON frontmatter becomes dedicated,
-  kind-separated BM25/semantic chunks; lifecycle fields stay filter-only; adds G9g and chunk version 6.
-- `0029-checkpointed-resumable-indexing.md` — tantivy commits every 64 files/30 s and blesses
-  `files.pending` rows only after the commit; `vec_dirty` repacks usearch; only explicit `index`/`reindex`
-  resume an interrupted rebuild; graceful Ctrl-C; BM25 census self-heal + doctor check; amends G5/G6.
+- [`0001-build-vs-adopt.md`](adr/0001-build-vs-adopt.md) — Build the note-management layer; retrieval-engine choice superseded by 0007.
+- [`0002-language-rust.md`](adr/0002-language-rust.md) — Choose Rust.
+- [`0003-search-stack.md`](adr/0003-search-stack.md) — Use BM25, cosine, and RRF k=60; vector backend superseded by 0019.
+- [`0004-icloud-markdown-only.md`](adr/0004-icloud-markdown-only.md) — Keep derived storage outside the vault and make iCloud setup fail closed.
+- [`0005-assisted-filing.md`](adr/0005-assisted-filing.md) — Require user approval for PARA filing.
+- [`0006-embeddings-local-no-daemon.md`](adr/0006-embeddings-local-no-daemon.md) — Use local embeddings, explicit model fetching, and pinned document recipes.
+- [`0007-lean-on-frankensearch.md`](adr/0007-lean-on-frankensearch.md) — Hand-roll retrieval after evaluating `frankensearch`; retain it as a reference.
+- [`0008-naming.md`](adr/0008-naming.md) — Name the project `vagus` under `vasovagal`.
+- [`0009-cwd-scoped-search.md`](adr/0009-cwd-scoped-search.md) — Inherit search exclusions from the working directory.
+- [`0010-plugin-subcommands.md`](adr/0010-plugin-subcommands.md) — Dispatch external `vagus-<name>` commands.
+- [`0011-plugin-protocol.md`](adr/0011-plugin-protocol.md) — Define the plugin NDJSON event stream.
+- [`0012-three-tier-retrieval.md`](adr/0012-three-tier-retrieval.md) — Select retrieval by channel; bound the search skill and its citation recording.
+- [`0013-chunk-budget.md`](adr/0013-chunk-budget.md) — Budget chunks against model context while keeping code fences atomic.
+- [`0014-self-contained-universe.md`](adr/0014-self-contained-universe.md) — Require no managed runtime, rather than a single executable.
+- [`0015-cross-encoder-rerank.md`](adr/0015-cross-encoder-rerank.md) — Add local reranking with bounded, tokenizer-safe context.
+- [`0016-local-generative-rewriter.md`](adr/0016-local-generative-rewriter.md) — Add opt-in local rewriting and HyDE through candle.
+- [`0017-indexed-frontmatter-filters.md`](adr/0017-indexed-frontmatter-filters.md) — Define shared note-age semantics and post-rank metadata filters.
+- [`0018-multi-agent-guardrails.md`](adr/0018-multi-agent-guardrails.md) — Isolate agents in worktrees and require PRs except for releases.
+- [`0019-usearch-ann-backend.md`](adr/0019-usearch-ann-backend.md) — Select exact cosine below 10,000 chunks and embedded usearch above it.
+- [`0020-note-level-results.md`](adr/0020-note-level-results.md) — Count distinct notes by default; retain `--chunks` as an opt-out.
+- [`0021-usage-ticks.md`](adr/0021-usage-ticks.md) — Retain local counters and validated cited-note provenance through reindexing.
+- [`0022-mtime-windowed-reindex.md`](adr/0022-mtime-windowed-reindex.md) — Repair a filesystem-mtime window while reconciling the whole vault.
+- [`0023-adaptive-context-tidy-results.md`](adr/0023-adaptive-context-tidy-results.md) — Allow a guarded low-signal suffix cut in plain hybrid note search.
+- [`0024-retrieval-eval-harness.md`](adr/0024-retrieval-eval-harness.md) — Evaluate fixed indexes with reproducible labels, metrics, and provenance.
+- [`0025-evidence-gated-fusion.md`](adr/0025-evidence-gated-fusion.md) — Gate explicit fusion experiments; keep RRF k=60 as the default.
+- [`0026-bounded-semantic-relevance.md`](adr/0026-bounded-semantic-relevance.md) — Expose bounded cosine as a heuristic with an optional drop-only floor.
+- [`0027-producer-frontmatter-metadata.md`](adr/0027-producer-frontmatter-metadata.md) — Accept validated producer metadata on explicit note creation.
+- [`0028-searchable-producer-metadata.md`](adr/0028-searchable-producer-metadata.md) — Index producer JSON separately from body text and lifecycle fields.
+- [`0029-checkpointed-resumable-indexing.md`](adr/0029-checkpointed-resumable-indexing.md) — Checkpoint indexing and resume rebuilds only on explicit commands.
