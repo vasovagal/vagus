@@ -4,8 +4,8 @@
 #
 #   VERSION=0.1.0 scripts/render-formula.sh > .../homebrew-tap/Formula/vagus.rb
 #
-# Run by hand after a release to update the external shared tap (vasovagal/homebrew-tap); commit the
-# rendered formula there. CI never writes the tap.
+# Called by the release workflow after public asset validation. May also be run manually to recover
+# a failed publication to the external shared tap (vasovagal/homebrew-tap).
 set -euo pipefail
 
 VERSION="${VERSION:?set VERSION, e.g. VERSION=0.1.0}"
