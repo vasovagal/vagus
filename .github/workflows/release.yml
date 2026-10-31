@@ -1,10 +1,7 @@
 name: release
 
 # Law 3: a tag is a vote of confidence — this workflow does ONLY tag-specific work (build, publish,
-# then update the landing-page release pointer). It does not re-run the PR test matrix. The Homebrew formula
-# lives in the external shared tap
-# (vasovagal/homebrew-tap) and is updated manually post-release (scripts/render-formula.sh) — CI never
-# writes the tap. Law 18: one workflow per release event, fanned out by `needs:` only where there's a
+# then update the landing-page release pointer and shared Homebrew tap). It does not re-run the PR test matrix. Law 18: one workflow per release event, fanned out by `needs:` only where there's a
 # real dependency. Law 19: re-run-safe at every step.
 on:
   push:
@@ -123,3 +120,53 @@ jobs:
           vagus
           "${{ needs.check.outputs.version }}"
           "${{ steps.release.outputs.published_at }}"
+
+  update-homebrew:
+    needs: [check, create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Verify stable version and public assets
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Skipping non-stable-semver tag: $GITHUB_REF_NAME"
+            echo 'stable=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          info=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)
+          [ "$(jq -r .isDraft <<<"$info")" = false ] || { echo 'release is draft' >&2; exit 1; }
+          actual=$(jq -r '.assets[].name' <<<"$info" | LC_ALL=C sort)
+          expected=$(printf '%s\n' \
+            "vagus-${VERSION}-aarch64-apple-darwin.tar.gz" \
+            "vagus-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
+            "vagus-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | LC_ALL=C sort)
+          [ "$actual" = "$expected" ] || { echo 'public assets do not match contract' >&2; exit 1; }
+          echo 'stable=true' >> "$GITHUB_OUTPUT"
+      - name: Render formula from public assets
+        if: steps.gate.outputs.stable == 'true'
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: VERSION="$VERSION" scripts/render-formula.sh > "$RUNNER_TEMP/vagus.rb"
+      # Only the shared tap has installation access; mint after validation and rendering.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        if: steps.gate.outputs.stable == 'true'
+        id: app
+        with:
+          client-id: ${{ vars.HOMEBREW_PUBLISHER_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_PUBLISHER_PRIVATE_KEY }}
+          owner: vasovagal
+          repositories: homebrew-tap
+          permission-contents: write
+      - name: Publish formula (bounded concurrent push retry)
+        if: steps.gate.outputs.stable == 'true'
+        env:
+          TAP_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: scripts/publish-homebrew.sh "$VERSION" Formula/vagus.rb "$RUNNER_TEMP/vagus.rb"

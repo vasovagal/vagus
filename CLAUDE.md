@@ -188,11 +188,13 @@ A successful tag workflow also validates all three public release assets and upd
 `vasovagal.github.io` through the Vagus-specific `LANDING_PAGE_DEPLOY_KEY`, producing an idempotent
 `vagus bumped to X.Y.Z` site commit. The deploy key can write only the landing-page repository.
 
-**Every release propagates to the tap, same cycle.** A release is not done until
-`vasovagal/homebrew-tap/Formula/vagus.rb` serves the new version: wait for `release.yml` to publish
-the GitHub release, then render and push the formula (`VERSION=X.Y.Z scripts/render-formula.sh`,
-commit "vagus X.Y.Z" to the tap). Manual by design — CI never writes the tap — so the tap bump is
-part of cutting the release, never a follow-up left for later. Finish by upgrading the local
+**Every stable release propagates to the tap, same cycle.** After validating the three public assets,
+`release.yml` renders and publishes `vasovagal/homebrew-tap/Formula/vagus.rb` through a short-lived,
+tap-only GitHub App token. Re-runs are idempotent and older releases cannot downgrade the tap. Provision
+the org App with Contents write installed only on `vasovagal/homebrew-tap`; configure source repository
+variable `HOMEBREW_PUBLISHER_CLIENT_ID` and secret `HOMEBREW_PUBLISHER_PRIVATE_KEY`. If publication
+fails, rerun the workflow (or manually render with `VERSION=X.Y.Z scripts/render-formula.sh`). The tap
+bump remains part of cutting the release, never a follow-up left for later. Finish by upgrading the local
 install from the tap: `brew update && brew upgrade vagus` (the machine's `vagus` is brew-installed,
 not cargo-installed — see Build / test / run).
 
