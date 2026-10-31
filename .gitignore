@@ -9,8 +9,12 @@
 *.sqlite-*
 
 # Claude Code (ADR 0018 / G21): the global ~/.gitignore ignores .claude/ wholesale. Override here so
-# the committed project settings is the ONLY tracked .claude file — re-include the dir, ignore its
-# contents (per-agent worktrees, machine-local overrides), then un-ignore settings.json.
+# only project settings and the repository writing skill are tracked. Keep per-agent worktrees
+# and machine-local overrides ignored.
 !.claude/
 .claude/*
 !.claude/settings.json
+
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/succinct-docs/

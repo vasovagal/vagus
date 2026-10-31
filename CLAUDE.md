@@ -209,3 +209,8 @@ not cargo-installed — see Build / test / run).
   in the same change (Keep a Changelog: Added/Changed/Fixed/Removed). Internal refactors / test-only
   changes don't need one.
 - Personal repo under the **`vasovagal`** GitHub org — **not** `scientist-hq` (that's work).
+
+## Documentation
+
+Write and review documentation with the [succinct-docs skill](.claude/skills/succinct-docs/SKILL.md)
+and follow [AGENTS.md](AGENTS.md#documentation). Preserve the existing invariants above.

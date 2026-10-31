@@ -1,11 +1,14 @@
 # Requirements
 
+Use these requirements to assess product changes. The functional and operational requirements follow
+the purpose below; scope and non-goals bound them. Detailed implementation rules live in
+[`guardrails.md`](guardrails.md).
+
 ## Problem / intent
 
-A personal "second brain": capture thoughts and references with near-zero friction, organize them with
-the [PARA](./methodology-para.md) method, and **find them again** later by keyword *or* by meaning —
-all local, private, and durable as plain text. Driven from the terminal or an Agent Skills-compatible
-coding harness (Claude Code and pi).
+Capture thoughts and references as plain Markdown, organize them with
+[PARA](./methodology-para.md), and retrieve them by keyword or meaning. Use the CLI directly or
+through the Claude Code and pi skills.
 
 ## Functional requirements
 
@@ -13,7 +16,7 @@ coding harness (Claude Code and pi).
   40-Archive` (+ optional `50-Meta`). One `.md` file per note; whole-folder `mv` for lifecycle moves.
   `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
   or recursively deletes an occupied vault.
-- **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
+- **F2 — Capture without required metadata.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
   Also the vagus-create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
   the processing list by the same note-creation rule as search without requiring prior indexing.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
@@ -27,8 +30,9 @@ coding harness (Claude Code and pi).
   Valid producer JSON frontmatter is retrievable through dedicated lexical + semantic chunks (for
   example, finding generated notes by model); Vagus lifecycle frontmatter stays out of chunk text
   (ADR 0028).
-- **F4 — Incremental indexing.** Re-index only changed files (mtime + content hash); detect deletions;
-  `reindex` rebuilds from scratch. `reindex --since <duration>` snapshots the whole vault and
+- **F4 — Incremental indexing.** Re-index changed files (mtime + content hash) and detect deletions.
+  Plain `reindex` rebuilds derived stores or resumes an interrupted compatible rebuild.
+  `reindex --since <duration>` snapshots the whole vault and
   force-refreshes notes in a recent filesystem-mtime window while preserving older indexed notes;
   forced usearch mutations persist, and incomplete embedding rows trigger implicit per-file repair.
   Every applicable `--since` uses one validated grammar, including hours, days, months, and years.
@@ -61,26 +65,28 @@ coding harness (Claude Code and pi).
 
 ## Non-functional requirements
 
-- **N1 — Local-first & private.** Works fully offline after first run; no note text leaves the machine
-  by default. Presentation logs omit query text by default and never store bodies/snippets; query
-  storage requires separate explicit opt-in. Plain `doctor` is network-incapable; model downloads
-  occur only on first model use or explicit `doctor --fetch-models` consent.
-- **N2 — No background daemon** in the default path; indexing is on-demand (a watcher is opt-in, later).
+- **N1 — Local-first & private.** Core retrieval works offline once its models are cached and sends
+  no note text to a cloud service. A host agent's data handling is outside that guarantee.
+  Presentation logs omit query text by default and never store bodies/snippets; query storage
+  requires separate opt-in. Plain `doctor` is network-incapable; missing models download on first
+  use or explicit `doctor --fetch-models` consent.
+- **N2 — No background daemon** in the default path; indexing is on demand; a watcher is deferred.
 - **N3 — Durable & recoverable.** Markdown is the source of truth; the index is a rebuildable cache.
   Local usage counters and presentation runs/events are the named non-rebuildable exception and every
   reindex preserves them. iCloud holds *only* Markdown (ADRs 0004/0021).
-- **N4 — Fast enough.** Backend retrieval stays comfortably interactive at personal scale: exact
-  cosine is automatic below 10,000 chunks (a 10k×768 fixture is ~30 MiB and measures ~26.6 ms including
-  SQLite load), then usearch HNSW supplies growth headroom. One-shot end-to-end search may be about one
-  second when local model initialization dominates; explicit `--exact` remains an all-mode oracle.
-  Widened cross-encoder context is deliberately opt-in: measured radius 1/2 rerank stages are about
-  2.8/5.7 s median and can peak near 3.2/5.6 GiB RSS on the representative Apple Silicon corpus.
-- **N5 — Owned in Rust, no versioned runtime.** A self-contained Rust universe — the `vagus` binary
-  (plus optional `vagus-<name>` companions/plugins), each statically linking its native deps
-  (onnxruntime today; candle/ggml where justified). **No Python/Node/TS/managed runtime to reconcile.**
-  Binary size ≠ model footprint (models are a lazily-downloaded cache). The author maintains the code.
-  ([ADR 0014](./adr/0014-self-contained-universe.md))
-- **N6 — Small surface.** ~500–800 LOC of our own glue over mature crates; no novel algorithms.
+- **N4 — Interactive retrieval at personal scale.** Exact cosine is automatic below 10,000 chunks;
+  usearch HNSW handles larger indexes. `--exact` remains available in every search mode. Model startup
+  can dominate end-to-end latency, and wider rerank context costs more time and memory, so it stays
+  opt-in. See the scoped measurements in [ADR 0019](adr/0019-usearch-ann-backend.md#2026-07-30-corpus-and-cutoff-evidence) and
+  [ADR 0015](adr/0015-cross-encoder-rerank.md#2026-07-30-small-to-big-evidence); they are observations, not latency or memory guarantees.
+- **N5 — Rust without a managed runtime.** The Vagus binary and its optional companions/plugins statically link native
+  dependencies and require no Python/Node/TypeScript runtime. Model caches are separate from binary
+  size and download on demand. See [ADR 0014](adr/0014-self-contained-universe.md).
+  **Policy conflict:** the [plugin contract](../docs/plugin-contract.md) is language-independent,
+  while ADR 0014 includes plugins in this no-managed-runtime requirement. Resolving that scope
+  requires an owner decision and ADR update; this documentation change does not exempt plugins.
+- **N6 — Small surface.** Use focused glue over mature crates; no novel algorithms. The original
+  500–800-line budget is a design target, not a claim about the current source size.
 
 ## Scope (v1)
 
@@ -92,10 +98,8 @@ Indexing + hybrid search + capture + assisted filing + the three skills, on one 
 - **Not** a multi-device *write* store for the index — the index is per-machine and rebuilt locally;
   only the Markdown syncs (via iCloud).
 - **Not** an Obsidian replacement — Obsidian remains an optional GUI over the same files.
-- **Not** bound to a *single executable* — but bound to **no managed runtime**. vagus may be several
-  self-contained Rust binaries (core + `vagus-<name>`); none requires Python/Node/TS
-  ([ADR 0014](./adr/0014-self-contained-universe.md)). (The ONNX path statically links onnxruntime, so
-  the binary is in fact self-contained — see [tradeoffs §D](./tradeoffs.md).)
+- No requirement for a single executable. The runtime boundary is N5 above; see the
+  [linkage tradeoffs](tradeoffs.md#d-the-onnx-single-binary-reality-verified-on-this-build).
 - **No** automatic filing/moving of notes without explicit user approval.
 - **No** cloud LLM calls and **no daemon**, in any tier. Generation is *tiered*, not banned: a
   cross-encoder reranker (a scoring model) is in core; generative rewriting/HyDE is an opt-in,

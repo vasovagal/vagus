@@ -1,13 +1,13 @@
 # `vagus eval` — retrieval-quality labels
 
-`vagus eval <labels.jsonl>` scores a **fixed current index** against vault-specific relevance judgments.
-It reports P@k, R@k, MRR@k, optional nDCG@k, complete ranked paths, and reproducibility provenance.
-See [ADR 0024](../design/adr/0024-retrieval-eval-harness.md).
+Use `vagus eval <labels.jsonl>` to compare retrieval against judgments for your vault. Prepare labels,
+freeze the index, then run the comparisons below. Reports include P@k, R@k, MRR@k, optional nDCG@k,
+ranked paths, and the identities needed to reproduce a run.
 
-The command never indexes automatically. Run `vagus index` first when you intend to evaluate fresh
-vault contents, then keep the index and label file unchanged across baseline/candidate runs. Evaluation
-always uses note-level, no-scope, **exhaustive pre-adaptive-cutoff** results so a candidate cannot look
-more precise merely by returning fewer notes.
+Eval never refreshes the index. Run `vagus index` before freezing it, then keep both index and labels
+unchanged across baseline and candidate runs. Results are note-level and exhaustive before the
+adaptive cutoff, without CWD scope or metadata filters. Fixed denominators prevent fewer returned
+notes from inflating precision. [ADR 0024](../design/adr/0024-retrieval-eval-harness.md) owns the contract.
 
 ## Label format
 
@@ -42,14 +42,14 @@ grades fail the run. This prevents typos and deleted notes from masquerading as 
 - **nDCG@k** is present only for positive lines using graded-object judgments.
 - Negative-probe metrics and absent cohorts are JSON `null`, never artificial zeroes.
 
-The report also carries mode-specific top-score means (`rrf`, `bm25`, `cosine`, or
-`rerank_sigmoid`). They are diagnostics only—not calibrated probabilities and not comparable across
-different modes/configurations. With explicit `--relevance`, `score_kind` instead names
-`embeddinggemma300m_chunk6_cosine_clamped_v1`: finite original-query cosine clamped to `[0,1]`.
-The chunk-5 policy/evidence predates searchable producer-metadata vectors; policy names advance with
-`CHUNK_VERSION`, and old threshold observations do not calibrate a new corpus.
-This remains a semantic heuristic, not confidence. A BM25-only top hit can make it `null`; cohort
-means remain undefined unless every member has a finite top value.
+Top-score means (`rrf`, `bm25`, `cosine`, or `rerank_sigmoid`) are diagnostics, not probabilities;
+do not compare them across modes or configurations. With `--relevance`, `score_kind` is
+`embeddinggemma300m_chunk6_cosine_clamped_v1`: finite original-query cosine clamped to `[0,1]`,
+a heuristic rather than confidence. A top hit without cosine, such as a BM25-only hit, yields `null`;
+a cohort mean is defined only when every member has a finite top value.
+
+Policy names advance with `CHUNK_VERSION`. Chunk-5 evidence predates searchable producer-metadata
+vectors; its thresholds do not calibrate the current corpus.
 
 ## Usage
 
@@ -67,12 +67,13 @@ vagus eval eval/my.labels.jsonl --rerank --rerank-context 1 --json > context-1.j
 binary version + executable SHA-256, result policy, cohort, fusion policy/candidate pool, score kind,
 explicit-exact request, effective exact/usearch backend, and (inside `rerank_policy`) the exact
 rerank-context radius + tokenizer maximum.
-Only compare reports whose fingerprints and evaluation config match, unless the changed field is the
-variable being deliberately tested. Use fixed, preselected positive and out-of-corpus negative cohorts
-when inspecting relevance, and validate any proposed floor on untouched holdouts. A corpus-specific
-separation is not universal calibration; `--relevance` is unsupported with `--mode bm25`.
-If another process changes the index during a run, eval detects
-the final fingerprint mismatch and exits without publishing a mixed-generation report.
+Compare matching fingerprints and configurations, except for the variable deliberately under test.
+For relevance, preselect positive and out-of-corpus negative cohorts and validate proposed floors on
+untouched holdouts. Separation in one corpus does not establish universal calibration.
+`--relevance` is unsupported with `--mode bm25`.
+
+Eval fingerprints the index before and after the run. If those fingerprints differ, it exits without
+publishing a report.
 
 ## Fusion evidence gate (ADR 0025)
 
@@ -92,5 +93,5 @@ provenance. Rejection exits nonzero. Passing permits only an explicit experiment
 RRF or reusing ADR 0023's score-knee needs a separate ADR and context/latency evidence. See
 [ADR 0025](../design/adr/0025-evidence-gated-fusion.md) for the binding anti-overfit protocol.
 
-Vector/reranked evaluation is a batch operation and currently constructs its local model(s) once per
-query through the shared search API. It may be slow, but remains fully offline.
+Vector and reranked evaluation construct local models for each query, so initialization can dominate
+runtime. Cache the required models before an offline run; missing models may download on first use.

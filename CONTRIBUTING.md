@@ -1,11 +1,9 @@
 # Contributing to vagus
 
-Thanks for hacking on vagus. This file covers building, testing, and the conventions a
-change is expected to follow. **Architecture and the hard invariants live elsewhere — read
-[`CLAUDE.md`](./CLAUDE.md) and [`design/`](./design/) before any architectural change.**
-`design/` holds the requirements, the ADRs (what we considered and why), the tradeoff study,
-and the prior-art survey; [`design/guardrails.md`](./design/guardrails.md) is the canonical,
-binding invariant list.
+Build and check a change with the commands below, then submit it on a feature branch.
+Read [`CLAUDE.md`](./CLAUDE.md) and the binding
+[`design/guardrails.md`](./design/guardrails.md) first. For an architectural change, also read
+and update the relevant [design decision](./design/README.md#adr-index).
 
 ## Build / test / run
 
@@ -19,14 +17,14 @@ vagus doctor             # network-free installed-binary health/cache check
 vagus status             # counts, model/dims, index size
 ```
 
-First **build** downloads a prebuilt ONNX Runtime (a static `libonnxruntime.a`) and links
-it in — the installed artifact is a self-contained binary (system dylibs only; verify with
-`otool -L`). First **run** downloads the embedding model (EmbeddingGemma-300M, ~1.23 GB) to
-`~/Library/Caches/vagus/models`, outside iCloud. `vagus doctor --fetch-models` is the explicit
-prefetch/validation path; plain doctor never downloads.
+The first build downloads and statically links ONNX Runtime. Verify system-only linkage with
+`otool -L` on macOS or `ldd` on Linux after changing native dependencies or platforms.
+The first model-backed command downloads its missing models; on macOS, the default cache is
+`~/Library/Caches/vagus/models`, outside iCloud. Plain `vagus doctor` checks file presence without
+loading or downloading models; `vagus doctor --fetch-models` downloads and validates both ONNX models.
 
-Never point a dev build at the installed binary's derived index when identities may differ. Use an
-isolated data directory (the model cache can remain shared):
+Run dev binaries from `target/`; do not install them over the Homebrew copy. If a dev build may use
+a different chunk or embedding identity, isolate its derived index. Models can remain shared:
 
 ```sh
 VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
@@ -34,39 +32,39 @@ VAGUS_DATA_DIR=/tmp/vagus-dev ./target/debug/vagus index
 
 ### Feature flags
 
-The `generate` feature pulls in the tier-1 local rewriter (candle + Qwen GGUF) used by
-`vagus search --smart` / `vagus rewrite`. For a leaner build without it:
+The default `generate` feature includes the local candle/Qwen rewriter used by
+`vagus search --smart` and `vagus rewrite`. Build without it with:
 
 ```sh
 cargo build --no-default-features    # add back features as needed
 ```
 
+### CI checks
+
+[CI](.github/workflows/ci.yml) runs on pull requests and `main` pushes. It checks formatting,
+Clippy with warnings denied, locked tests, and the lean build without default features.
+The commands above are local development checks; plain `cargo clippy --all-targets` does not deny warnings.
+
 ## Releasing
 
-Push a `vX.Y.Z` tag — see [`RELEASING.md`](./RELEASING.md) for the full procedure. The
-CI/release pipeline follows the laws in the `xrl/agents` `LAWS.md`: split-by-event
-(`ci.yml` on PR/main, `release.yml` on tags — no test re-run), native-per-arch build matrix
-(no emulation), centralized pinned-SHA caching, re-run-safe release.
+Follow [the release procedure](RELEASING.md#cut-a-release) after CI passes on `main`.
+Tag builds use native runners and do not repeat the PR tests. The release is not complete until
+the [manual Homebrew tap update](RELEASING.md#the-homebrew-tap) is done.
 
 ## Conventions
 
-- Match the surrounding Rust style; keep modules small and single-purpose (`index`, `chunk`,
-  `embed`, `search`, `notes`, `db`, `config`, `cli`).
-- All data-producing commands support a stable `--json` shape so the bundled agent skills
-  parse rather than scrape — preserve it.
-- Commit `Cargo.lock` (this is a binary crate).
-- **Run `cargo fmt` before pushing** — never burn a CI cycle on formatting.
-- **Meaningful work goes in [`CHANGELOG.md`](./CHANGELOG.md).** User-noticeable changes get
-  an entry under `## [Unreleased]` in the same change (Keep a Changelog:
-  Added/Changed/Fixed/Removed). Internal refactors / test-only changes don't need one.
+- Match the surrounding Rust style and keep modules focused.
+- Preserve command JSON contracts so agent skills can parse output.
+- Commit `Cargo.lock`; run `cargo fmt` before pushing.
+- Record user-visible changes under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), using
+  Added/Changed/Fixed/Removed. Internal refactors and test-only changes need no entry.
 
 ## Multi-agent / worktree work
 
-Parallel or swarm work runs in its own git worktree (`.claude/worktrees/<name>` or an
-org-level `*-worktrees/` sibling, branched fresh from `origin/main`) — never two agents in
-one checkout. **No direct commits to `main`** except releases; everything else goes via a
-feature branch + PR (a `git-guard` hook enforces this). See guardrails G21–G24 and
-`design/adr/0018-*`. Prune a worktree once its branch merges
-(`scripts/worktree-janitor.sh`).
+Use one worktree per parallel agent, branched fresh from `origin/main`. Put it under
+`.claude/worktrees/<name>` or an organization-level `*-worktrees/` sibling. Code and docs go through
+a feature branch and PR; only releases may commit directly to `main`.
+[ADR 0018](design/adr/0018-multi-agent-guardrails.md#decision) defines the release exception and
+`git-guard` hook. After a branch merges, prune its clean worktree with `scripts/worktree-janitor.sh`.
 
-This is a personal repo under the **`vasovagal`** GitHub org (not `scientist-hq`).
+This repository belongs to the **`vasovagal`** organization, not `scientist-hq`.

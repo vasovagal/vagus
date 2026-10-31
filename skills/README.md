@@ -1,27 +1,31 @@
 # vagus skills
 
-Three [Agent Skills](https://agentskills.io/) that drive the `vagus` CLI in Claude Code or pi. They
-shell out to `vagus`, which must be on `PATH`. No bundled scripts — the CLI is the one implementation.
+Install the three bundled [Agent Skills](https://agentskills.io/) to capture, retrieve, and file
+Vagus notes in Claude Code or pi. They call `vagus` on `PATH`; no separate scripts implement the CLI.
+[Install](#install), [migrate old names](#upgrading-the-old-names), or [edit a skill](#contributing-to-a-skill).
 
-- **`vagus-create-note`** — capture a note from a session into the inbox (`/vagus-create-note "title"` in Claude
-  Code; `/skill:vagus-create-note title` in pi).
-- **`vagus-search`** — hybrid search the vault, translating requests such as “from the last 3 months” into
-  a native `--since 3m` retrieval filter (`/vagus-search <query>`; `/skill:vagus-search <query>` in pi).
-- **`vagus-process-inbox`** — assisted PARA filing, including time-bounded passes such as the last five days
-  (`/vagus-process-inbox`; `/skill:vagus-process-inbox` in pi), manual-trigger only because it moves files
-  (`disable-model-invocation: true`).
+| Skill | Claude Code | pi | Action |
+|---|---|---|---|
+| `vagus-create-note` | `/vagus-create-note "title"` | `/skill:vagus-create-note title` | Capture into the inbox |
+| `vagus-search` | `/vagus-search <query>` | `/skill:vagus-search <query>` | Retrieve notes; pass requested time windows to `--since` |
+| `vagus-process-inbox` | `/vagus-process-inbox` | `/skill:vagus-process-inbox` | Propose PARA filing; confirm each move |
 
-Generic note intent defaults to Vagus: “make a note of this finding” / “save this for later” capture
-conversation content; “find that idea in my notes” / “what did I write about X?” retrieve existing
-notes. No Vagus/vault wording is required, but a question about notes is not permission to create one.
-Explicit destinations win: “write docs/notes.md in this repo”, “add release notes”, or another notes
-app do not route to Vagus. “Organize my notes” may prompt an offer to invoke `vagus-process-inbox`,
-never automatic invocation or moves; confirm each move. These are intended routing contracts, not
-measured model activation guarantees.
+These names describe current source. Release **v0.14.1** bundles `create-note`, `search`, and
+`process-inbox`; installing that binary again does not rename them. Use `vagus skills list` to check
+your installed inventory.
+
+Generic “make a note” or “save this” requests capture into Vagus; “find that idea in my notes”
+retrieves without creating a note. Explicit repo files, release notes, or another notes app override
+this default. “Organize my notes” may prompt an offer to invoke `vagus-process-inbox`, which requires
+manual invocation (`disable-model-invocation: true`) and confirmation of each move. These are routing
+instructions, not measured guarantees of model activation.
+
+Search passes matching chunk bodies to the host agent and permits reading a full note to resolve
+ambiguity. Vagus's local retrieval does not make the host agent or its model provider offline.
 
 ## Install
 
-These files are **embedded in the `vagus` binary** (`include_str!`), so the supported install is:
+Skills are embedded in the binary with `include_str!`; no clone is needed:
 
 ```sh
 vagus skills install                 # Claude Code (default): ~/.claude/skills
@@ -29,32 +33,34 @@ vagus skills install --agent pi      # pi: ~/.pi/agent/skills
 vagus skills list --agent pi         # bundled skills + pi install status
 ```
 
-The defaults honor `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`; `--dir` overrides either one.
-Install is idempotent and safe to re-run. Pi loads the installed skills in new sessions; use
-`/reload` in a running session.
+`CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` override the respective config roots; `--dir` selects
+an installation directory directly. After upgrading Vagus, install again for each agent. Pi loads
+skills at session startup; use `/reload` in an existing session.
+
+For the current names, installation leaves identical files alone, backs up hand-edited `SKILL.md`
+to `SKILL.md.bak`, and skips symlinks. `--force` replaces symlinks and divergent files without backup.
+Preserve any existing `.bak` you need before another update: it is not a versioned backup history.
 
 ### Upgrading the old names
 
-`create-note`, `search`, and `process-inbox` are now `vagus-create-note`, `vagus-search`, and
-`vagus-process-inbox`. After installing each new copy, the installer retires only byte-exact,
-recognized recent bundled legacy files. It first saves a non-overwriting backup as
+In current source, `create-note`, `search`, and `process-inbox` become `vagus-create-note`,
+`vagus-search`, and `vagus-process-inbox`. After installing each new copy, the installer retires only
+byte-exact, recognized recent bundled legacy files. It first saves a non-overwriting backup as
 `../.vagus-skill-backups/<old-name>.SKILL.md.bak` beside the skills directory, outside discovery.
 Companion files stay in place. A backup collision or failure leaves the legacy file intact and
 reports an error; reconcile that backup before retrying.
 
 Custom/unknown legacy files and symlinks (including symlinked parent directories) are preserved even
 with `--force`, with a warning to reconcile them manually; they can still cause duplicate activation.
-Older unrecognized releases follow that same conservative rule. Transfer personal edits deliberately
-before retiring a custom legacy skill. The usual new-name install behavior is unchanged: hand edits
-are backed up to `SKILL.md.bak` unless `--force`, and symlinks are skipped unless `--force`.
+Older unrecognized releases follow that same conservative rule. Transfer personal edits before
+retiring a custom legacy skill.
 
 ### Contributing to a skill
 
-Edit `skills/<name>/SKILL.md` here and rebuild — that updates the embedded copy. Every `SKILL.md`
-opens with a canonical-source comment pointing back here: agents audit the installed copies in place,
-and the next `vagus skills install` replaces a hand edit there and moves it to `SKILL.md.bak`. To
-live-test your edits without rebuilding/installing each time, symlink the source into your skills dir
-instead:
+Edit `skills/<name>/SKILL.md` here and rebuild to update the embedded copy. Each file has a
+canonical-source comment pointing here. To test without rebuilding, run the following from the
+repository root, using the default agent directories. Reconcile any existing real skill directory
+before creating its symlink:
 
 ```sh
 # Claude Code
@@ -70,7 +76,7 @@ for s in vagus-create-note vagus-search vagus-process-inbox; do
 done
 ```
 
-(`vagus skills install` deliberately **skips symlinks**, so this dev setup and the installed copies
-don't fight.) The shared frontmatter follows the Agent Skills standard; pi ignores additional
-Claude Code fields it does not use. Explicit pi invocations append arguments as plain text after the
-expanded skill block rather than substituting Claude Code's 0-based `$0` placeholder.
+`vagus skills install` skips these symlinks unless `--force` is used. Shared frontmatter follows
+the Agent Skills standard; pi ignores unsupported Claude Code fields. Explicit pi invocations append
+arguments as plain text after the expanded skill block; Claude Code substitutes the 0-based `$0`
+placeholder.
