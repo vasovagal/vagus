@@ -35,7 +35,9 @@ impl Agent {
     fn activation_hint(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code discovers newly installed skills automatically.",
-            Self::Codex => "Codex loads skills when a session starts; start a new session to pick them up.",
+            Self::Codex => {
+                "Codex loads skills when a session starts; start a new session to pick them up."
+            }
         }
     }
 }
