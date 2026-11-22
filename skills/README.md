@@ -1,14 +1,14 @@
 # vagus skills
 
-Three [Agent Skills](https://agentskills.io/) that drive the `vagus` CLI in Claude Code or pi. They
+Three [Agent Skills](https://agentskills.io/) that drive the `vagus` CLI in Claude Code or Codex. They
 shell out to `vagus`, which must be on `PATH`. No bundled scripts — the CLI is the one implementation.
 
 - **`vagus-create-note`** — capture a note from a session into the inbox (`/vagus-create-note "title"` in Claude
-  Code; `/skill:vagus-create-note title` in pi).
+  Code; `$vagus-create-note title` in Codex).
 - **`vagus-search`** — hybrid search the vault, translating requests such as “from the last 3 months” into
-  a native `--since 3m` retrieval filter (`/vagus-search <query>`; `/skill:vagus-search <query>` in pi).
+  a native `--since 3m` retrieval filter (`/vagus-search <query>`; `$vagus-search <query>` in Codex).
 - **`vagus-process-inbox`** — assisted PARA filing, including time-bounded passes such as the last five days
-  (`/vagus-process-inbox`; `/skill:vagus-process-inbox` in pi), manual-trigger only because it moves files
+  (`/vagus-process-inbox`; `$vagus-process-inbox` in Codex), manual-trigger only because it moves files
   (`disable-model-invocation: true`).
 
 Generic note intent defaults to Vagus: “make a note of this finding” / “save this for later” capture
@@ -25,13 +25,13 @@ These files are **embedded in the `vagus` binary** (`include_str!`), so the supp
 
 ```sh
 vagus skills install                 # Claude Code (default): ~/.claude/skills
-vagus skills install --agent pi      # pi: ~/.pi/agent/skills
-vagus skills list --agent pi         # bundled skills + pi install status
+vagus skills install --agent codex   # Codex: $CODEX_HOME/skills (~/.codex/skills)
+vagus skills list --agent codex      # bundled skills + Codex install status
 ```
 
-The defaults honor `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`; `--dir` overrides either one.
-Install is idempotent and safe to re-run. Pi loads the installed skills in new sessions; use
-`/reload` in a running session.
+The defaults honor `CLAUDE_CONFIG_DIR` and `CODEX_HOME`; `--dir` overrides either one.
+Install is idempotent and safe to re-run. Codex loads the installed skills when a session starts;
+start a new session to pick them up.
 
 ### Upgrading the old names
 
@@ -63,14 +63,13 @@ for s in vagus-create-note vagus-search vagus-process-inbox; do
   ln -sfn "$PWD/skills/$s" ~/.claude/skills/"$s"
 done
 
-# pi (or use $PI_CODING_AGENT_DIR/skills when that variable is set)
-mkdir -p ~/.pi/agent/skills
+# Codex (or use $CODEX_HOME/skills when that variable is set)
+mkdir -p ~/.codex/skills
 for s in vagus-create-note vagus-search vagus-process-inbox; do
-  ln -sfn "$PWD/skills/$s" ~/.pi/agent/skills/"$s"
+  ln -sfn "$PWD/skills/$s" ~/.codex/skills/"$s"
 done
 ```
 
 (`vagus skills install` deliberately **skips symlinks**, so this dev setup and the installed copies
-don't fight.) The shared frontmatter follows the Agent Skills standard; pi ignores additional
-Claude Code fields it does not use. Explicit pi invocations append arguments as plain text after the
-expanded skill block rather than substituting Claude Code's 0-based `$0` placeholder.
+don't fight.) The shared frontmatter follows the Agent Skills standard. Codex has no `$0`
+placeholder: an explicit `$vagus-create-note` mention takes its title from the text after it.

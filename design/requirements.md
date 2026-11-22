@@ -5,7 +5,7 @@
 A personal "second brain": capture thoughts and references with near-zero friction, organize them with
 the [PARA](./methodology-para.md) method, and **find them again** later by keyword *or* by meaning —
 all local, private, and durable as plain text. Driven from the terminal or an Agent Skills-compatible
-coding harness (Claude Code and pi).
+coding harness (Claude Code and Codex).
 
 ## Functional requirements
 
@@ -14,7 +14,7 @@ coding harness (Claude Code and pi).
   `vagus init [--icloud]` creates the skeleton explicitly; iCloud setup is fail-closed and never moves
   or recursively deletes an occupied vault.
 - **F2 — Frictionless capture.** `vim ~/brain/00-Inbox/idea.md`, type, save — *no required frontmatter*.
-  Also the vagus-create-note skill to capture from a Claude Code or pi session. `inbox --since` can narrow
+  Also the vagus-create-note skill to capture from a Claude Code or Codex session. `inbox --since` can narrow
   the processing list by the same note-creation rule as search without requiring prior indexing.
 - **F3 — Hybrid search.** Full-text (BM25) **and** semantic (embeddings) retrieval over the vault,
   fused into one ranked result list, exposed both as a CLI (`--json`) and to coding agents. Plain
@@ -35,7 +35,7 @@ coding harness (Claude Code and pi).
 - **F5 — Assisted filing.** The vagus-process-inbox skill has the agent propose a PARA destination + title +
   tags for each inbox note; on user approval, the note is moved and its frontmatter enriched.
 - **F6 — Coding-agent skills.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` shell out to the
-  `vagus` CLI and install into Claude Code or pi's global skills directory. Search uses a bounded
+  `vagus` CLI and install into Claude Code's or Codex's global skills directory. Search uses a bounded
   10-candidate exact+reranked context, presents only grade ≥2 evidence (max 6), never pads, and
   atomically records only cited-note counters/provenance from its fixed unfiltered primary path.
   Explicit user time windows are applied natively with `--since`; filtered primary citations are

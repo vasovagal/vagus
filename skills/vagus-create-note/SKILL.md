@@ -10,7 +10,7 @@ user-invocable: true
 
 <!-- Canonical source: github.com/vasovagal/vagus, skills/vagus-create-note/SKILL.md, embedded in the
      vagus binary. `vagus skills install` writes ~/.claude/skills/vagus-create-note/ and
-     ~/.pi/agent/skills/vagus-create-note/; the next install replaces a hand-edited copy and moves
+     ~/.codex/skills/vagus-create-note/; the next install replaces a hand-edited copy and moves
      the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
 
 # Create note
@@ -22,8 +22,8 @@ content to save is unclear, ask before capturing. Respect explicit destinations 
 
 When invoked:
 
-1. Choose a concise **title** — use the invocation argument if given (`$0` in Claude Code; in pi, the
-   text appended after the skill block), otherwise infer a short descriptive one.
+1. Choose a concise **title** — use the invocation argument if given (`$0` in Claude Code; in Codex,
+   the text after the `$vagus-create-note` mention), otherwise infer a short descriptive one.
 2. Compose the note **body** in Markdown from the relevant conversation content — the actual
    idea / finding / snippet / links, *not* a summary of the chat. Keep it atomic (one idea per note).
 3. Run this with the Bash tool, piping your composed body on stdin (heredoc):
@@ -39,7 +39,7 @@ When invoked:
 
 4. Tell the user the path it printed. The note is now in `~/brain/00-Inbox/` and searchable; it can be
    filed into PARA later with the vagus-process-inbox skill (`/vagus-process-inbox` in Claude Code;
-   `/skill:vagus-process-inbox` in pi).
+   `$vagus-process-inbox` in Codex).
 
 Do **not** hand-write YAML frontmatter — `vagus` adds `created` / `status: inbox` / `source`
 automatically.

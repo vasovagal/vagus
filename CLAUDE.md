@@ -1,7 +1,7 @@
 # CLAUDE.md — vagus
 
 `vagus` is a local-first **PARA second brain**: a Rust CLI providing hybrid full-text + semantic
-search over a plain-Markdown vault in iCloud, plus Agent Skills for Claude Code and pi.
+search over a plain-Markdown vault in iCloud, plus Agent Skills for Claude Code and Codex.
 
 **Before any architectural change, read [`design/`](./design/).** It holds the requirements, the ADRs
 (what we considered and why), the tradeoff study, and the prior-art survey. When you change a decision,
@@ -89,7 +89,7 @@ canonical invariant list and is **binding** — the summary below must stay in s
     Python/Node/TS; static C++ inference libs are in-character — ADR 0014). Retrieval is three-tier,
     channel-selected (ADR 0012): (0) bare `vagus search` = RRF floor; (1) `--smart`/`--rerank`/`--rewrite`
     = shell + local models, offline; (2) the bundled search skill (`/vagus-search` in Claude Code,
-    `/skill:vagus-search` in pi) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
+    `$vagus-search` in Codex) = Opus over 10 exact+reranked bodies at rerank-context radius 0, grade≥2
     only, max 6 presented, one fallback only if none survive. Its fixed unfiltered primary atomically
     logs provenance and counters for cited notes without query content; explicit user time windows use
     native `--since`, preserve it on retry, and record primary citations counter-only because filtered
@@ -150,7 +150,7 @@ brew tap and choose their own home/vault paths; follow the README when helping t
 ~/.local/share/vagus/       # index: tantivy/ + meta.db + config.toml   (OUTSIDE iCloud)
 ~/Library/Caches/vagus/models/   # cached ONNX models: embedder + optional reranker  (OUTSIDE iCloud)
 ~/.claude/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/   # Claude Code skill installs
-~/.pi/agent/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/  # pi skill installs (both shell out to `vagus`)
+~/.codex/skills/{vagus-create-note,vagus-search,vagus-process-inbox}/    # Codex skill installs (both shell out to `vagus`)
 ```
 
 ## Build / test / run

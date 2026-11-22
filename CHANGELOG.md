@@ -18,6 +18,11 @@ entries above it accumulate under **Unreleased** until the next `vX.Y.Z` tag.
   Reinstall after upgrading to receive the changes. The installer backs up and retires recognized
   unmodified legacy skills, but preserves unknown/custom copies and symlinks with a manual
   reconciliation warning. CLI command names are unchanged.
+- **Codex replaces pi as the second skills target.** `vagus skills install --agent codex` writes the
+  bundled skills to `$CODEX_HOME/skills` (default `~/.codex/skills`), and `vagus skills list --agent
+  codex` reports their status. `--agent pi` and `PI_CODING_AGENT_DIR` are gone; the skills now name
+  Codex's `$vagus-search`-style mentions instead of pi's `/skill:` commands. Claude Code stays the
+  default target.
 
 ### Fixed
 

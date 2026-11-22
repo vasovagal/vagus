@@ -37,13 +37,13 @@ straight from a Claude Code or Codex session).
   optional `[[wikilinks]]` and frontmatter. Your notes are the source of truth; the search index is
   a throwaway cache (local usage counters/provenance are the explicit exception).
 - **Zero-ceremony capture.** `vim ~/brain/00-Inbox/idea.md` — no frontmatter required — or
-  the vagus-create-note skill from Claude Code or pi. Generated-note integrations may safely add namespaced
+  the vagus-create-note skill from Claude Code or Codex. Generated-note integrations may safely add namespaced
   provenance with `add-note --frontmatter-json` without taking over Vagus-owned fields; that producer
   metadata is searchable by BM25 and meaning, so queries such as `parakeet` find model provenance.
 - **Assisted, never automatic filing.** The vagus-process-inbox skill proposes a PARA home per note; you
   approve.
-- **Claude Code and pi skills built in.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` ship
-  inside the binary — `vagus skills install --agent <claude|pi>` writes them to the selected
+- **Claude Code and Codex skills built in.** `vagus-create-note`, `vagus-search`, and `vagus-process-inbox` ship
+  inside the binary — `vagus skills install --agent <claude|codex>` writes them to the selected
   agent's global skills directory. Generic “make a note” / “save this” requests default to Vagus;
   “my notes” questions retrieve rather than create. Explicit repo files, release notes, or another
   notes app override the default. See [skill routing and upgrades](./skills/README.md).
@@ -117,9 +117,9 @@ vagus skills list --agent codex      # show Codex install status
 
 The bundled `vagus-search` and `vagus-process-inbox` skills translate user time windows directly into `--since`
 filters (for example, “last three months” → `3m`) instead of making the agent post-filter results.
-The installer honors `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. It is idempotent: re-running
+The installer honors `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. It is idempotent: re-running
 leaves identical files alone, backs up hand-edits to `SKILL.md.bak`, and skips symlinks. After an
-upgrade, install again for each agent you use; in an existing pi session, run `/reload`.
+upgrade, install again for each agent you use; Codex picks up the new copies in its next session.
 
 ## Speed
 
@@ -175,7 +175,7 @@ vagus tick '<path>'         # counter-only usage record (normally called by the 
 vagus fame                  # most-presented existing notes
 vagus ticks                 # selection-biased rank diagnostics by pipeline + corpus
 vagus vectors export --out DIR  # coherent local vector/metadata snapshot for offline analysis
-vagus skills install        # install agent skills (--agent claude|pi; default: claude)
+vagus skills install        # install agent skills (--agent claude|codex; default: claude)
 ```
 
 The applicable time-window commands (`reindex`, `search`, and `inbox`) share one validated `--since`
