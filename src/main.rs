@@ -280,7 +280,7 @@ enum Command {
     },
     /// Show index stats: counts, model/dims, paths, sizes.
     Status,
-    /// Manage the bundled Claude Code / pi skills (vagus-create-note / vagus-search / vagus-process-inbox).
+    /// Manage the bundled Claude Code / Codex skills (vagus-create-note / vagus-search / vagus-process-inbox).
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
@@ -346,7 +346,7 @@ enum Command {
 enum SkillsAction {
     /// Write the bundled skills into the selected agent's global skills directory.
     Install {
-        /// Agent to install for (claude: ~/.claude/skills; pi: ~/.pi/agent/skills).
+        /// Agent to install for (claude: ~/.claude/skills; codex: ~/.codex/skills).
         #[arg(long, value_enum, default_value = "claude")]
         agent: skills::Agent,
         /// Install into this directory instead of the selected agent's default.
@@ -1150,7 +1150,7 @@ FILE into PARA — the periodic "organize" pass:
   vagus inbox                         see what's waiting in 00-Inbox
   vagus file 00-Inbox/<note>.md --suggest             where might it go? (--thought-process = why)
   vagus file 00-Inbox/<note>.md --to "30-Resources/Coffee"
-  (agent skill: /vagus-process-inbox in Claude Code; /skill:vagus-process-inbox in pi)
+  (agent skill: /vagus-process-inbox in Claude Code; the vagus-process-inbox skill in Codex)
 
 PARA — file by how ACTIONABLE it is (first match wins):
   10-Projects   a goal with an end + deadline       ("Launch v2")
@@ -1161,7 +1161,7 @@ PARA — file by how ACTIONABLE it is (first match wins):
 
 Notes are searchable the moment they're indexed, even before you file them.
 
-Agent skills (Claude Code / pi):  vagus skills install [--agent claude|pi]"#
+Agent skills (Claude Code / Codex):  vagus skills install [--agent claude|codex]"#
     );
 }
 

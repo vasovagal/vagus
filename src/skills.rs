@@ -1,4 +1,4 @@
-//! Bundled agent skills, embedded at compile time and installable for Claude Code or pi.
+//! Bundled agent skills, embedded at compile time and installable for Claude Code or Codex.
 //!
 //! Each `SKILL.md` is pulled in with `include_str!` (relative to this file), so the skills version
 //! WITH the binary — `brew install vagus && vagus skills install` is the whole setup, no clone, no
@@ -21,21 +21,23 @@ pub struct Skill {
 pub enum Agent {
     #[value(alias = "claude-code")]
     Claude,
-    Pi,
+    Codex,
 }
 
 impl Agent {
     fn display_name(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
-            Self::Pi => "pi",
+            Self::Codex => "Codex",
         }
     }
 
     fn activation_hint(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code discovers newly installed skills automatically.",
-            Self::Pi => "pi discovers skills on startup; run `/reload` in an existing session.",
+            Self::Codex => {
+                "Codex loads skills when a session starts; start a new session to pick them up."
+            }
         }
     }
 }
@@ -172,9 +174,9 @@ fn default_skills_dir(
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".claude"))
             .join("skills"),
-        Agent::Pi => get_env("PI_CODING_AGENT_DIR")
+        Agent::Codex => get_env("CODEX_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".pi/agent"))
+            .unwrap_or_else(|| home.join(".codex"))
             .join("skills"),
     }
 }
@@ -299,7 +301,7 @@ mod tests {
 
     #[test]
     fn install_renamed_inventory_and_retire_known_legacy_idempotently() {
-        for agent in [Agent::Claude, Agent::Pi] {
+        for agent in [Agent::Claude, Agent::Codex] {
             let dir = TempDir::new("skill-upgrade");
             let parent = dir.path().canonicalize().unwrap();
             let root = parent.join("skills");
@@ -343,7 +345,7 @@ mod tests {
         let path = put(&root, "create-note", &custom);
         let unrelated = put(&root, "search", "My unrelated search skill");
         for force in [false, true] {
-            install(Agent::Pi, Some(root.clone()), force).unwrap();
+            install(Agent::Codex, Some(root.clone()), force).unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);
             assert_eq!(
                 std::fs::read_to_string(&unrelated).unwrap(),
@@ -357,8 +359,8 @@ mod tests {
         let dir = TempDir::new("skill-custom-current");
         let root = dir.path().canonicalize().unwrap().join("skills");
         put(&root, "vagus-search", "My customized Vagus search");
-        install(Agent::Pi, Some(root.clone()), false).unwrap();
-        install(Agent::Pi, Some(root.clone()), false).unwrap();
+        install(Agent::Codex, Some(root.clone()), false).unwrap();
+        install(Agent::Codex, Some(root.clone()), false).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("vagus-search/SKILL.md.bak")).unwrap(),
             "My customized Vagus search"
@@ -380,7 +382,7 @@ mod tests {
                 backup_dir
             };
             std::fs::write(&blocker, "prior data").unwrap();
-            assert!(install(Agent::Pi, Some(root.clone()), true).is_err());
+            assert!(install(Agent::Codex, Some(root.clone()), true).is_err());
             assert_eq!(
                 std::fs::read_to_string(original).unwrap(),
                 LEGACY_BODIES[0].1
@@ -417,7 +419,7 @@ mod tests {
                 _ => unreachable!(),
             }
             for force in [false, true] {
-                let result = install(Agent::Pi, Some(root.clone()), force);
+                let result = install(Agent::Codex, Some(root.clone()), force);
                 assert_eq!(result.is_err(), kind == "backup");
                 assert_eq!(
                     std::fs::read_to_string(&original).unwrap(),
@@ -520,8 +522,8 @@ mod tests {
             PathBuf::from("/home/test/.claude/skills")
         );
         assert_eq!(
-            default_skills_dir(Agent::Pi, home, |_| None),
-            PathBuf::from("/home/test/.pi/agent/skills")
+            default_skills_dir(Agent::Codex, home, |_| None),
+            PathBuf::from("/home/test/.codex/skills")
         );
     }
 
@@ -535,10 +537,10 @@ mod tests {
             PathBuf::from("/tmp/claude/skills")
         );
         assert_eq!(
-            default_skills_dir(Agent::Pi, home, |key| {
-                (key == "PI_CODING_AGENT_DIR").then(|| OsString::from("/tmp/pi"))
+            default_skills_dir(Agent::Codex, home, |key| {
+                (key == "CODEX_HOME").then(|| OsString::from("/tmp/codex"))
             }),
-            PathBuf::from("/tmp/pi/skills")
+            PathBuf::from("/tmp/codex/skills")
         );
     }
 
