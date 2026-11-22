@@ -5,7 +5,7 @@
 **Your second brain, as a single fast binary.** vagus gives you **hybrid full-text +
 semantic search** over a folder of plain-Markdown notes — local-first, offline after first
 run, no daemon, no cloud. Capture with one line in your editor; recall with one command (or
-straight from a Claude Code or pi session).
+straight from a Claude Code or Codex session).
 
 ## Features
 
@@ -107,12 +107,12 @@ vagus init --icloud
 For a bulk import, copy Markdown into the PARA folders (or `00-Inbox/`) and run one `vagus index`;
 do not loop over `add-note`, which would load the embedder once per process.
 
-### Claude Code and pi skills
+### Claude Code and Codex skills
 
 ```sh
 vagus skills install                 # Claude Code (default): ~/.claude/skills
-vagus skills install --agent pi      # pi: ~/.pi/agent/skills
-vagus skills list --agent pi         # show pi install status
+vagus skills install --agent codex   # Codex: $CODEX_HOME/skills (~/.codex/skills)
+vagus skills list --agent codex      # show Codex install status
 ```
 
 The bundled `vagus-search` and `vagus-process-inbox` skills translate user time windows directly into `--since`
