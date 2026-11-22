@@ -171,7 +171,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   ([ADR 0028](./adr/0028-searchable-producer-metadata.md))
 - **G19 — Three-tier retrieval, channel-selected.** (0) bare `vagus search` = deterministic RRF floor;
   (1) `vagus search --smart`/`--rerank`/`--rewrite` = shell + **local** models (offline, no agent);
-  (2) the bundled search skill (`/vagus-search` in Claude Code, `/skill:vagus-search` in pi) = **Opus** over the
+  (2) the bundled search skill (`/vagus-search` in Claude Code, `$vagus-search` in Codex) = **Opus** over the
   same core, with a bounded contract: 10 exact+reranked full-body candidates, present only grade ≥2,
   max 6 nonredundant notes, never pad, and at most one modality-selected retry if none survive. The
   fixed **unfiltered** primary path emits G9f provenance and atomically records only cited notes
@@ -238,7 +238,7 @@ ever diverge, **this file wins**. Changing a guardrail requires updating (or sup
   `vagus` but only **feature-gated + lazily-downloaded + opt-in** (`--smart`/`--rewrite`), never in the
   default path ([ADR 0016](./adr/0016-local-generative-rewriter.md)); **tier-2** uses the host agent
   primarily for bounded full-body judgment and permits one query reformulation only after zero useful
-  hits (Claude Code or pi). **No cloud calls and no daemon in any tier** (G14).
+  hits (Claude Code or Codex). **No cloud calls and no daemon in any tier** (G14).
   ([ADR 0012](./adr/0012-three-tier-retrieval.md),
   [ADR 0015](./adr/0015-cross-encoder-rerank.md))
 - **G18 — Networked features ship as plugins, not in core.** Anything that makes cloud/network calls

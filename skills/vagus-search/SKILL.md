@@ -10,7 +10,7 @@ user-invocable: true
 
 <!-- Canonical source: github.com/vasovagal/vagus, skills/vagus-search/SKILL.md, embedded in the
      vagus binary. `vagus skills install` writes ~/.claude/skills/vagus-search/ and
-     ~/.pi/agent/skills/vagus-search/; the next install replaces a hand-edited copy and moves
+     ~/.codex/skills/vagus-search/; the next install replaces a hand-edited copy and moves
      the edit to SKILL.md.bak. Fix drift with a PR there, then reinstall after the release. -->
 
 # Search the vault (tier-2 agent judge)

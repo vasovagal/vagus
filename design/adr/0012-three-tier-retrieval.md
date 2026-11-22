@@ -7,7 +7,8 @@
   reporting without changing any tier pipeline; **amended 2026-07-30** — ADR 0021 adds strict,
   query-free-by-default presentation provenance to the fixed tier-2 primary path; **amended
   2026-08-12** — explicit user time windows are pushed into retrieval with `--since`, using the
-  ordinary JSON/counter-only path required by ADR 0021. Supersedes the planned (never-written)
+  ordinary JSON/counter-only path required by ADR 0021; **amended 2026-11-21** — Codex replaces pi
+  as the second harness. Supersedes the planned (never-written)
   "two-tier" ADR; the earlier framing lives in
   [`plan-advanced-search-three-tier.md`](../plan-advanced-search-three-tier.md).
 
@@ -32,13 +33,13 @@ escalation prompts.
 |---|---|---|---|
 | **0 — floor** | `vagus search "q"` | BM25 + cosine + **RRF k=60**; optional post-rank low-signal suffix drop | none (deterministic) |
 | **1 — shell + local** | `vagus search "q" --smart` (or `--rerank` / `--rewrite`) | local rewrite (`lex:`/`vec:`/`hyde:`) → multi-query retrieve → RRF → **in-core cross-encoder rerank**; optional tokenizer-safe radius 1/2 context | local (candle, [ADR 0016](./0016-local-generative-rewriter.md)) |
-| **2 — skill + Opus** | bundled search Agent Skill (`/vagus-search` in Claude Code; `/skill:vagus-search` in pi) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6 + cited-note tick; strict provenance on the unfiltered primary, native `--since` + counter-only ticks for explicit time windows, and one uninstrumented fallback if none survive | Opus |
+| **2 — skill + Opus** | bundled search Agent Skill (`/vagus-search` in Claude Code; `$vagus-search` in Codex) | 10 exact+reranked full-body candidates at context radius 0 → agent 0–3 judge → grade ≥2, max 6 + cited-note tick; strict provenance on the unfiltered primary, native `--since` + counter-only ticks for explicit time windows, and one uninstrumented fallback if none survive | Opus |
 
 The tier-2 channel is the **Agent Skill**, not a Claude Code-specific command surface. The same
 standards-compatible `SKILL.md` is embedded once and installed by
-`vagus skills install --agent <claude|pi>` into the harness's global discovery directory. Claude Code
-remains the backward-compatible default target; pi honors `PI_CODING_AGENT_DIR` and loads the skill
-under its `/skill:vagus-search` command. Opus remains the intended tier-2 model regardless of harness.
+`vagus skills install --agent <claude|codex>` into the harness's global discovery directory. Claude
+Code remains the backward-compatible default target; Codex honors `CODEX_HOME` and loads the skill
+under its `$vagus-search` mention. Opus remains the intended tier-2 model regardless of harness.
 
 - **Tiers 1 and 2 share the retrieval + rerank core but have different budgets.** Tier 1 owns the
   typed `lex:/vec:/hyde:` generative rewrite. Tier 2 normally spends its stronger host-model reasoning
@@ -131,7 +132,7 @@ when the initial ten contain no useful evidence.
   CLI before judging and preserved on retry. A single shape-selected retry is the only expansion path
   when the first pass has no useful evidence.
 - Skill installation is harness-selectable without duplicating skill bodies; the existing no-flag
-  command continues to target Claude Code, while `--agent pi` targets pi.
+  command continues to target Claude Code, while `--agent codex` targets Codex.
 - Advanced search is **not** a plugin: the capture-shaped NDJSON plugin protocol
   ([ADR 0011](./0011-plugin-protocol.md)) doesn't fit a search-time transform, and the reranker/rewriter
   are neither networked nor foreign-runtime, so they belong in core (see ADR 0015/0016 for the

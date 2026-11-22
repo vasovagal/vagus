@@ -42,7 +42,7 @@ silently breaking an invariant.
 - `0009-cwd-scoped-search.md` — CWD-inherited `.vagus` exclusion rules for search.
 - `0010-plugin-subcommands.md` — plugins via external `vagus-<name>` subcommands on `$PATH`.
 - `0011-plugin-protocol.md` — plugin ↔ core NDJSON event stream (logs/progress/notes/result).
-- `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + pi),
+- `0012-three-tier-retrieval.md` — floor / shell+local / Opus Agent Skill tiers (Claude Code + Codex),
   channel-selected; tier-2 uses a bounded 10-candidate, grade≥2/max-6 contract and pushes explicit
   time windows into native `--since` retrieval. Namespaced skills default generic personal-note
   intent to Vagus, with explicit destination overrides and conservative legacy-name migration.

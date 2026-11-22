@@ -41,7 +41,7 @@ fixed-gate experiment; no alternate is currently shipped or default.
 | Reproducible retrieval evaluation + fusion gate | core `vagus` | `vagus eval` schema 2 + named relevance diagnostic + fixed paired `eval-gate` | shipped (ADRs 0024–0026) |
 | Atomic cited-note presentation provenance | core + tier-2 skill | strict run/event schema, binary+pipeline+corpus identity, capped-tail truth | shipped (ADR 0021 amendment) |
 | Local generative rewriter/HyDE (`vagus rewrite`, `search --smart`, tier 1) | core `vagus` (feature-gated `generate`) | **candle** — qmd's `qmd-query-expansion-1.7B` GGUF | shipped (ADR 0016) |
-| Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / pi) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
+| Bounded exact+reranked full-body judge (tier 2) | search Agent Skill (Claude Code / Codex) | Opus (10 candidates; grade≥2; max 6) | **shipped (milestone 3)** |
 | Networked capture (Slack, GitHub, …) | `vagus-<name>` plugins | per-plugin | shipped mechanism (ADR 0010/0011) |
 
 **Why advanced search is *not* a plugin:** the plugin protocol is capture-shaped (one-way
@@ -69,7 +69,7 @@ rewriter = ape the *model* (its fine-tuned GGUF, via candle) + the typed-output 
   primary carries self-verifying pipeline/corpus identity and atomically ticks cited paths with query
   content off. Explicit user windows use native `--since`, ordinary JSON, and counter-only primary
   ticks; filtered retries remain unticked. Judging stays in the skill (G17); RRF is never re-derived
-  (G8). The same Agent Skill installs for Claude Code and pi; vagus-process-inbox learns the same window grammar.
+  (G8). The same Agent Skill installs for Claude Code and Codex; vagus-process-inbox learns the same window grammar.
 
 ## Deferred / not building
 

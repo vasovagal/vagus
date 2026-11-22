@@ -499,7 +499,7 @@ mod tests {
                 .body
                 .contains("Do **not** hand-write YAML frontmatter")
         );
-        assert!(capture.body.contains("/skill:vagus-process-inbox"));
+        assert!(capture.body.contains("$vagus-process-inbox"));
         assert!(inbox.body.contains("Never move without an OK"));
         assert!(search.body.contains("No third retrieval"));
         assert!(!search.body.contains("tick it anyway"));
